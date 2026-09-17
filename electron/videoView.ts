@@ -88,20 +88,32 @@ export class VideoViewController {
       .catch(() => [])
   }
 
-  /** 查询视频状态与所在页面 URL（pageUrl 用于房主广播站内跳转后的真实地址） */
+  /**
+   * 查询视频状态与所在页面 URL。
+   * pageUrl 取 webContents 实时地址（SPA 站内跳转/换页后真实地址）；
+   * 页面尚未装桥（无视频/加载中）时仍返回 pageUrl，仅把 hasVideo 置 false，保证地址能持续同步。
+   */
   async status(): Promise<{
     position: number
     paused: boolean
     rate: number
     duration: number
     pageUrl: string
+    hasVideo: boolean
   } | null> {
     if (!this.view) return null
     const pageUrl = this.view.webContents.getURL()
     return this.view.webContents
       .executeJavaScript('window.__p2pBridge ? window.__p2pBridge.status() : null')
-      .then((st) => (st ? { ...st, pageUrl } : null))
-      .catch(() => null)
+      .then((st) => ({
+        position: st?.position ?? 0,
+        paused: st?.paused ?? true,
+        rate: st?.rate ?? 1,
+        duration: st?.duration ?? 0,
+        pageUrl,
+        hasVideo: Boolean(st),
+      }))
+      .catch(() => ({ position: 0, paused: true, rate: 1, duration: 0, pageUrl, hasVideo: false }))
   }
 
   /**
@@ -135,6 +147,11 @@ export class VideoViewController {
     if (action === 'back') wc.goBack()
     else if (action === 'forward') wc.goForward()
     else if (action === 'reload') wc.reload()
+  }
+
+  /** 显示/隐藏视频画面（打开 UI 弹窗时隐藏，避免原生视图遮挡渲染层界面） */
+  setVisible(visible: boolean): void {
+    this.view?.setVisible(visible)
   }
 
   /** 关闭网页视图并停止注入循环（UI 标签关闭 → 回主页） */

@@ -13,8 +13,10 @@ export type SyncMsg =
   | { t: 'pause'; position: number }
   /** 房主拖动进度 */
   | { t: 'seek'; position: number; playing: boolean; at: number }
-  /** 自我介绍（昵称广播）：加入房间时与被介绍给新成员时发送 */
-  | { t: 'profile'; name: string }
+  /** 自我介绍（昵称广播）：加入房间时与被介绍给新成员时发送；host 标记房主身份 */
+  | { t: 'profile'; name: string; host?: boolean }
+  /** 房主解散房间（房主→全员）：成员收到后自动退出 */
+  | { t: 'dissolve' }
 
 /** 消息类型到必检数值字段的映射，用于解码校验 */
 const NUMERIC_FIELDS: Record<SyncMsg['t'], string[]> = {
@@ -24,6 +26,7 @@ const NUMERIC_FIELDS: Record<SyncMsg['t'], string[]> = {
   pause: ['position'],
   seek: ['position', 'at'],
   profile: [],
+  dissolve: [],
 }
 
 /**
@@ -51,7 +54,11 @@ export function decodeMsg(raw: string): SyncMsg | null {
     }
     if (t === 'state' && typeof o.url !== 'string') return null
     if ((t === 'state' || t === 'seek') && typeof o.playing !== 'boolean') return null
-    if (t === 'profile' && typeof o.name !== 'string') return null
+    if (t === 'profile') {
+      if (typeof o.name !== 'string') return null
+      // host 可选；一旦出现必须是布尔
+      if (o.host !== undefined && typeof o.host !== 'boolean') return null
+    }
     return o as unknown as SyncMsg
   } catch {
     return null

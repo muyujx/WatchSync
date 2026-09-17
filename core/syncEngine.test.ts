@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { computeTargetPosition, decideCorrection } from './syncEngine'
+import { computeTargetPosition, decideCorrection, isConnectionLost } from './syncEngine'
 
 describe('computeTargetPosition', () => {
   it('播放中按时间外推', () => {
@@ -21,4 +21,16 @@ describe('decideCorrection', () => {
     expect(decideCorrection(10.1, 10)).toEqual({ kind: 'none' }) // 0.1s 忽略
   })
   it('零偏差不动作', () => expect(decideCorrection(10, 10)).toEqual({ kind: 'none' }))
+})
+
+describe('isConnectionLost', () => {
+  it('尚未建立同步（lastStateAt=0）不判为断线，避免入房误报', () => {
+    expect(isConnectionLost(0, 99999, 8000)).toBe(false)
+  })
+  it('未超过阈值不算断线', () => {
+    expect(isConnectionLost(1000, 9000, 8000)).toBe(false) // 间隔 8000 = 阈值，不算超时
+  })
+  it('超过阈值判为断线', () => {
+    expect(isConnectionLost(1000, 9001, 8000)).toBe(true) // 间隔 8001 > 阈值
+  })
 })

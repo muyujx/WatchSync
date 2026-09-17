@@ -53,3 +53,12 @@ export function decideCorrection(target: number, actual: number): Correction {
   const clamped = Math.min(RATE_MAX, Math.max(RATE_MIN, rate))
   return { kind: 'rate', rate: Math.round(clamped * 1000) / 1000 }
 }
+
+/**
+ * 判断成员端是否已与房主失联（心跳超时）。
+ * 参数：lastStateAt 最近一次收到房主心跳的时间（0 表示尚未建立同步）；now 当前时间（ms）；timeoutMs 超时阈值（ms）。
+ * 返回值：true 表示已超时失联；尚未建立同步（lastStateAt=0）返回 false，避免刚入房还未建连就误报断线。
+ */
+export function isConnectionLost(lastStateAt: number, now: number, timeoutMs: number): boolean {
+  return lastStateAt > 0 && now - lastStateAt > timeoutMs
+}

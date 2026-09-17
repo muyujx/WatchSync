@@ -29,6 +29,8 @@ contextBridge.exposeInMainWorld('p2pApi', {
   videoNav: (action: string) => ipcRenderer.invoke('videoNav', action),
   /** 关闭网页标签 → 回主页 */
   closeVideo: () => ipcRenderer.invoke('closeVideo'),
+  /** 显示/隐藏视频画面（打开 UI 弹窗时用，避免原生视图遮挡界面） */
+  setVideoVisible: (visible: boolean) => ipcRenderer.invoke('setVideoVisible', visible),
   /** 订阅标签页标题变化（title + url） */
   onPageTitle: (cb: (info: { title: string; url: string }) => void) => ipcRenderer.on('page-title', (_e, t) => cb(t)),
   /** 读取用户设置（首次调用生成默认昵称） */

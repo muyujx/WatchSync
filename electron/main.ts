@@ -75,6 +75,8 @@ app.whenReady().then(() => {
   ipcMain.handle('videoNav', (_e, action: string) => video.nav(action))
   // 关闭网页标签 → 回主页
   ipcMain.handle('closeVideo', () => video.close())
+  // 打开 UI 弹窗时隐藏/恢复视频画面（原生视图会遮挡渲染层界面）
+  ipcMain.handle('setVideoVisible', (_e, visible: boolean) => video.setVisible(visible))
   // 标签页标题变化 → UI
   video.setOnTitle((title, url) => mainWindow?.webContents.send('page-title', { title, url }))
   // ---- 用户设置：读取（首次生成默认昵称）与保存 ----

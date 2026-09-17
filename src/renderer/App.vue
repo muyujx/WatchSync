@@ -35,9 +35,10 @@
       <button class="m-btn filled" title="以当前打开的视频网页创建同步房间" @click="onHost">创建房间</button>
     </template>
     <template v-else>
-      <span class="chip role">{{ isHost ? '房主' : '成员' }} · {{ myName }}</span>
       <button class="m-btn" @click="onCopyLink">复制邀请</button>
-      <span class="chip" :title="membersTitle">{{ membersLabel }}</span>
+      <button class="m-btn" @click="openMembers">房间 ({{ memberList.length }})</button>
+      <span v-if="connectionLost" class="chip danger" title="与房主连接已断开，可点「退出房间」后重新加入">连接已断开</span>
+      <button class="m-btn" @click="exitRoom">{{ isHost ? '解散房间' : '退出房间' }}</button>
     </template>
 
     <input v-if="!roomId" v-model="joinInput" class="join" placeholder="粘贴邀请链接" />
@@ -65,8 +66,27 @@
     </div>
   </div>
 
+  <!-- 成员面板：群聊式在线成员列表（打开时隐藏视频画面，避免被原生视图遮挡） -->
+  <div v-if="membersOpen" class="dialog-mask" @click.self="closeMembers">
+    <div class="dialog members-dialog">
+      <h3 class="dialog-title">房间 ({{ memberList.length }})</h3>
+      <ul class="member-list">
+        <li v-for="m in memberList" :key="m.id" class="member-row">
+          <span class="avatar">{{ m.name.trim()[0]?.toUpperCase() || '?' }}</span>
+          <span class="member-name">{{ m.name }}</span>
+          <span v-if="m.self" class="badge-self">我</span>
+          <span v-if="m.isHost" class="badge-host">房主</span>
+          <span class="dot" :class="{ online: m.online }" :title="m.online ? '在线' : '离线'"></span>
+        </li>
+      </ul>
+      <div class="dialog-actions">
+        <button class="m-btn filled" @click="closeMembers">关闭</button>
+      </div>
+    </div>
+  </div>
+
   <!-- 设置对话框：用户昵称（房间内展示给其他成员） -->
-  <div v-if="settingsOpen" class="dialog-mask" @click.self="settingsOpen = false">
+  <div v-if="settingsOpen" class="dialog-mask" @click.self="closeSettings">
     <div class="dialog">
       <h3 class="dialog-title">设置</h3>
       <label class="field">
@@ -75,7 +95,7 @@
         <span class="field-hint">房间内其他成员将看到此用户名</span>
       </label>
       <div class="dialog-actions">
-        <button class="m-btn" @click="settingsOpen = false">取消</button>
+        <button class="m-btn" @click="closeSettings">取消</button>
         <button class="m-btn filled" :disabled="!nickInput.trim()" @click="saveSettings">保存</button>
       </div>
     </div>
@@ -169,6 +189,8 @@ const joinInput = ref('')
 const roomId = ref('')
 const isHost = ref(true)
 const statusText = ref('')
+/** 成员端与房主连接是否已断开（仅用于提示，不自动退出房间） */
+const connectionLost = ref(false)
 const controller = new RoomController()
 
 /** ===== 用户设置 ===== */
@@ -179,57 +201,17 @@ const myName = ref('')
 /** 地址栏元素引用（聚焦时不被视频页 URL 覆盖） */
 const omniboxEl = ref<HTMLInputElement | null>(null)
 
-/** 房间持久化 key（UI 重载/重启后恢复房间身份） */
-const ROOM_KEY = 'p2psync.room'
-
-/** 保存房间状态到 localStorage（成员端地址栏可能为空，优先取房主广播的实际地址） */
-function saveRoomState(): void {
-  localStorage.setItem(
-    ROOM_KEY,
-    JSON.stringify({
-      roomId: roomId.value,
-      isHost: isHost.value,
-      videoUrl: videoUrl.value || controller.videoUrl,
-    }),
-  )
-}
-
-/** UI 启动时恢复上次房间：重新入房，房主继续心跳、成员继续跟随 */
-async function restoreRoom(): Promise<void> {
-  const raw = localStorage.getItem(ROOM_KEY)
-  if (!raw) return
-  try {
-    const r = JSON.parse(raw) as { roomId: string; isHost: boolean; videoUrl: string }
-    // 只依赖 roomId 即可恢复连接；视频地址有则打开，无则等房主后续打开后心跳同步
-    if (!r.roomId) return
-    isHost.value = Boolean(r.isHost)
-    roomId.value = r.roomId
-    videoUrl.value = r.videoUrl || ''
-    controller.myName = myName.value
-    if (r.isHost) {
-      await controller.host(r.roomId)
-      if (r.videoUrl) {
-        await window.p2pApi.openVideo(r.videoUrl)
-        tabSet(r.videoUrl)
-        controller.videoUrl = r.videoUrl
-        await window.p2pApi.inject(false)
-      }
-    } else {
-      await controller.join(r.roomId)
-    }
-    controller.announceProfile()
-    saveRoomState()
-    syncDebug()
-    notify('已恢复房间，继续同步')
-  } catch {
-    localStorage.removeItem(ROOM_KEY)
-  }
-}
-
-/** 打开设置对话框（带当前昵称） */
-function openSettings(): void {
+/** 打开设置对话框（带当前昵称；先隐藏视频画面，避免原生视图遮挡对话框） */
+async function openSettings(): Promise<void> {
   nickInput.value = myName.value
+  await window.p2pApi.setVideoVisible(false)
   settingsOpen.value = true
+}
+
+/** 关闭设置对话框并恢复视频画面 */
+async function closeSettings(): Promise<void> {
+  settingsOpen.value = false
+  await window.p2pApi.setVideoVisible(true)
 }
 
 /** 保存昵称：持久化 + 更新 UI + 房间内重新广播 */
@@ -240,7 +222,7 @@ async function saveSettings(): Promise<void> {
   myName.value = saved.nickname
   controller.myName = saved.nickname
   controller.announceProfile()
-  settingsOpen.value = false
+  await closeSettings()
   notify('用户名已保存')
 }
 
@@ -248,26 +230,50 @@ async function saveSettings(): Promise<void> {
 const peerTick = ref(0)
 // 昵称表变化时触发响应式更新
 controller.onPeersChanged = () => peerTick.value++
-// 成员跟随拿到视频页地址时刷新 localStorage（保证恢复数据完整）
-controller.onVideoUrlChanged = saveRoomState
+// 成员端断线：仅提示，房间状态与后续操作交给用户自己决定
+controller.onConnectionLost = () => {
+  connectionLost.value = true
+  notify('与房主连接已断开，可点「退出房间」后重新加入')
+}
+// 断线后重新收到房主心跳：清除提示
+controller.onConnectionRestored = () => {
+  connectionLost.value = false
+  notify('已重新连接房主')
+}
+// 有成员加入（首次收到其昵称）：识别到房主则提示已连接，其余提示加入
+controller.onPeerJoined = (id, name) => {
+  notify(id === controller.hostPeerId ? `已连接房主 ${name}` : `${name} 加入了房间`)
+}
+// 有成员离开：提示谁离开了房间
+controller.onPeerLeft = (_id, name) => notify(`${name || '一名成员'} 离开了房间`)
 
-/** 成员 chip 文本：平铺昵称列表 */
-const membersLabel = computed(() => {
+/** 成员面板开关（点顶部「成员 (N)」打开） */
+const membersOpen = ref(false)
+
+/** 成员列表：本机 + 在线成员（房主/自己带标识，供群聊式展示） */
+const memberList = computed(() => {
   void peerTick.value
-  if (memberCount.value === 0) return '成员: (等待加入)'
-  const names = [...controller.peers].map((id) => controller.peerNames.get(id) || id.slice(0, 6) + '…')
-  return '成员: ' + names.join('、')
+  const others = [...controller.peers].map((id) => ({
+    id,
+    name: controller.peerNames.get(id) || id.slice(0, 6) + '…',
+    isHost: id === controller.hostPeerId,
+    self: false,
+    online: true,
+  }))
+  return [{ id: '__me__', name: myName.value, isHost: isHost.value, self: true, online: true }, ...others]
 })
 
-/** 成员 chip 悬停提示（含完整昵称） */
-const membersTitle = computed(() => {
-  void peerTick.value
-  return [...controller.peers].map((id) => controller.peerNames.get(id) || id).join('\n')
-})
+/** 打开成员面板：先隐藏视频画面，避免原生视图遮挡界面 */
+async function openMembers(): Promise<void> {
+  await window.p2pApi.setVideoVisible(false)
+  membersOpen.value = true
+}
 
-/** 本机成员数（定时同步普通 Set 到响应式 ref） */
-const memberCount = ref(0)
-setInterval(() => (memberCount.value = controller.peers.size), 1000)
+/** 关闭成员面板并恢复视频画面 */
+async function closeMembers(): Promise<void> {
+  membersOpen.value = false
+  await window.p2pApi.setVideoVisible(true)
+}
 
 /** 调试状态暴露（drive.cjs 联调用） */
 function syncDebug(): void {
@@ -297,7 +303,6 @@ async function onHost(): Promise<void> {
     } else {
       hint += '；打开视频网页后自动同步'
     }
-    saveRoomState()
     syncDebug()
     notify(hint)
   } catch (e) {
@@ -318,7 +323,6 @@ async function onJoinLink(): Promise<void> {
   controller.myName = myName.value
   await controller.join(parsed.roomId)
   controller.announceProfile()
-  saveRoomState()
   syncDebug()
   notify('已加入，等待房主同步状态')
 }
@@ -339,6 +343,30 @@ async function onOpen(): Promise<void> {
 async function onCopyLink(): Promise<void> {
   await window.p2pApi.copyText(buildShareUrl(roomId.value))
   notify('邀请链接已复制')
+}
+
+// 房主解散房间：成员自动退出（不关闭视频页）
+controller.onDissolved = () => {
+  void controller.leave()
+  resetRoomState()
+  notify('房主已解散房间')
+}
+
+/** 清理本机房间状态，回到可创建/加入的初始态（不关闭视频页） */
+function resetRoomState(): void {
+  roomId.value = ''
+  isHost.value = true
+  connectionLost.value = false
+  syncDebug()
+}
+
+/** 房主解散 / 成员退出：房主先广播解散再断开；统一清理房间状态 */
+async function exitRoom(): Promise<void> {
+  const wasHost = isHost.value
+  if (wasHost) await controller.dissolve()
+  else await controller.leave()
+  resetRoomState()
+  notify(wasHost ? '房间已解散' : '已退出房间')
 }
 
 onMounted(() => {
@@ -366,8 +394,6 @@ onMounted(() => {
       if (document.activeElement !== omniboxEl.value) videoUrl.value = info.url
     }
   })
-  // 恢复上次房间（UI 重载/应用重启后半途状态修复）
-  void restoreRoom()
 })
 </script>
 
@@ -406,7 +432,7 @@ body { font-family: 'Segoe UI', 'Microsoft YaHei', system-ui, sans-serif; backgr
 .join { width: 200px; height: 32px; padding: 0 12px; border: 1px solid #dadce0; border-radius: 16px; font-size: 12px; outline: none; }
 .join:focus { border-color: #1a73e8; }
 .chip { height: 28px; display: inline-flex; align-items: center; padding: 0 12px; border-radius: 14px; background: #e6f4ea; color: #137333; font-size: 12px; white-space: nowrap; }
-.chip.role { background: #e8f0fe; color: #1a73e8; }
+.chip.danger { background: #fce8e6; color: #c5221f; }
 
 /* ===== 主页：支持网站卡片 ===== */
 .home { padding: 32px 24px; }
@@ -431,10 +457,23 @@ body { font-family: 'Segoe UI', 'Microsoft YaHei', system-ui, sans-serif; backgr
 .field-hint { display: block; font-size: 11px; color: #80868b; margin-top: 6px; }
 .dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 20px; }
 
+/* ===== 成员面板（群聊式在线成员列表）===== */
+.members-dialog { width: 320px; }
+.member-list { list-style: none; padding: 0; margin: 0; max-height: 320px; overflow-y: auto; }
+.member-row { display: flex; align-items: center; gap: 10px; padding: 8px 4px; border-bottom: 1px solid #f1f3f4; }
+.member-row:last-child { border-bottom: none; }
+.avatar { width: 32px; height: 32px; flex: none; display: inline-flex; align-items: center; justify-content: center; border-radius: 50%; background: #1a73e8; color: #fff; font-size: 14px; }
+.member-name { flex: 1; font-size: 13px; color: #202124; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.badge-host { font-size: 11px; color: #1a73e8; background: #e8f0fe; border-radius: 8px; padding: 2px 6px; }
+.badge-self { font-size: 11px; color: #5f6368; background: #f1f3f4; border-radius: 8px; padding: 2px 6px; }
+.dot { width: 8px; height: 8px; flex: none; border-radius: 50%; background: #bdc1c6; }
+.dot.online { background: #34a853; }
+
 .flex-spacer { flex: 1; }
 
 /* ===== Material snackbar ===== */
-.snackbar { position: fixed; left: 50%; bottom: 28px; transform: translateX(-50%); max-width: 70%; padding: 12px 20px; border-radius: 8px; background: #323639; color: #e8eaed; font-size: 13px; box-shadow: 0 3px 10px rgba(0, 0, 0, 0.3); z-index: 99; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* 顶部提示条：视频画面（原生视图）从工具栏下方开始，底部提示会被遮挡，故放顶部 */
+.snackbar { position: fixed; left: 50%; top: 46px; transform: translateX(-50%); max-width: 70%; padding: 10px 20px; border-radius: 8px; background: #323639; color: #e8eaed; font-size: 13px; box-shadow: 0 3px 10px rgba(0, 0, 0, 0.3); z-index: 99; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .snack-enter-active, .snack-leave-active { transition: opacity 0.25s, transform 0.25s; }
-.snack-enter-from, .snack-leave-to { opacity: 0; transform: translateX(-50%) translateY(12px); }
+.snack-enter-from, .snack-leave-to { opacity: 0; transform: translateX(-50%) translateY(-12px); }
 </style>

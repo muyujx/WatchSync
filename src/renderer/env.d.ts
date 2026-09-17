@@ -12,13 +12,14 @@ declare global {
       inject(guard: boolean): Promise<string>
       /** 取走视频事件队列 */
       drainEvents(): Promise<Array<{ ev: string; position: number; paused: boolean }>>
-      /** 查询视频状态（pageUrl 为视频视图实时地址） */
+      /** 查询视频状态（pageUrl 为视频视图实时地址，hasVideo 表示页面是否已装桥） */
       videoStatus(): Promise<{
         position: number
         paused: boolean
         rate: number
         duration: number
         pageUrl: string
+        hasVideo: boolean
       } | null>
       /** 下发视频指令：action = play|pause|seek|rate */
       videoCmd(action: string, arg?: number): Promise<void>
@@ -36,6 +37,8 @@ declare global {
       videoNav(action: string): Promise<void>
       /** 关闭网页标签 → 回主页 */
       closeVideo(): Promise<void>
+      /** 显示/隐藏视频画面（打开 UI 弹窗时用，避免原生视图遮挡界面） */
+      setVideoVisible(visible: boolean): Promise<void>
       /** 订阅标签页标题变化（title + url） */
       onPageTitle(cb: (info: { title: string; url: string }) => void): void
       /** 读取用户设置（首次调用生成默认昵称） */
