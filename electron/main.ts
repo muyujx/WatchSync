@@ -36,7 +36,12 @@ function createWindow(): void {
   mainWindow = new BrowserWindow({
     width: 1280,
     height: 800,
-    webPreferences: { preload: join(import.meta.dirname, '../preload/index.mjs'), contextIsolation: true },
+    webPreferences: {
+      preload: join(import.meta.dirname, '../preload/index.mjs'),
+      contextIsolation: true,
+      // ESM preload（.mjs）与 sandbox 互斥：Electron 20+ 默认 sandbox=true 会静默跳过 preload
+      sandbox: false,
+    },
   })
   if (process.env.ELECTRON_RENDERER_URL) mainWindow.loadURL(process.env.ELECTRON_RENDERER_URL)
   else mainWindow.loadFile(join(import.meta.dirname, '../renderer/index.html'))
