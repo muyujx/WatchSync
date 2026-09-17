@@ -247,10 +247,11 @@ async function main() {
       [...document.querySelectorAll('.toolbar button')].find((b) => b.textContent.includes(text)).click()
 
     const a0 = await attachMainPage(9222)
-    await a0.eval('location.reload(); "ok"').catch(() => {})
+    // 清持久化房间状态，保证从全新流程开始（恢复功能会还原旧房间身份）
+    await a0.eval('localStorage.clear(); location.reload(); "ok"').catch(() => {})
     a0.close()
     const b0 = await attachMainPage(9223)
-    await b0.eval('location.reload(); "ok"').catch(() => {})
+    await b0.eval('localStorage.clear(); location.reload(); "ok"').catch(() => {})
     b0.close()
     await new Promise((r) => setTimeout(r, 3000))
 

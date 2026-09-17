@@ -22,6 +22,8 @@ export class RoomController {
   myName = ''
   /** 昵称表变化回调（UI 刷新成员 chip） */
   onPeersChanged: (() => void) | null = null
+  /** 房主广播地址更新回调（成员跟随拿到视频页地址时触发，UI 刷新持久化） */
+  onVideoUrlChanged: (() => void) | null = null
   /** 当前视频页地址（房主广播/成员导航用） */
   videoUrl = ''
   private room: RoomHandle | null = null
@@ -32,13 +34,13 @@ export class RoomController {
 
   /**
    * 创建房间（房主）。
-   * 参数：videoUrl 当前视频页地址。
+   * 参数：videoUrl 当前视频页地址；roomId 指定房间号（UI 重载后恢复房间用，缺省随机生成）。
    * 返回值：分享链接。
    */
-  async host(videoUrl: string): Promise<string> {
+  async host(videoUrl: string, roomId?: string): Promise<string> {
     this.role = 'host'
     this.videoUrl = videoUrl
-    this.roomId = generateRoomId()
+    this.roomId = roomId || generateRoomId()
     await this.attach()
     this.startHeartbeat()
     return buildShareUrl(this.roomId, videoUrl)
@@ -115,6 +117,7 @@ export class RoomController {
   private async applySnapshot(s: StateSnapshot, url: string): Promise<void> {
     if (url && url !== this.videoUrl) {
       this.videoUrl = url
+      this.onVideoUrlChanged?.()
       await window.p2pApi.openVideo(url)
       await window.p2pApi.inject(true)
       await window.p2pApi.videoCmd('seek', s.position)

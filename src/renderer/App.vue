@@ -29,7 +29,7 @@
     <button class="icon-btn" title="前进" :disabled="!tab" @click="nav('forward')">→</button>
     <button class="icon-btn" title="刷新" :disabled="!tab" @click="nav('reload')">↻</button>
 
-    <input v-model="videoUrl" class="url omnibox" placeholder="输入或粘贴视频网页地址，回车打开" @keydown.enter="onOpen" />
+    <input ref="omniboxEl" v-model="videoUrl" class="url omnibox" placeholder="输入或粘贴视频网页地址，回车打开" @keydown.enter="onOpen" />
 
     <template v-if="!roomId">
       <button class="m-btn filled" title="以当前打开的视频网页创建同步房间" @click="onHost">创建房间</button>
@@ -171,6 +171,51 @@ const settingsOpen = ref(false)
 const nickInput = ref('')
 /** 我的昵称（进入应用时从设置读取） */
 const myName = ref('')
+/** 地址栏元素引用（聚焦时不被视频页 URL 覆盖） */
+const omniboxEl = ref<HTMLInputElement | null>(null)
+
+/** 房间持久化 key（UI 重载/重启后恢复房间身份） */
+const ROOM_KEY = 'p2psync.room'
+
+/** 保存房间状态到 localStorage（成员端地址栏可能为空，优先取房主广播的实际地址） */
+function saveRoomState(): void {
+  localStorage.setItem(
+    ROOM_KEY,
+    JSON.stringify({
+      roomId: roomId.value,
+      isHost: isHost.value,
+      videoUrl: videoUrl.value || controller.videoUrl,
+    }),
+  )
+}
+
+/** UI 启动时恢复上次房间：重新入房，房主继续心跳、成员继续跟随 */
+async function restoreRoom(): Promise<void> {
+  const raw = localStorage.getItem(ROOM_KEY)
+  if (!raw) return
+  try {
+    const r = JSON.parse(raw) as { roomId: string; isHost: boolean; videoUrl: string }
+    // 成员仅需 roomId（等待房主心跳自动打开视频页）；房主必须有地址才能恢复广播
+    if (!r.roomId || (r.isHost && !r.videoUrl)) return
+    isHost.value = Boolean(r.isHost)
+    roomId.value = r.roomId
+    videoUrl.value = r.videoUrl
+    controller.myName = myName.value
+    if (r.isHost) {
+      await controller.host(r.videoUrl, r.roomId)
+      await window.p2pApi.openVideo(r.videoUrl)
+      tabSet(r.videoUrl)
+    } else {
+      await controller.join(r.roomId)
+    }
+    controller.announceProfile()
+    saveRoomState()
+    syncDebug()
+    notify('已恢复房间，继续同步')
+  } catch {
+    localStorage.removeItem(ROOM_KEY)
+  }
+}
 
 /** 打开设置对话框（带当前昵称） */
 function openSettings(): void {
@@ -194,6 +239,8 @@ async function saveSettings(): Promise<void> {
 const peerTick = ref(0)
 // 昵称表变化时触发响应式更新
 controller.onPeersChanged = () => peerTick.value++
+// 成员跟随拿到视频页地址时刷新 localStorage（保证恢复数据完整）
+controller.onVideoUrlChanged = saveRoomState
 
 /** 成员 chip 文本：平铺昵称列表 */
 const membersLabel = computed(() => {
@@ -243,6 +290,7 @@ async function onHost(): Promise<void> {
     controller.myName = myName.value
     controller.announceProfile()
     await window.p2pApi.copyText(link)
+    saveRoomState()
     syncDebug()
     notify('房间已创建，邀请链接已复制')
   } catch (e) {
@@ -263,6 +311,7 @@ async function onJoinLink(): Promise<void> {
   controller.myName = myName.value
   await controller.join(parsed.roomId)
   controller.announceProfile()
+  saveRoomState()
   syncDebug()
   notify('已加入，等待房主同步状态')
 }
@@ -298,13 +347,20 @@ onMounted(() => {
   })
   // 窗口最大化状态初始化与订阅
   window.p2pApi.onWinState((m) => (isMax.value = m))
-  // 标签页标题实时更新
+  // 标签页标题实时更新；地址栏同步显示视频页实际地址（聚焦时不覆盖输入）
   window.p2pApi.onPageTitle((info) => {
+    if (!tab.value && info.url && info.url.startsWith('http')) {
+      // 成员端跟随打开视频页时 UI 此前无 tab 状态，补建
+      tabSet(info.url)
+    }
     if (tab.value && info.url) {
       tab.value.title = info.title
       if (info.url !== tab.value.url) tab.value.url = info.url
+      if (document.activeElement !== omniboxEl.value) videoUrl.value = info.url
     }
   })
+  // 恢复上次房间（UI 重载/应用重启后半途状态修复）
+  void restoreRoom()
 })
 </script>
 
