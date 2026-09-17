@@ -1,0 +1,14 @@
+<!DOCTYPE html>
+<!-- 本地视频测试页：验证注入脚本的监听/控制/跟随模式（T1 联调用，需同目录放置 test.mp4） -->
+<html lang="zh">
+<head><meta charset="UTF-8" /><title>注入脚本测试页</title></head>
+<body>
+  <video id="v" controls width="640" src="test.mp4"></video>
+  <script>
+    // 模拟网站自动暂停干扰：切出标签页 3 秒后自动暂停（验证 follower guard 的拦截效果）
+    document.addEventListener('visibilitychange', () => {
+      if (document.hidden) setTimeout(() => document.getElementById('v').pause(), 3000)
+    })
+  </script>
+</body>
+</html>
