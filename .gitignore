@@ -26,8 +26,5 @@ Thumbs.db
 *.tmp
 cache/
 
-# 本地测试凭据（不入库）
-*.local.json
-
-# 本地测试凭据（不入库）
+# local test credentials (not committed)
 *.local.json
