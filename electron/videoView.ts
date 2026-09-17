@@ -4,6 +4,13 @@ import { FOLLOWER_GUARD_SCRIPT, MONITOR_SCRIPT } from '../inject/scripts'
 /** 桥注入重试间隔（ms）：播放器创建 video 是异步的，需轮询直到成功 */
 const INJECT_RETRY_MS = 1000
 
+/** Chrome 式标签行高度（px）；UI 侧 CSS 须保持一致（App.vue .tabstrip） */
+export const TAB_HEIGHT = 36
+/** Chrome 式地址工具栏高度（px）；UI 侧 CSS 须保持一致（App.vue .toolbar） */
+export const TOOLBAR_HEIGHT = 44
+/** 网页内容区顶部偏移 = 标签行 + 工具栏，保证 UI 控件常驻可见可拖动 */
+export const CHROME_TOP = TAB_HEIGHT + TOOLBAR_HEIGHT
+
 /**
  * 视频页视图管理：在主窗口内加载视频网页，提供注入/轮询/指令通道。
  * 事件采用轮询 drain 模式（由渲染进程周期调用），实现简单且规避 IPC 时序问题。
@@ -14,6 +21,13 @@ export class VideoViewController {
   private guardWanted = false
   /** 常驻注入定时器 */
   private ensureTimer: NodeJS.Timeout | null = null
+  /** 页面标题变化回调（UI 标签页标题展示） */
+  private onTitleCb: ((title: string, url: string) => void) | null = null
+
+  /** 注册页面标题变化回调（title + 当前 URL） */
+  setOnTitle(cb: (title: string, url: string) => void): void {
+    this.onTitleCb = cb
+  }
 
   /**
    * 在主窗口打开视频页；已打开则复用导航。
@@ -22,6 +36,10 @@ export class VideoViewController {
   async open(win: BrowserWindow, url: string): Promise<void> {
     if (!this.view) {
       this.view = new WebContentsView({ webPreferences: { contextIsolation: true } })
+      // 标题变化转发 UI（标签页标题）
+      this.view.webContents.on('page-title-updated', (_e, title) => {
+        this.onTitleCb?.(title, this.view?.webContents.getURL() ?? url)
+      })
       win.contentView.addChildView(this.view)
       this.resize(win)
       this.startEnsureInject()
@@ -97,18 +115,34 @@ export class VideoViewController {
       .catch(() => {})
   }
 
-  /** 视口随窗口尺寸调整（顶部预留 48px 控制栏） */
+  /** 视口随窗口尺寸调整（顶部预留标签行 + 工具栏，UI 控件常驻不被覆盖） */
   resize(win: BrowserWindow): void {
     this.view?.setBounds({
       x: 0,
-      y: 48,
+      y: CHROME_TOP,
       width: win.getContentBounds().width,
-      height: win.getContentBounds().height - 48,
+      height: win.getContentBounds().height - CHROME_TOP,
     })
   }
 
-  /** 释放视图 */
+  /**
+   * 网页导航控制（工具栏 ← → ↻ 按钮）。
+   * 参数：action 'back' | 'forward' | 'reload'。
+   */
+  nav(action: string): void {
+    if (!this.view) return
+    const wc = this.view.webContents
+    if (action === 'back') wc.goBack()
+    else if (action === 'forward') wc.goForward()
+    else if (action === 'reload') wc.reload()
+  }
+
+  /** 关闭网页视图并停止注入循环（UI 标签关闭 → 回主页） */
   close(): void {
+    if (this.ensureTimer) {
+      clearInterval(this.ensureTimer)
+      this.ensureTimer = null
+    }
     this.view?.webContents.close()
     this.view = null
   }

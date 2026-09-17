@@ -1,5 +1,5 @@
 import { join } from 'node:path'
-import { app, BrowserWindow, clipboard, ipcMain } from 'electron'
+import { app, BrowserWindow, clipboard, ipcMain, Menu } from 'electron'
 import { parseShareUrl } from '../core/shareLink'
 import { VideoViewController } from './videoView'
 
@@ -31,11 +31,13 @@ function handleProtocolUrl(argv: string[]): void {
   if (url && mainWindow) mainWindow.webContents.send('protocol-url', url)
 }
 
-/** 创建主窗口 */
+/** 创建主窗口（无系统标题栏/菜单栏，UI 自绘标题栏） */
 function createWindow(): void {
   mainWindow = new BrowserWindow({
     width: 1280,
     height: 800,
+    // 无边框窗口：隐藏系统标题栏；配合 Menu 置空隐藏系统菜单栏
+    frame: false,
     webPreferences: {
       preload: join(import.meta.dirname, '../preload/index.mjs'),
       contextIsolation: true,
@@ -46,15 +48,34 @@ function createWindow(): void {
   if (process.env.ELECTRON_RENDERER_URL) mainWindow.loadURL(process.env.ELECTRON_RENDERER_URL)
   else mainWindow.loadFile(join(import.meta.dirname, '../renderer/index.html'))
   mainWindow.on('resize', () => video.resize(mainWindow!))
+  // 最大化状态变化推送 UI，供自定义按钮切换图标
+  mainWindow.on('maximize', () => mainWindow?.webContents.send('win-state', true))
+  mainWindow.on('unmaximize', () => mainWindow?.webContents.send('win-state', false))
 }
 
 app.whenReady().then(() => {
+  // 无边框窗口下移除系统菜单栏（避免 Alt 键唤起）
+  Menu.setApplicationMenu(null)
+
   // ---- IPC：渲染进程 UI ↔ 主进程 ----
+  // 自定义标题栏窗口控制：action = minimize | toggleMaximize | close（fire-and-forget）
+  ipcMain.on('win-control', (_e, action: string) => {
+    if (!mainWindow) return
+    if (action === 'minimize') mainWindow.minimize()
+    else if (action === 'toggleMaximize') (mainWindow.isMaximized() ? mainWindow.unmaximize : mainWindow.maximize).call(mainWindow)
+    else if (action === 'close') mainWindow.close()
+  })
   ipcMain.handle('openVideo', (_e, url: string) => mainWindow && video.open(mainWindow, url))
   ipcMain.handle('inject', (_e, guard: boolean) => video.inject(guard))
   ipcMain.handle('drainEvents', () => video.drainEvents())
   ipcMain.handle('videoStatus', () => video.status())
   ipcMain.handle('videoCmd', (_e, action: string, arg?: number) => video.cmd(action, arg))
+  // 工具栏导航：back | forward | reload
+  ipcMain.handle('videoNav', (_e, action: string) => video.nav(action))
+  // 关闭网页标签 → 回主页
+  ipcMain.handle('closeVideo', () => video.close())
+  // 标签页标题变化 → UI
+  video.setOnTitle((title, url) => mainWindow?.webContents.send('page-title', { title, url }))
   ipcMain.handle('copyText', (_e, text: string) => clipboard.writeText(text))
   // 链接解析放主进程：UI 拿到结构化参数，避免各处重复解析
   ipcMain.handle('parseLink', (_e, input: string) => parseShareUrl(input))

@@ -92,14 +92,14 @@ async function main() {
       setter.call(el, val)
       el.dispatchEvent(new Event('input', { bubbles: true }))
     }
-    await c.eval(`(${setInput.toString()})('.bar .url', ${JSON.stringify(VIDEO_URL)})`)
+    await c.eval(`(${setInput.toString()})('.omnibox', ${JSON.stringify(VIDEO_URL)})`)
     // 点击"创建房间"
-    await c.eval(`[...document.querySelectorAll('.bar button')].find(b => b.textContent.includes('创建房间')).click()`)
+    await c.eval(`[...document.querySelectorAll('.toolbar button')].find(b => b.textContent.includes('创建房间')).click()`)
     // 等建房完成（Trystero joinRoom + 打开视频页）
     await c.eval('new Promise(r => setTimeout(r, 12000))')
     const state = await c.eval(`({
-      roomId: [...document.querySelectorAll('.tag')].map(t => t.textContent).join(' | '),
-      status: [...document.querySelectorAll('.tag')].map(t => t.textContent).find(t => t.includes('房间')) || '',
+      roomId: [...document.querySelectorAll('.chip')].map(t => t.textContent).join(' | '),
+      status: [...document.querySelectorAll('.chip')].map(t => t.textContent).find(t => t.includes('房间')) || '',
     })`)
     // 从 UI 读不到原始链接，直接从剪贴板语义重建：roomID 在 tag 文本里
     console.log(JSON.stringify(state, null, 2))
@@ -115,13 +115,13 @@ async function main() {
       setter.call(el, val)
       el.dispatchEvent(new Event('input', { bubbles: true }))
     }
-    await c.eval(`(${setInput.toString()})('.bar .join', ${JSON.stringify(link)})`)
-    await c.eval(`[...document.querySelectorAll('.bar button')].find(b => b.textContent.includes('加入')).click()`)
+    await c.eval(`(${setInput.toString()})('.toolbar .join', ${JSON.stringify(link)})`)
+    await c.eval(`[...document.querySelectorAll('.toolbar button')].find(b => b.textContent.includes('加入')).click()`)
     // 等 P2P 建连 + 成员收到 state 自动导航到视频页
     await c.eval('new Promise(r => setTimeout(r, 15000))')
     const state = await c.eval(`({
-      tags: [...document.querySelectorAll('.tag')].map(t => t.textContent),
-      status: [...document.querySelectorAll('.tag')].map(t => t.textContent).find(t => t.includes('加入')) || '',
+      tags: [...document.querySelectorAll('.chip')].map(t => t.textContent),
+      status: [...document.querySelectorAll('.chip')].map(t => t.textContent).find(t => t.includes('加入')) || '',
     })`)
     console.log(JSON.stringify(state, null, 2))
     c.close()
@@ -244,7 +244,7 @@ async function main() {
       el.dispatchEvent(new Event('input', { bubbles: true }))
     }
     const clickBtn = (text) =>
-      [...document.querySelectorAll('.bar button')].find((b) => b.textContent.includes(text)).click()
+      [...document.querySelectorAll('.toolbar button')].find((b) => b.textContent.includes(text)).click()
 
     const a0 = await attachMainPage(9222)
     await a0.eval('location.reload(); "ok"').catch(() => {})
@@ -256,10 +256,10 @@ async function main() {
 
     const a = await attachMainPage(9222)
     await a.eval('new Promise(r => setTimeout(r, 1200))')
-    await a.eval(`(${setInput.toString()})('.bar .url', ${JSON.stringify(VIDEO_URL)})`)
+    await a.eval(`(${setInput.toString()})('.omnibox', ${JSON.stringify(VIDEO_URL)})`)
     await a.eval(`(${clickBtn.toString()})('创建房间')`)
     await a.eval('new Promise(r => setTimeout(r, 5000))')
-    const hostTags = await a.eval(`[...document.querySelectorAll('.tag')].map(t=>t.textContent).join(' | ')`)
+    const hostTags = await a.eval(`[...document.querySelectorAll('.chip')].map(t=>t.textContent).join(' | ')`)
     console.log('[t+5s] A:', hostTags)
 
     // 从 A 的 tag 提取 roomId
@@ -268,7 +268,7 @@ async function main() {
 
     const b = await attachMainPage(9223)
     await b.eval('new Promise(r => setTimeout(r, 1200))')
-    await b.eval(`(${setInput.toString()})('.bar .join', 'p2psync://join?room=${roomId}&url=' + encodeURIComponent(${JSON.stringify(VIDEO_URL)}))`)
+    await b.eval(`(${setInput.toString()})('.toolbar .join', 'p2psync://join?room=${roomId}&url=' + encodeURIComponent(${JSON.stringify(VIDEO_URL)}))`)
     await b.eval(`(${clickBtn.toString()})('加入')`)
 
     // 轮询 60 秒：两侧 members + B 视频页出现情况
@@ -283,8 +283,8 @@ async function main() {
     for (let t = 3; t <= 60; t += 3) {
       await new Promise((r) => setTimeout(r, 3000))
       const [aTags, bTags, bUrls] = await Promise.all([
-        a.eval(`[...document.querySelectorAll('.tag')].map(x=>x.textContent).join(' | ')`),
-        b.eval(`[...document.querySelectorAll('.tag')].map(x=>x.textContent).join(' | ')`),
+        a.eval(`[...document.querySelectorAll('.chip')].map(x=>x.textContent).join(' | ')`),
+        b.eval(`[...document.querySelectorAll('.chip')].map(x=>x.textContent).join(' | ')`),
         listTargets(9223).then((ts) => ts.some((x) => x.url.includes('cycani'))),
       ])
       console.log(`[t+${t}s] A: ${aTags}`)

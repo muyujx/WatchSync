@@ -4,10 +4,10 @@
  */
 const http = require('node:http')
 
-/** 获取指定 CDP 端口的 target 列表 */
+/** 获取指定 CDP 端口的 target 列表（显式 127.0.0.1，规避 localhost 解析 IPv6 不通） */
 function listTargets(port) {
   return new Promise((res, rej) => {
-    const req = http.get({ host: 'localhost', port, path: '/json/list', timeout: 3000 }, (r) => {
+    const req = http.get({ host: '127.0.0.1', port, path: '/json/list', timeout: 3000 }, (r) => {
       let b = ''
       r.on('data', (c) => (b += c))
       r.on('end', () => res(JSON.parse(b)))

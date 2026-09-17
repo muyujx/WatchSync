@@ -28,6 +28,16 @@ declare global {
       parseLink(input: string): Promise<{ roomId: string; videoUrl: string } | null>
       /** 订阅系统唤起传来的 p2psync:// 链接事件 */
       onProtocolUrl(cb: (url: string) => void): void
+      /** 自定义标题栏窗口控制：action = minimize | toggleMaximize | close */
+      winControl(action: string): void
+      /** 订阅窗口最大化状态变化（自定义按钮图标切换） */
+      onWinState(cb: (maximized: boolean) => void): void
+      /** 工具栏网页导航：action = back | forward | reload */
+      videoNav(action: string): Promise<void>
+      /** 关闭网页标签 → 回主页 */
+      closeVideo(): Promise<void>
+      /** 订阅标签页标题变化（title + url） */
+      onPageTitle(cb: (info: { title: string; url: string }) => void): void
     }
   }
 }

@@ -21,4 +21,14 @@ contextBridge.exposeInMainWorld('p2pApi', {
   parseLink: (input: string) => ipcRenderer.invoke('parseLink', input),
   /** 订阅系统唤起传来的 p2psync:// 链接事件 */
   onProtocolUrl: (cb: (url: string) => void) => ipcRenderer.on('protocol-url', (_e, url) => cb(url)),
+  /** 自定义标题栏窗口控制：action = minimize | toggleMaximize | close */
+  winControl: (action: string) => ipcRenderer.send('win-control', action),
+  /** 订阅窗口最大化状态变化（自定义按钮图标切换） */
+  onWinState: (cb: (maximized: boolean) => void) => ipcRenderer.on('win-state', (_e, m) => cb(m)),
+  /** 工具栏网页导航：action = back | forward | reload */
+  videoNav: (action: string) => ipcRenderer.invoke('videoNav', action),
+  /** 关闭网页标签 → 回主页 */
+  closeVideo: () => ipcRenderer.invoke('closeVideo'),
+  /** 订阅标签页标题变化（title + url） */
+  onPageTitle: (cb: (info: { title: string; url: string }) => void) => ipcRenderer.on('page-title', (_e, t) => cb(t)),
 })
