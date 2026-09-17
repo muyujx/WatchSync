@@ -262,8 +262,8 @@ async function main() {
     const hostTags = await a.eval(`[...document.querySelectorAll('.chip')].map(t=>t.textContent).join(' | ')`)
     console.log('[t+5s] A:', hostTags)
 
-    // 从 A 的 tag 提取 roomId
-    const roomId = (hostTags.match(/[A-Z2-7]{16}/) || [])[0]
+    // 从调试对象提取 roomId（新版 UI chip 显示昵称，不再含房间号）
+    const roomId = await a.eval('JSON.stringify((window.__p2pDebug || {}).roomId || "")').then((s) => JSON.parse(s))
     if (!roomId) throw new Error('A 未建房成功: ' + hostTags)
 
     const b = await attachMainPage(9223)

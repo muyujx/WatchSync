@@ -16,6 +16,12 @@ export class RoomController {
   roomId = ''
   /** 成员 ID 集合（供 UI 展示） */
   peers = new Set<string>()
+  /** 成员昵称表（peerId → 昵称；未收到 profile 的成员无条目） */
+  peerNames = new Map<string, string>()
+  /** 我的昵称（设置页修改后更新并重新广播） */
+  myName = ''
+  /** 昵称表变化回调（UI 刷新成员 chip） */
+  onPeersChanged: (() => void) | null = null
   /** 当前视频页地址（房主广播/成员导航用） */
   videoUrl = ''
   private room: RoomHandle | null = null
@@ -55,8 +61,22 @@ export class RoomController {
   private async attach(): Promise<void> {
     const raw = await openRealRoom(this.roomId)
     this.room = createRoom(raw, (msg, peerId) => this.handleMsg(msg, peerId))
-    this.room.onPeerJoin((id) => this.peers.add(id))
-    this.room.onPeerLeave((id) => this.peers.delete(id))
+    this.room.onPeerJoin((id) => {
+      this.peers.add(id)
+      // 新成员加入：向其自我介绍（对方也会介绍自己）
+      if (this.myName) this.room?.broadcast({ t: 'profile', name: this.myName })
+      this.onPeersChanged?.()
+    })
+    this.room.onPeerLeave((id) => {
+      this.peers.delete(id)
+      this.peerNames.delete(id)
+      this.onPeersChanged?.()
+    })
+  }
+
+  /** 进入房间后广播我的昵称（join/host 完成后调用） */
+  announceProfile(): void {
+    if (this.myName) this.room?.broadcast({ t: 'profile', name: this.myName })
   }
 
   /**
@@ -64,6 +84,12 @@ export class RoomController {
    * 参数：msg 同步消息；peerId 发送方。
    */
   private handleMsg(msg: SyncMsg, peerId: string): void {
+    // 昵称消息不分角色：任何一端都记录并在 UI 展示
+    if (msg.t === 'profile') {
+      this.peerNames.set(peerId, msg.name.slice(0, 20))
+      this.onPeersChanged?.()
+      return
+    }
     if (this.role === 'host') {
       // 房主：响应 hello 回全量状态
       if (msg.t === 'hello') this.sendState()
@@ -165,5 +191,7 @@ export class RoomController {
     this.room = null
     this.lastSnapshot = null
     this.peers.clear()
+    this.peerNames.clear()
+    this.onPeersChanged?.()
   }
 }

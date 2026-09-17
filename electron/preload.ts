@@ -31,4 +31,8 @@ contextBridge.exposeInMainWorld('p2pApi', {
   closeVideo: () => ipcRenderer.invoke('closeVideo'),
   /** 订阅标签页标题变化（title + url） */
   onPageTitle: (cb: (info: { title: string; url: string }) => void) => ipcRenderer.on('page-title', (_e, t) => cb(t)),
+  /** 读取用户设置（首次调用生成默认昵称） */
+  getSettings: () => ipcRenderer.invoke('getSettings'),
+  /** 保存用户设置（增量合并），返回保存后的完整设置 */
+  setSettings: (patch: { nickname?: string }) => ipcRenderer.invoke('setSettings', patch),
 })

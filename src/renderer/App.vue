@@ -35,13 +35,16 @@
       <button class="m-btn filled" title="以当前打开的视频网页创建同步房间" @click="onHost">创建房间</button>
     </template>
     <template v-else>
-      <span class="chip role">{{ isHost ? '房主' : '成员' }} · {{ roomId }}</span>
+      <span class="chip role">{{ isHost ? '房主' : '成员' }} · {{ myName }}</span>
       <button class="m-btn" @click="onCopyLink">复制邀请</button>
-      <span class="chip">{{ membersLabel }}</span>
+      <span class="chip" :title="membersTitle">{{ membersLabel }}</span>
     </template>
 
     <input v-if="!roomId" v-model="joinInput" class="join" placeholder="粘贴邀请链接" />
     <button v-if="!roomId" class="m-btn tonal" :disabled="!joinInput" @click="onJoinLink">加入</button>
+
+    <div class="flex-spacer"></div>
+    <button class="icon-btn" title="设置" @click="openSettings">⚙</button>
   </div>
 
   <!-- 主页：支持的视频网站（标签打开后被网页视图覆盖） -->
@@ -56,6 +59,22 @@
       </button>
     </div>
     <p class="home-hint">点击站点开始浏览；打开视频页后点「创建房间」，把邀请链接发给好友即可一起看。</p>
+  </div>
+
+  <!-- 设置对话框：用户昵称（房间内展示给其他成员） -->
+  <div v-if="settingsOpen" class="dialog-mask" @click.self="settingsOpen = false">
+    <div class="dialog">
+      <h3 class="dialog-title">设置</h3>
+      <label class="field">
+        <span class="field-label">用户名</span>
+        <input v-model="nickInput" maxlength="20" placeholder="1-20 个字符，房间内展示" @keydown.enter="saveSettings" />
+        <span class="field-hint">房间内其他成员将看到此用户名</span>
+      </label>
+      <div class="dialog-actions">
+        <button class="m-btn" @click="settingsOpen = false">取消</button>
+        <button class="m-btn filled" :disabled="!nickInput.trim()" @click="saveSettings">保存</button>
+      </div>
+    </div>
   </div>
 
   <!-- Material snackbar：操作状态提示 -->
@@ -147,10 +166,57 @@ const isHost = ref(true)
 const statusText = ref('')
 const controller = new RoomController()
 
-/** 成员数（定时同步普通 Set 到响应式 ref） */
+/** ===== 用户设置 ===== */
+const settingsOpen = ref(false)
+const nickInput = ref('')
+/** 我的昵称（进入应用时从设置读取） */
+const myName = ref('')
+
+/** 打开设置对话框（带当前昵称） */
+function openSettings(): void {
+  nickInput.value = myName.value
+  settingsOpen.value = true
+}
+
+/** 保存昵称：持久化 + 更新 UI + 房间内重新广播 */
+async function saveSettings(): Promise<void> {
+  const name = nickInput.value.trim().slice(0, 20)
+  if (!name) return
+  const saved = await window.p2pApi.setSettings({ nickname: name })
+  myName.value = saved.nickname
+  controller.myName = saved.nickname
+  controller.announceProfile()
+  settingsOpen.value = false
+  notify('用户名已保存')
+}
+
+/** ===== 成员展示（昵称） ===== */
+const peerTick = ref(0)
+// 昵称表变化时触发响应式更新
+controller.onPeersChanged = () => peerTick.value++
+
+/** 成员 chip 文本：平铺昵称列表 */
+const membersLabel = computed(() => {
+  void peerTick.value
+  if (memberCount.value === 0) return '成员: (等待加入)'
+  const names = [...controller.peers].map((id) => controller.peerNames.get(id) || id.slice(0, 6) + '…')
+  return '成员: ' + names.join('、')
+})
+
+/** 成员 chip 悬停提示（含完整昵称） */
+const membersTitle = computed(() => {
+  void peerTick.value
+  return [...controller.peers].map((id) => controller.peerNames.get(id) || id).join('\n')
+})
+
+/** 本机成员数（定时同步普通 Set 到响应式 ref） */
 const memberCount = ref(0)
 setInterval(() => (memberCount.value = controller.peers.size), 1000)
-const membersLabel = computed(() => (memberCount.value === 0 ? '(等待成员加入)' : `本机 + ${memberCount.value} 人`))
+
+/** 调试状态暴露（drive.cjs 联调用） */
+function syncDebug(): void {
+  ;(window as unknown as { __p2pDebug: unknown }).__p2pDebug = { roomId: roomId.value, isHost: isHost.value, myName: myName.value }
+}
 
 /** 房主：打开视频页 → 注入桥 → 创建房间并复制链接 */
 async function onHost(): Promise<void> {
@@ -174,7 +240,10 @@ async function onHost(): Promise<void> {
     const link = await controller.host(videoUrl.value)
     isHost.value = true
     roomId.value = controller.roomId
+    controller.myName = myName.value
+    controller.announceProfile()
     await window.p2pApi.copyText(link)
+    syncDebug()
     notify('房间已创建，邀请链接已复制')
   } catch (e) {
     notify('创建失败: ' + String(e))
@@ -191,7 +260,10 @@ async function onJoinLink(): Promise<void> {
   notify('加入房间中...')
   isHost.value = false
   roomId.value = parsed.roomId
+  controller.myName = myName.value
   await controller.join(parsed.roomId)
+  controller.announceProfile()
+  syncDebug()
   notify('已加入，等待房主同步状态')
 }
 
@@ -214,6 +286,11 @@ async function onCopyLink(): Promise<void> {
 }
 
 onMounted(() => {
+  // 读取用户设置（首次启动生成默认昵称）
+  window.p2pApi.getSettings().then((s) => {
+    myName.value = s.nickname
+    controller.myName = s.nickname
+  })
   // 系统唤起（second-instance/open-url）传来的邀请链接自动加入
   window.p2pApi.onProtocolUrl(async (url) => {
     joinInput.value = url
@@ -278,6 +355,19 @@ body { font-family: 'Segoe UI', 'Microsoft YaHei', system-ui, sans-serif; backgr
 .site-name { font-size: 14px; color: #202124; font-weight: 500; }
 .site-host { font-size: 11px; color: #80868b; }
 .home-hint { margin-top: 24px; color: #80868b; font-size: 13px; }
+
+/* ===== 设置对话框（Material）===== */
+.dialog-mask { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.4); display: flex; align-items: center; justify-content: center; z-index: 100; }
+.dialog { width: 360px; padding: 24px; border-radius: 16px; background: #fff; box-shadow: 0 8px 28px rgba(0, 0, 0, 0.28); }
+.dialog-title { font-size: 16px; color: #202124; margin-bottom: 18px; }
+.field { display: block; }
+.field-label { display: block; font-size: 12px; color: #5f6368; margin-bottom: 6px; }
+.field input { width: 100%; height: 36px; padding: 0 12px; border: 1px solid #dadce0; border-radius: 8px; font-size: 14px; outline: none; }
+.field input:focus { border-color: #1a73e8; box-shadow: 0 0 0 1px #1a73e8; }
+.field-hint { display: block; font-size: 11px; color: #80868b; margin-top: 6px; }
+.dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 20px; }
+
+.flex-spacer { flex: 1; }
 
 /* ===== Material snackbar ===== */
 .snackbar { position: fixed; left: 50%; bottom: 28px; transform: translateX(-50%); max-width: 70%; padding: 12px 20px; border-radius: 8px; background: #323639; color: #e8eaed; font-size: 13px; box-shadow: 0 3px 10px rgba(0, 0, 0, 0.3); z-index: 99; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }

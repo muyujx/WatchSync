@@ -2,6 +2,7 @@ import { join } from 'node:path'
 import { app, BrowserWindow, clipboard, ipcMain, Menu } from 'electron'
 import { parseShareUrl } from '../core/shareLink'
 import { VideoViewController } from './videoView'
+import { loadSettings, saveSettings } from './settings'
 
 /**
  * 应用入口。
@@ -76,6 +77,13 @@ app.whenReady().then(() => {
   ipcMain.handle('closeVideo', () => video.close())
   // 标签页标题变化 → UI
   video.setOnTitle((title, url) => mainWindow?.webContents.send('page-title', { title, url }))
+  // ---- 用户设置：读取（首次生成默认昵称）与保存 ----
+  ipcMain.handle('getSettings', () => loadSettings())
+  ipcMain.handle('setSettings', (_e, patch: { nickname?: string }) => {
+    const s = { ...loadSettings(), ...patch }
+    saveSettings(s)
+    return s
+  })
   ipcMain.handle('copyText', (_e, text: string) => clipboard.writeText(text))
   // 链接解析放主进程：UI 拿到结构化参数，避免各处重复解析
   ipcMain.handle('parseLink', (_e, input: string) => parseShareUrl(input))
