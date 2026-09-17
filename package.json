@@ -4,9 +4,12 @@
   "description": "无服务器 P2P 网页视频同步观影",
   "main": "out/main/index.js",
   "type": "module",
+  "author": "p2pSync",
   "scripts": {
     "dev": "electron-vite dev",
     "build": "electron-vite build",
+    "build:win": "electron-vite build && electron-builder --win --x64",
+    "build:dir": "electron-vite build && electron-builder --dir",
     "start": "electron-vite preview",
     "test": "vitest run",
     "typecheck": "vue-tsc --noEmit"
@@ -14,6 +17,7 @@
   "devDependencies": {
     "@vitejs/plugin-vue": "^5.2.0",
     "electron": "^33.0.0",
+    "electron-builder": "^26.15.3",
     "electron-vite": "^2.3.0",
     "typescript": "^5.6.0",
     "vitest": "^2.1.0",
@@ -22,5 +26,36 @@
   "dependencies": {
     "@trystero-p2p/nostr": "^0.25.4",
     "vue": "^3.5.0"
+  },
+  "build": {
+    "appId": "com.p2psync.app",
+    "productName": "p2pSync",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "!**/.vscode/*",
+      "!docs/*",
+      "!spike/*",
+      "!scripts/*",
+      "!src/*",
+      "!core/*",
+      "!electron/*",
+      "!inject/*",
+      "!electron.vite.config.{js,ts,mjs,cjs}",
+      "!{.env,.env.*,.npmrc,package-lock.json}",
+      "!{tsconfig.json,tsconfig.node.json,tsconfig.web.json,AGENTS.md}"
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "artifactName": "${productName}-${version}-portable.${ext}"
+    }
   }
 }
