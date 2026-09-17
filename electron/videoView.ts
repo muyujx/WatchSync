@@ -17,6 +17,19 @@ export class VideoViewController {
       this.view = new WebContentsView({ webPreferences: { contextIsolation: true } })
       win.contentView.addChildView(this.view)
       this.resize(win)
+      // SPA 站内跳转（pushState/切剧集）会导致页面重建、桥脚本失效：
+      // 监听两类导航事件，落地后带重试注入（video 元素由播放器异步创建）
+      const reinject = (): void => {
+        let tries = 0
+        const attempt = async (): Promise<void> => {
+          const r = await this.view?.webContents.executeJavaScript(MONITOR_SCRIPT).catch(() => 'inject-error')
+          if (r === 'ok' || r === 'already') return
+          if (++tries < 20) setTimeout(attempt, 500)
+        }
+        void attempt()
+      }
+      this.view.webContents.on('did-navigate', reinject)
+      this.view.webContents.on('did-navigate-in-page', reinject)
     }
     await this.view.webContents.loadURL(url)
     // 自动播放无需用户手势（成员端可能被动播放）
@@ -44,11 +57,19 @@ export class VideoViewController {
       .catch(() => [])
   }
 
-  /** 查询视频当前状态（无视频返回 null） */
-  async status(): Promise<{ position: number; paused: boolean; rate: number; duration: number } | null> {
+  /** 查询视频状态与所在页面 URL（pageUrl 用于房主广播站内跳转后的真实地址） */
+  async status(): Promise<{
+    position: number
+    paused: boolean
+    rate: number
+    duration: number
+    pageUrl: string
+  } | null> {
     if (!this.view) return null
+    const pageUrl = this.view.webContents.getURL()
     return this.view.webContents
       .executeJavaScript('window.__p2pBridge ? window.__p2pBridge.status() : null')
+      .then((st) => (st ? { ...st, pageUrl } : null))
       .catch(() => null)
   }
 

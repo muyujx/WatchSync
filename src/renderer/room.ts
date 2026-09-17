@@ -116,14 +116,15 @@ export class RoomController {
     }, 2000)
   }
 
-  /** 房主：广播全量状态（视频未打开时 url 为空串，成员等待后续 state） */
+  /** 房主：广播全量状态（url 取视频页实时地址，覆盖 SPA 站内跳转/切换剧集） */
   private sendState(): void {
     window.p2pApi.videoStatus().then((st) => {
       if (!this.room) return
-      // 无视频时也广播（url 空串），让成员知道房主在线
+      // pageUrl 优先：视频视图真实地址；未打开视频时退回 UI 地址栏输入值（空串让成员等待）
+      const url = st?.pageUrl || this.videoUrl
       this.room.broadcast({
         t: 'state',
-        url: this.videoUrl,
+        url,
         position: st?.position ?? 0,
         playing: !st?.paused && Boolean(st),
         at: Date.now(),
