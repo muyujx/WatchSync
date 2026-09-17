@@ -1,0 +1,26 @@
+{
+  "name": "p2psync",
+  "version": "0.1.0",
+  "description": "无服务器 P2P 网页视频同步观影",
+  "main": "out/main/index.js",
+  "type": "module",
+  "scripts": {
+    "dev": "electron-vite dev",
+    "build": "electron-vite build",
+    "start": "electron-vite preview",
+    "test": "vitest run",
+    "typecheck": "vue-tsc --noEmit"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "^5.2.0",
+    "electron": "^33.0.0",
+    "electron-vite": "^2.3.0",
+    "typescript": "^5.6.0",
+    "vitest": "^2.1.0",
+    "vue-tsc": "^2.1.0"
+  },
+  "dependencies": {
+    "@trystero-p2p/nostr": "^0.25.4",
+    "vue": "^3.5.0"
+  }
+}
