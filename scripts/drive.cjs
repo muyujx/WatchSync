@@ -125,6 +125,91 @@ async function main() {
     })`)
     console.log(JSON.stringify(state, null, 2))
     c.close()
+  } else if (stage === 'inspect-video') {
+    // 深度诊断视频页：video 元素/桥/守卫/播放器容器/页面状态
+    const port = Number(process.argv[3])
+    const targets = await listTargets(port)
+    const v = targets.find((t) => t.type === 'page' && t.url.includes('cycani'))
+    if (!v) throw new Error('no cycani target on ' + port + ': ' + JSON.stringify(targets.map((t) => t.url)))
+    const c = await connect(v.webSocketDebuggerUrl)
+    const r = await c.eval(`({
+      hasVideo: !!document.querySelector('video'),
+      videoCount: document.querySelectorAll('video').length,
+      iframeCount: document.querySelectorAll('iframe').length,
+      readyState: document.readyState,
+      guard: window.__p2pGuard === true,
+      bridge: !!window.__p2pBridge,
+      artPlayer: !!document.querySelector('.cyc-artplayer'),
+      pageText: document.body.innerText.replace(/\s+/g, ' ').slice(0, 600),
+      videos: [...document.querySelectorAll('video')].map(x => ({ src: (x.currentSrc || x.src || '').slice(0, 60), paused: x.paused, t: x.currentTime }))
+    })`)
+    console.log(JSON.stringify(r, null, 2))
+    c.close()
+  } else if (stage === 'screenshot') {
+    // 截取指定实例的视频页屏幕：screenshot <port> <输出文件>
+    const port = Number(process.argv[3])
+    const out = process.argv[4] || `F:/Project/p2pSync/.shot-${port}.png`
+    const targets = await listTargets(port)
+    const v = targets.find((t) => t.type === 'page' && t.url.includes('cycani'))
+    if (!v) throw new Error('no cycani target on ' + port)
+    const c = await connect(v.webSocketDebuggerUrl)
+    await c.send('Page.enable')
+    const shot = await c.send('Page.captureScreenshot', { format: 'png' })
+    require('node:fs').writeFileSync(out, Buffer.from(shot.data, 'base64'))
+    console.log('saved: ' + out)
+    c.close()
+  } else if (stage === 'video-eval') {
+    // 在指定实例的视频页 target 执行任意表达式：video-eval <port> <expression>
+    const port = Number(process.argv[3])
+    const expr = process.argv[4]
+    const targets = await listTargets(port)
+    const v = targets.find((t) => t.type === 'page' && t.url.includes('cycani'))
+    if (!v) throw new Error('no cycani target on ' + port)
+    const c = await connect(v.webSocketDebuggerUrl)
+    console.log(JSON.stringify(await c.eval(expr), null, 2))
+    c.close()
+  } else if (stage === 'sync-test') {
+    // 三项同步验证：A 播放 → A seek(60s) → A 暂停，每步对比 A/B 两侧视频状态
+    const readStatus = async (port) => {
+      const targets = await listTargets(port)
+      const v = targets.find((t) => t.type === 'page' && t.url.includes('cycani'))
+      if (!v) return { error: 'no video target' }
+      const c = await connect(v.webSocketDebuggerUrl)
+      const st = await c.eval('window.__p2pBridge ? JSON.stringify(window.__p2pBridge.status()) : "no-bridge"')
+      c.close()
+      return st === 'no-bridge' ? { error: 'no-bridge' } : JSON.parse(st)
+    }
+    const doCmd = async (port, action, arg) => {
+      const targets = await listTargets(port)
+      const v = targets.find((t) => t.type === 'page' && t.url.includes('cycani'))
+      const c = await connect(v.webSocketDebuggerUrl)
+      await c.eval(`window.__p2pBridge.cmd(${JSON.stringify(action)}, ${arg ?? 'null'}); "ok"`)
+      c.close()
+    }
+    const wait = (ms) => new Promise((r) => setTimeout(r, ms))
+
+    // 起始：A 暂停并归零，保证基线一致
+    await doCmd(9222, 'pause')
+    await doCmd(9222, 'seek', 0)
+    await wait(6000)
+
+    console.log('== 步骤1：A 播放 ==')
+    await doCmd(9222, 'play')
+    await wait(7000)
+    console.log('A:', JSON.stringify(await readStatus(9222)))
+    console.log('B:', JSON.stringify(await readStatus(9223)))
+
+    console.log('== 步骤2：A seek 到 60s ==')
+    await doCmd(9222, 'seek', 60)
+    await wait(7000)
+    console.log('A:', JSON.stringify(await readStatus(9222)))
+    console.log('B:', JSON.stringify(await readStatus(9223)))
+
+    console.log('== 步骤3：A 暂停 ==')
+    await doCmd(9222, 'pause')
+    await wait(7000)
+    console.log('A:', JSON.stringify(await readStatus(9222)))
+    console.log('B:', JSON.stringify(await readStatus(9223)))
   } else if (stage === 'check-video') {
     // 连接指定端口的视频页 target（cycani），读取注入桥的视频状态
     const port = Number(process.argv[3])
@@ -160,6 +245,14 @@ async function main() {
     }
     const clickBtn = (text) =>
       [...document.querySelectorAll('.bar button')].find((b) => b.textContent.includes(text)).click()
+
+    const a0 = await attachMainPage(9222)
+    await a0.eval('location.reload(); "ok"').catch(() => {})
+    a0.close()
+    const b0 = await attachMainPage(9223)
+    await b0.eval('location.reload(); "ok"').catch(() => {})
+    b0.close()
+    await new Promise((r) => setTimeout(r, 3000))
 
     const a = await attachMainPage(9222)
     await a.eval('new Promise(r => setTimeout(r, 1200))')
