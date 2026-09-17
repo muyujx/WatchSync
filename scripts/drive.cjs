@@ -65,10 +65,14 @@ async function connect(wsUrl) {
   }
 }
 
-/** 取主窗口（p2pSync UI）target 的 CDP 连接（内置等待就绪） */
+/** 取 UI 壳 target 的 CDP 连接（内置等待就绪）
+ *  注意：必须精确匹配 UI 壳（localhost dev server / file://），
+ *  排除 WebContentsView 打开的第三方视频页（否则 eval 落到视频页上） */
 async function attachMainPage(port) {
   const targets = await waitForCdp(port)
-  const page = targets.find((t) => t.type === 'page' && !t.url.startsWith('devtools'))
+  const page = targets.find(
+    (t) => t.type === 'page' && (t.url.includes('localhost:5') || t.url.startsWith('file:'))
+  )
   if (!page) throw new Error('main page target not found: ' + JSON.stringify(targets.map((t) => t.url)))
   return connect(page.webSocketDebuggerUrl)
 }
@@ -145,6 +149,67 @@ async function main() {
     const c = await connect(video.webSocketDebuggerUrl)
     await c.eval(`window.__p2pBridge.cmd(${JSON.stringify(action)}, ${arg ?? 'null'}); "ok"`)
     console.log(JSON.stringify({ port, action, arg }))
+    c.close()
+  } else if (stage === 'pair-test') {
+    // 一次性完成：A 建房 → B 加入 → 轮询两侧 members/视频页/桥状态，输出时间线
+    const setInput = (sel, val) => {
+      const el = document.querySelector(sel)
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set
+      setter.call(el, val)
+      el.dispatchEvent(new Event('input', { bubbles: true }))
+    }
+    const clickBtn = (text) =>
+      [...document.querySelectorAll('.bar button')].find((b) => b.textContent.includes(text)).click()
+
+    const a = await attachMainPage(9222)
+    await a.eval('new Promise(r => setTimeout(r, 1200))')
+    await a.eval(`(${setInput.toString()})('.bar .url', ${JSON.stringify(VIDEO_URL)})`)
+    await a.eval(`(${clickBtn.toString()})('创建房间')`)
+    await a.eval('new Promise(r => setTimeout(r, 5000))')
+    const hostTags = await a.eval(`[...document.querySelectorAll('.tag')].map(t=>t.textContent).join(' | ')`)
+    console.log('[t+5s] A:', hostTags)
+
+    // 从 A 的 tag 提取 roomId
+    const roomId = (hostTags.match(/[A-Z2-7]{16}/) || [])[0]
+    if (!roomId) throw new Error('A 未建房成功: ' + hostTags)
+
+    const b = await attachMainPage(9223)
+    await b.eval('new Promise(r => setTimeout(r, 1200))')
+    await b.eval(`(${setInput.toString()})('.bar .join', 'p2psync://join?room=${roomId}&url=' + encodeURIComponent(${JSON.stringify(VIDEO_URL)}))`)
+    await b.eval(`(${clickBtn.toString()})('加入')`)
+
+    // 轮询 60 秒：两侧 members + B 视频页出现情况
+    const listTargets = (port) =>
+      new Promise((res, rej) => {
+        http.get({ host: 'localhost', port, path: '/json/list', timeout: 2000 }, (r) => {
+          let buf = ''
+          r.on('data', (c) => (buf += c))
+          r.on('end', () => res(JSON.parse(buf)))
+        }).on('error', rej)
+      })
+    for (let t = 3; t <= 60; t += 3) {
+      await new Promise((r) => setTimeout(r, 3000))
+      const [aTags, bTags, bUrls] = await Promise.all([
+        a.eval(`[...document.querySelectorAll('.tag')].map(x=>x.textContent).join(' | ')`),
+        b.eval(`[...document.querySelectorAll('.tag')].map(x=>x.textContent).join(' | ')`),
+        listTargets(9223).then((ts) => ts.some((x) => x.url.includes('cycani'))),
+      ])
+      console.log(`[t+${t}s] A: ${aTags}`)
+      console.log(`        B: ${bTags} | B打开视频页: ${bUrls}`)
+      if (bUrls) {
+        console.log('SUCCESS: B 已跟随打开视频页')
+        break
+      }
+    }
+    a.close()
+    b.close()
+  } else if (stage === 'ui-eval') {
+    // 在指定实例的 UI 页面执行任意表达式：ui-eval <port> <expression>
+    const port = Number(process.argv[3])
+    const expr = process.argv[4]
+    const c = await attachMainPage(port)
+    const result = await c.eval(expr)
+    console.log(JSON.stringify(result, null, 2))
     c.close()
   } else if (stage === 'host-status') {
     const c = await attachMainPage(9222)
