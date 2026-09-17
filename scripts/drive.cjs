@@ -6,17 +6,30 @@
  */
 const http = require('node:http')
 
-/** 获取指定 CDP 端口的页面型 target 列表 */
+/** 获取指定 CDP 端口的页面型 target 列表（应用未就绪时抛错） */
 function listTargets(port) {
   return new Promise((resolve, reject) => {
-    http
-      .get({ host: 'localhost', port, path: '/json/list' }, (res) => {
-        let buf = ''
-        res.on('data', (c) => (buf += c))
-        res.on('end', () => resolve(JSON.parse(buf)))
-      })
-      .on('error', reject)
+    const req = http.get({ host: 'localhost', port, path: '/json/list', timeout: 2000 }, (res) => {
+      let buf = ''
+      res.on('data', (c) => (buf += c))
+      res.on('end', () => resolve(JSON.parse(buf)))
+    })
+    req.on('timeout', () => req.destroy(new Error('timeout')))
+    req.on('error', reject)
   })
+}
+
+/** 等待 CDP 端口就绪（每秒探测，最多 40 秒），输出进度 */
+async function waitForCdp(port) {
+  for (let i = 1; i <= 40; i++) {
+    try {
+      const t = await listTargets(port)
+      if (t.length) return t
+    } catch {}
+    process.stdout.write(`[wait cdp:${port}] ${i}s\r`)
+    await new Promise((r) => setTimeout(r, 1000))
+  }
+  throw new Error(`CDP port ${port} not ready in 40s`)
 }
 
 /** 建立 CDP WebSocket 连接（Node 22 全局 WebSocket） */
@@ -52,9 +65,9 @@ async function connect(wsUrl) {
   }
 }
 
-/** 取主窗口（p2pSync UI）target 的 CDP 连接 */
+/** 取主窗口（p2pSync UI）target 的 CDP 连接（内置等待就绪） */
 async function attachMainPage(port) {
-  const targets = await listTargets(port)
+  const targets = await waitForCdp(port)
   const page = targets.find((t) => t.type === 'page' && !t.url.startsWith('devtools'))
   if (!page) throw new Error('main page target not found: ' + JSON.stringify(targets.map((t) => t.url)))
   return connect(page.webSocketDebuggerUrl)
@@ -86,6 +99,52 @@ async function main() {
     })`)
     // 从 UI 读不到原始链接，直接从剪贴板语义重建：roomID 在 tag 文本里
     console.log(JSON.stringify(state, null, 2))
+    c.close()
+  } else if (stage === 'follower-join') {
+    const c = await attachMainPage(9223)
+    await c.eval('new Promise(r => setTimeout(r, 1500))')
+    const link = process.argv[3]
+    if (!link) throw new Error('usage: drive.cjs follower-join <p2psync:// link>')
+    const setInput = (sel, val) => {
+      const el = document.querySelector(sel)
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set
+      setter.call(el, val)
+      el.dispatchEvent(new Event('input', { bubbles: true }))
+    }
+    await c.eval(`(${setInput.toString()})('.bar .join', ${JSON.stringify(link)})`)
+    await c.eval(`[...document.querySelectorAll('.bar button')].find(b => b.textContent.includes('加入')).click()`)
+    // 等 P2P 建连 + 成员收到 state 自动导航到视频页
+    await c.eval('new Promise(r => setTimeout(r, 15000))')
+    const state = await c.eval(`({
+      tags: [...document.querySelectorAll('.tag')].map(t => t.textContent),
+      status: [...document.querySelectorAll('.tag')].map(t => t.textContent).find(t => t.includes('加入')) || '',
+    })`)
+    console.log(JSON.stringify(state, null, 2))
+    c.close()
+  } else if (stage === 'check-video') {
+    // 连接指定端口的视频页 target（cycani），读取注入桥的视频状态
+    const port = Number(process.argv[3])
+    const targets = await listTargets(port)
+    const video = targets.find((t) => t.type === 'page' && t.url.includes('cycani'))
+    if (!video) {
+      console.log(JSON.stringify({ error: 'no cycani target', urls: targets.map((t) => t.url) }))
+    } else {
+      const c = await connect(video.webSocketDebuggerUrl)
+      const st = await c.eval('window.__p2pBridge ? window.__p2pBridge.status() : "no-bridge"')
+      console.log(JSON.stringify({ port, url: video.url.slice(0, 80), status: st }, null, 2))
+      c.close()
+    }
+  } else if (stage === 'video-cmd') {
+    // 对指定端口的视频页下发指令：video-cmd <port> <action> [arg]
+    const port = Number(process.argv[3])
+    const action = process.argv[4]
+    const arg = process.argv[5] ? Number(process.argv[5]) : undefined
+    const targets = await listTargets(port)
+    const video = targets.find((t) => t.type === 'page' && t.url.includes('cycani'))
+    if (!video) throw new Error('no cycani target on ' + port)
+    const c = await connect(video.webSocketDebuggerUrl)
+    await c.eval(`window.__p2pBridge.cmd(${JSON.stringify(action)}, ${arg ?? 'null'}); "ok"`)
+    console.log(JSON.stringify({ port, action, arg }))
     c.close()
   } else if (stage === 'host-status') {
     const c = await attachMainPage(9222)
