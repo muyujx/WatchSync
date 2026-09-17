@@ -10,16 +10,17 @@ describe('generateRoomId', () => {
 })
 
 describe('buildShareUrl / parseShareUrl', () => {
-  it('编解码往返一致', () => {
+  it('链接只含房间号，编解码往返一致', () => {
     const id = generateRoomId()
-    const url = buildShareUrl(id, 'https://www.bilibili.com/video/BV1xx?a=1&b=2')
-    expect(parseShareUrl(url)).toEqual({ roomId: id, videoUrl: 'https://www.bilibili.com/video/BV1xx?a=1&b=2' })
+    const url = buildShareUrl(id)
+    expect(url).toBe(`p2psync://join?room=${id}`)
+    expect(parseShareUrl(url)).toEqual({ roomId: id })
   })
-  it('拒绝非 p2psync 协议、非法房间号、非 http(s) 视频地址', () => {
+  it('拒绝非 p2psync 协议、非法或缺失房间号', () => {
     const id = generateRoomId()
     expect(parseShareUrl('https://example.com/join?room=' + id)).toBeNull()
-    expect(parseShareUrl(`p2psync://join?room=BAD&url=https://a.com`)).toBeNull()
-    expect(parseShareUrl(`p2psync://join?room=${id}&url=javascript:alert(1)`)).toBeNull()
+    expect(parseShareUrl('p2psync://join?room=BAD')).toBeNull()
+    expect(parseShareUrl('p2psync://join')).toBeNull()
     expect(parseShareUrl('not a url')).toBeNull()
   })
 })

@@ -44,7 +44,12 @@
     <button v-if="!roomId" class="m-btn tonal" :disabled="!joinInput" @click="onJoinLink">加入</button>
 
     <div class="flex-spacer"></div>
-    <button class="icon-btn" title="设置" @click="openSettings">⚙</button>
+    <button class="icon-btn settings-btn" title="设置" @click="openSettings">
+      <svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="12" cy="12" r="3" />
+        <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+      </svg>
+    </button>
   </div>
 
   <!-- 主页：支持的视频网站（标签打开后被网页视图覆盖） -->
@@ -58,7 +63,6 @@
         <span class="site-host">{{ hostOf(s.url) }}</span>
       </button>
     </div>
-    <p class="home-hint">点击站点开始浏览；打开视频页后点「创建房间」，把邀请链接发给好友即可一起看。</p>
   </div>
 
   <!-- 设置对话框：用户昵称（房间内展示给其他成员） -->
@@ -86,6 +90,7 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
 import { RoomController } from './room'
+import { buildShareUrl } from '../../core/shareLink'
 
 /** 标签页信息结构 */
 interface TabInfo {
@@ -195,16 +200,20 @@ async function restoreRoom(): Promise<void> {
   if (!raw) return
   try {
     const r = JSON.parse(raw) as { roomId: string; isHost: boolean; videoUrl: string }
-    // 成员仅需 roomId（等待房主心跳自动打开视频页）；房主必须有地址才能恢复广播
-    if (!r.roomId || (r.isHost && !r.videoUrl)) return
+    // 只依赖 roomId 即可恢复连接；视频地址有则打开，无则等房主后续打开后心跳同步
+    if (!r.roomId) return
     isHost.value = Boolean(r.isHost)
     roomId.value = r.roomId
-    videoUrl.value = r.videoUrl
+    videoUrl.value = r.videoUrl || ''
     controller.myName = myName.value
     if (r.isHost) {
-      await controller.host(r.videoUrl, r.roomId)
-      await window.p2pApi.openVideo(r.videoUrl)
-      tabSet(r.videoUrl)
+      await controller.host(r.roomId)
+      if (r.videoUrl) {
+        await window.p2pApi.openVideo(r.videoUrl)
+        tabSet(r.videoUrl)
+        controller.videoUrl = r.videoUrl
+        await window.p2pApi.inject(false)
+      }
     } else {
       await controller.join(r.roomId)
     }
@@ -265,34 +274,32 @@ function syncDebug(): void {
   ;(window as unknown as { __p2pDebug: unknown }).__p2pDebug = { roomId: roomId.value, isHost: isHost.value, myName: myName.value }
 }
 
-/** 房主：打开视频页 → 注入桥 → 创建房间并复制链接 */
+/** 房主：创建房间并复制邀请链接（不依赖视频地址；有地址则顺带打开并注入桥） */
 async function onHost(): Promise<void> {
-  // 尚未打开网页时：有地址则先自动打开（一步到位），无地址则引导
-  if (!tab.value) {
-    if (!videoUrl.value) {
-      notify('请先输入视频网页地址，或在主页点击站点打开')
-      return
-    }
-    await window.p2pApi.openVideo(videoUrl.value)
-    tabSet(videoUrl.value)
-  }
   try {
     notify('创建房间中...')
-    await window.p2pApi.openVideo(videoUrl.value)
-    tabSet(videoUrl.value)
-    const injected = await window.p2pApi.inject(false)
-    if (injected !== 'ok' && injected !== 'already') {
-      notify(`该页面未找到视频元素（${injected}），仍可建房，打开视频后自动重试`)
-    }
-    const link = await controller.host(videoUrl.value)
+    // 建房只依赖房间号；视频地址在连接建立后由心跳同步给成员
+    const link = await controller.host()
     isHost.value = true
     roomId.value = controller.roomId
     controller.myName = myName.value
     controller.announceProfile()
     await window.p2pApi.copyText(link)
+
+    let hint = '房间已创建，邀请链接已复制'
+    if (videoUrl.value) {
+      // 地址栏已有地址：顺带打开视频并注入，房主即可开始操作
+      await window.p2pApi.openVideo(videoUrl.value)
+      tabSet(videoUrl.value)
+      controller.videoUrl = videoUrl.value
+      const injected = await window.p2pApi.inject(false)
+      if (injected !== 'ok' && injected !== 'already') hint += `；该页面暂未找到视频元素（${injected}）`
+    } else {
+      hint += '；打开视频网页后自动同步'
+    }
     saveRoomState()
     syncDebug()
-    notify('房间已创建，邀请链接已复制')
+    notify(hint)
   } catch (e) {
     notify('创建失败: ' + String(e))
   }
@@ -328,9 +335,9 @@ async function onOpen(): Promise<void> {
   }
 }
 
-/** 复制邀请链接 */
+/** 复制邀请链接（仅含房间号，不含任何同步信息） */
 async function onCopyLink(): Promise<void> {
-  await window.p2pApi.copyText(`p2psync://join?room=${roomId.value}&url=${encodeURIComponent(videoUrl.value)}`)
+  await window.p2pApi.copyText(buildShareUrl(roomId.value))
   notify('邀请链接已复制')
 }
 
@@ -386,6 +393,7 @@ body { font-family: 'Segoe UI', 'Microsoft YaHei', system-ui, sans-serif; backgr
 .icon-btn { width: 32px; height: 32px; border: none; border-radius: 50%; background: transparent; color: #5f6368; font-size: 14px; cursor: pointer; }
 .icon-btn:hover:not(:disabled) { background: #f1f3f4; }
 .icon-btn:disabled { opacity: 0.35; cursor: default; }
+.settings-btn { display: inline-flex; align-items: center; justify-content: center; color: #3c4043; }
 .omnibox { flex: 1; min-width: 160px; height: 32px; padding: 0 16px; border: none; border-radius: 16px; background: #f1f3f4; font-size: 13px; color: #202124; outline: none; }
 .omnibox:focus { background: #fff; box-shadow: 0 1px 6px rgba(32, 33, 36, 0.28); }
 .m-btn { height: 32px; padding: 0 16px; border: none; border-radius: 16px; font-size: 13px; cursor: pointer; white-space: nowrap; }

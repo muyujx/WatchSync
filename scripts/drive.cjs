@@ -269,7 +269,7 @@ async function main() {
 
     const b = await attachMainPage(9223)
     await b.eval('new Promise(r => setTimeout(r, 1200))')
-    await b.eval(`(${setInput.toString()})('.toolbar .join', 'p2psync://join?room=${roomId}&url=' + encodeURIComponent(${JSON.stringify(VIDEO_URL)}))`)
+    await b.eval(`(${setInput.toString()})('.toolbar .join', 'p2psync://join?room=${roomId}')`)
     await b.eval(`(${clickBtn.toString()})('加入')`)
 
     // 轮询 60 秒：两侧 members + B 视频页出现情况

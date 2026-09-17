@@ -34,16 +34,16 @@ export class RoomController {
 
   /**
    * 创建房间（房主）。
-   * 参数：videoUrl 当前视频页地址；roomId 指定房间号（UI 重载后恢复房间用，缺省随机生成）。
-   * 返回值：分享链接。
+   * 参数：roomId 指定房间号（UI 重载后恢复房间用，缺省随机生成）。
+   * 返回值：分享链接（仅含房间号）。
+   * 说明：建房不依赖视频地址；地址随心跳 state 消息在连接建立后同步给成员。
    */
-  async host(videoUrl: string, roomId?: string): Promise<string> {
+  async host(roomId?: string): Promise<string> {
     this.role = 'host'
-    this.videoUrl = videoUrl
     this.roomId = roomId || generateRoomId()
     await this.attach()
     this.startHeartbeat()
-    return buildShareUrl(this.roomId, videoUrl)
+    return buildShareUrl(this.roomId)
   }
 
   /**

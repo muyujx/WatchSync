@@ -1,7 +1,8 @@
 /**
  * 房间 ID 与分享链接工具。
  * 房间 ID：10 字节随机数编码为 16 字符 Base32（约 80bit 熵），即房间准入凭证。
- * 分享链接：p2psync://join?room=<roomId>&url=<encodeURIComponent(视频页地址)>
+ * 分享链接：p2psync://join?room=<roomId>
+ * 设计约束：邀请链接只承载建立 P2P 连接所需信息；视频地址等同步信息在连接建立后经 DataChannel 同步。
  */
 
 const BASE32_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567'
@@ -30,28 +31,26 @@ export function generateRoomId(): string {
 
 /**
  * 生成分享链接。
- * 参数：roomId 房间 ID；videoUrl 视频页地址（http/https）。
- * 返回值：p2psync:// 协议链接。
+ * 参数：roomId 房间 ID。
+ * 返回值：p2psync:// 协议链接（仅含房间号，不含任何业务信息）。
  */
-export function buildShareUrl(roomId: string, videoUrl: string): string {
-  return `p2psync://join?room=${roomId}&url=${encodeURIComponent(videoUrl)}`
+export function buildShareUrl(roomId: string): string {
+  return `p2psync://join?room=${roomId}`
 }
 
 /**
  * 解析分享链接。
  * 参数：input 用户粘贴或系统传来的链接。
- * 返回值：解析成功返回 { roomId, videoUrl }；协议错误、房间号非法、视频地址非 http(s) 时返回 null。
+ * 返回值：解析成功返回 { roomId }；协议错误或房间号非法时返回 null。
+ * 说明：多余查询参数（如历史的 url）不参与解析，直接忽略。
  */
-export function parseShareUrl(input: string): { roomId: string; videoUrl: string } | null {
+export function parseShareUrl(input: string): { roomId: string } | null {
   try {
     const u = new URL(input)
     if (u.protocol !== 'p2psync:' || u.host !== 'join') return null
     const roomId = u.searchParams.get('room') ?? ''
-    const videoUrl = u.searchParams.get('url') ?? ''
     if (!ROOM_ID_PATTERN.test(roomId)) return null
-    const v = new URL(videoUrl)
-    if (v.protocol !== 'http:' && v.protocol !== 'https:') return null
-    return { roomId, videoUrl }
+    return { roomId }
   } catch {
     return null
   }
