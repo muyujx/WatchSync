@@ -40,7 +40,7 @@ export function encodeMsg(msg: SyncMsg): string {
 export function decodeMsg(raw: string): SyncMsg | null {
   try {
     const o = JSON.parse(raw) as Record<string, unknown>
-    if (typeof o !== 'object' || o === null || !(o.t in NUMERIC_FIELDS)) return null
+    if (typeof o !== 'object' || o === null || typeof o.t !== 'string' || !(o.t in NUMERIC_FIELDS)) return null
     const t = o.t as SyncMsg['t']
     for (const f of NUMERIC_FIELDS[t]) {
       const v = o[f]
