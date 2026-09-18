@@ -11,6 +11,10 @@ export interface SiteAdapterSpec extends PageSiteImpl {
   id: string
   /** 展示名 */
   name: string
+  /** 主页地址（填写后出现在应用首页站点卡片） */
+  homeUrl?: string
+  /** 首页卡片图标地址（缺省回退主页 origin/favicon.ico） */
+  iconUrl?: string
   /** 主进程侧 URL 匹配规则 */
   match: (url: string) => boolean
 }
@@ -31,6 +35,8 @@ export function createAdapter(spec: SiteAdapterSpec): SiteAdapter {
   return {
     id: spec.id,
     name: spec.name,
+    homeUrl: spec.homeUrl,
+    iconUrl: spec.iconUrl,
     match: spec.match,
     injectScript: `${siteScript}\n${HARNESS_SCRIPT}`,
   }

@@ -19,4 +19,24 @@ export function selectAdapter(url: string): SiteAdapter {
   return SITE_ADAPTERS.find((a) => a.match(url)) ?? genericAdapter
 }
 
+/** 首页站点卡片数据（由适配器元数据生成；generic 兜底无 homeUrl 不参与） */
+export interface HomeSite {
+  /** 展示名 */
+  name: string
+  /** 主页地址（点击卡片打开） */
+  url: string
+  /** 卡片图标地址 */
+  icon: string
+}
+
+/**
+ * 汇总带 homeUrl 的适配器为首页卡片数据。
+ * 返回值：HOME_SITES 卡片列表（按适配器注册顺序）。
+ */
+export const HOME_SITES: HomeSite[] = SITE_ADAPTERS.filter((a) => a.homeUrl).map((a) => ({
+  name: a.name,
+  url: a.homeUrl!,
+  icon: a.iconUrl || new URL(a.homeUrl!).origin + '/favicon.ico',
+}))
+
 export type { SiteAdapter, PageSiteImpl } from './types'

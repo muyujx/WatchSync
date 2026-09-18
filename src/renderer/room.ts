@@ -7,6 +7,7 @@ import { buildShareUrl, generateRoomId } from '../../core/shareLink'
 import { createRoom, openRealRoom, type RoomHandle } from '../../core/room'
 import type { SyncMsg } from '../../core/protocol'
 import { p2pLog } from '../../core/log'
+import { RttProbe } from './rtt'
 
 /** 房间角色 */
 export type Role = 'host' | 'follower'
@@ -20,6 +21,9 @@ const JOIN_TIMEOUT_MS = 15000
 /** 成员端等待视频桥就绪的时长（ms）：播放器异步创建 video，需轮询注入 */
 const BRIDGE_WAIT_MS = 8000
 
+/** 房主事件采样间隔（ms）：视频操作事件即时广播的轮询粒度，决定操作同步延迟上限 */
+const EVENT_POLL_MS = 200
+
 /** 房间控制器：UI 与 P2P/视频层之间的唯一中介 */
 export class RoomController {
   role: Role = 'host'
@@ -28,8 +32,16 @@ export class RoomController {
   peers = new Set<string>()
   /** 成员昵称表（peerId → 昵称；未收到 profile 的成员无条目） */
   peerNames = new Map<string, string>()
+  /** 延迟探针（ping/pong RTT 测量；结果经 peerRtt 暴露给 UI） */
+  private rtt = new RttProbe(
+    () => this.peers.size > 0,
+    (msg) => this.room?.broadcast(msg),
+    () => this.onPeersChanged?.(),
+  )
   /** 我的昵称（设置页修改后更新并重新广播） */
   myName = ''
+  /** 各成员往返延迟（peerId → { rtt, at }；由 RttProbe 维护，供成员面板展示） */
+  readonly peerRtt = this.rtt.results
   /** 昵称表变化回调（UI 刷新成员 chip） */
   onPeersChanged: (() => void) | null = null
   /** 连接断开回调（成员端连续超时未收到房主心跳；仅提示，不自动退出） */
@@ -63,6 +75,10 @@ export class RoomController {
   private heartbeatTimer: number | null = null
   private followTimer: number | null = null
   private pollTimer: number | null = null
+  /** 房主事件采样定时器（200ms 即时广播视频操作） */
+  private eventTimer: number | null = null
+  /** 事件采样防重入标记（drainEvents 为异步 IPC，避免并发堆积） */
+  private draining = false
   /** 加入看门狗定时器 */
   private joinTimer: number | null = null
   /** 成员端桥就绪标记（视频元素已创建并注入；换页后重置） */
@@ -169,11 +185,14 @@ export class RoomController {
       p2pLog('peerLeave', id, name)
       this.peers.delete(id)
       this.peerNames.delete(id)
+      this.rtt.removePeer(id)
       // 离开的是房主：清除房主标记，成员列表不再标注
       if (this.hostPeerId === id) this.hostPeerId = ''
       this.onPeerLeft?.(id, name)
       this.onPeersChanged?.()
     })
+    // 房主/成员通用：进入房间即开始周期延迟探测
+    this.rtt.start()
   }
 
   /** 进入房间后广播我的昵称与角色（join/host 完成后调用） */
@@ -186,8 +205,17 @@ export class RoomController {
    * 参数：msg 同步消息；peerId 发送方。
    */
   private handleMsg(msg: SyncMsg, peerId: string): void {
-    // state 心跳每 2s 一次，日志量太大：只打其余消息类型，便于排查信令
-    if (msg.t !== 'state') p2pLog('recv', msg.t, 'from', peerId, msg)
+    // state/ping/pong 周期消息量大：不进日志，只打其余消息类型，便于排查信令
+    if (msg.t !== 'state' && msg.t !== 'ping' && msg.t !== 'pong') p2pLog('recv', msg.t, 'from', peerId, msg)
+    // 延迟探测：ping/pong 周期消息量大，不进日志，交由 RttProbe 处理
+    if (msg.t === 'ping') {
+      this.rtt.onPing(msg.ts)
+      return
+    }
+    if (msg.t === 'pong') {
+      this.rtt.onPong(peerId, msg.ts)
+      return
+    }
     // 昵称消息不分角色：任何一端都记录并在 UI 展示
     if (msg.t === 'profile') {
       const name = msg.name.slice(0, 20)
@@ -286,11 +314,23 @@ export class RoomController {
     return false
   }
 
-  /** 房主：开启周期心跳（2s）+ 本地视频事件轮询广播 */
+  /** 房主：开启周期心跳（2s 全量对表兜底）+ 事件采样（200ms 即时广播视频操作） */
   private startHeartbeat(): void {
     this.stopPolling()
-    this.pollTimer = window.setInterval(async () => {
-      // 消费房主本机视频事件，转换为同步消息广播
+    // 状态心跳：全量快照兜底，负责地址同步、新成员对齐与存活判定
+    this.pollTimer = window.setInterval(() => this.sendState(), 2000)
+    // 事件采样：play/pause/seek 发生后立即广播，操作同步延迟从 2s 降到 200ms 以内
+    this.eventTimer = window.setInterval(() => void this.broadcastEvents(), EVENT_POLL_MS)
+  }
+
+  /**
+   * 房主：取走本机视频事件并即时转换为同步消息广播。
+   * drainEvents 为异步 IPC，用 draining 标记防重入；seek 需查询实时播放状态。
+   */
+  private async broadcastEvents(): Promise<void> {
+    if (this.draining) return
+    this.draining = true
+    try {
       for (const ev of await window.p2pApi.drainEvents()) {
         if (ev.ev === 'play') {
           this.room?.broadcast({ t: 'play', position: ev.position, at: Date.now() })
@@ -301,8 +341,9 @@ export class RoomController {
           this.room?.broadcast({ t: 'seek', position: ev.position, playing: !st?.paused, at: Date.now() })
         }
       }
-      this.sendState()
-    }, 2000)
+    } finally {
+      this.draining = false
+    }
   }
 
   /** 房主：广播全量状态（url 取视频页实时地址，覆盖 SPA 站内跳转/切换剧集） */
@@ -349,12 +390,17 @@ export class RoomController {
     }, 2000)
   }
 
-  /** 停止房主轮询（重建房间前调用） */
+  /** 停止房主轮询（状态心跳 + 事件采样，重建房间前调用） */
   private stopPolling(): void {
     if (this.pollTimer) {
       clearInterval(this.pollTimer)
       this.pollTimer = null
     }
+    if (this.eventTimer) {
+      clearInterval(this.eventTimer)
+      this.eventTimer = null
+    }
+    this.draining = false
   }
 
   /**
@@ -371,6 +417,8 @@ export class RoomController {
   /** 离开房间并清理全部定时器 */
   async leave(): Promise<void> {
     this.stopPolling()
+    this.rtt.stop()
+    this.rtt.clear()
     this.clearJoinWatchdog()
     if (this.followTimer) {
       clearInterval(this.followTimer)

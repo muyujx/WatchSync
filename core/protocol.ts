@@ -17,6 +17,10 @@ export type SyncMsg =
   | { t: 'profile'; name: string; host?: boolean }
   /** 房主解散房间（房主→全员）：成员收到后自动退出 */
   | { t: 'dissolve' }
+  /** 延迟探测（任意端→全员广播）：ts 为发起方时间戳，接收方原样回 pong */
+  | { t: 'ping'; ts: number }
+  /** 延迟应答（→全员广播）：原样带回发起方 ts，仅发起方（pending 集合命中者）消费 */
+  | { t: 'pong'; ts: number }
 
 /** 消息类型到必检数值字段的映射，用于解码校验 */
 const NUMERIC_FIELDS: Record<SyncMsg['t'], string[]> = {
@@ -27,6 +31,8 @@ const NUMERIC_FIELDS: Record<SyncMsg['t'], string[]> = {
   seek: ['position', 'at'],
   profile: [],
   dissolve: [],
+  ping: ['ts'],
+  pong: ['ts'],
 }
 
 /**

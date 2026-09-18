@@ -45,6 +45,10 @@ export interface SiteAdapter {
   id: string
   /** 展示名 */
   name: string
+  /** 主页地址（填写后出现在应用首页站点卡片；generic 兜底不填） */
+  homeUrl?: string
+  /** 首页卡片图标地址（favicon；缺省回退主页 origin/favicon.ico） */
+  iconUrl?: string
   /**
    * 判断该适配器是否处理给定 URL。
    * 参数：url 当前页面地址。

@@ -8,6 +8,9 @@ import { createAdapter } from './createAdapter'
 export const bilibiliAdapter = createAdapter({
   id: 'bilibili',
   name: '哔哩哔哩',
+  // 首页站点卡片展示信息
+  homeUrl: 'https://www.bilibili.com',
+  iconUrl: 'https://www.bilibili.com/favicon.ico',
   match: (url) => /(^|\.)bilibili\.com/.test(url),
   /** 优先取 bpx 主播放器容器内时长最长的 video，规避广告/预览小窗 */
   findVideo: (doc) => {

@@ -1,0 +1,18 @@
+/* ===== 全局基础 + 通用控件 ===== */
+* { margin: 0; box-sizing: border-box; }
+body { font-family: 'Segoe UI', 'Microsoft YaHei', system-ui, sans-serif; background: #f8f9fb; }
+
+/* Material 圆角按钮：filled（蓝底）/tonal（浅蓝）/默认（灰底） */
+.m-btn { height: 32px; padding: 0 16px; border: none; border-radius: 16px; font-size: 13px; cursor: pointer; white-space: nowrap; }
+.m-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+.m-btn.filled { background: #1a73e8; color: #fff; }
+.m-btn.filled:hover:not(:disabled) { background: #1765cc; box-shadow: 0 1px 3px rgba(26, 115, 232, 0.4); }
+.m-btn.tonal { background: #e8f0fe; color: #1a73e8; }
+.m-btn.tonal:hover:not(:disabled) { background: #d2e3fc; }
+.m-btn:not(.filled):not(.tonal) { background: #f1f3f4; color: #202124; }
+
+/* 状态徽标 chip（绿色正常/红色危险） */
+.chip { height: 28px; display: inline-flex; align-items: center; padding: 0 12px; border-radius: 14px; background: #e6f4ea; color: #137333; font-size: 12px; white-space: nowrap; }
+.chip.danger { background: #fce8e6; color: #c5221f; }
+
+.flex-spacer { flex: 1; }
