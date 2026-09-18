@@ -44,7 +44,7 @@
     </div>
   </div>
 
-  <MembersDialog :open="membersOpen" :members="memberList" @close="closeMembers" />
+  <MembersDialog :open="membersOpen" :members="memberList" :i-am-host="isHost" @close="closeMembers" @transfer="onTransferHost" />
   <SettingsDialog :open="settingsOpen" :nickname="myName" @close="closeSettings" @save="saveSettings" />
 
   <!-- Material snackbar：操作状态提示 -->
@@ -167,6 +167,12 @@ setRelaySink((urls) => {
 const peerTick = ref(0)
 // 昵称表/RTT 变化时触发响应式更新
 controller.onPeersChanged = () => peerTick.value++
+// 房主角色变化（转让成功或接管为新房主）：同步房主标识与相关按钮文案
+controller.onRoleChanged = (nowHost) => {
+  isHost.value = nowHost
+  connectionLost.value = false
+  syncDebug()
+}
 // 成员端断线：仅提示，房间状态与后续操作交给用户自己决定
 controller.onConnectionLost = () => {
   connectionLost.value = true
@@ -226,6 +232,17 @@ async function openMembers(): Promise<void> {
 async function closeMembers(): Promise<void> {
   membersOpen.value = false
   await window.p2pApi.setVideoVisible(true)
+}
+
+/**
+ * 房主转让（成员面板点击其他成员触发）。
+ * 参数：id 目标成员 peerId。
+ */
+function onTransferHost(id: string): void {
+  const name = controller.peerNames.get(id) || '该成员'
+  controller.transferHost(id)
+  notify(`已把房主转让给 ${name}`)
+  void closeMembers()
 }
 
 /** 调试状态暴露（drive.cjs 联调用） */

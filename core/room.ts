@@ -33,6 +33,8 @@ export const APP_ID = 'p2psync-v1'
 export interface RoomHandle {
   /** 向全员广播一条同步消息 */
   broadcast: (msg: SyncMsg) => void
+  /** 向指定成员定向发送一条同步消息（用于房主移交等点对点指令） */
+  sendTo: (peerId: string, msg: SyncMsg) => void
   /** 房间内成员 ID 集合（不含本端） */
   peers: Set<string>
   /** 订阅成员加入（叠加在内部成员维护之上，可多次调用） */
@@ -74,6 +76,10 @@ export function createRoom(trysteroRoom: TrysteroRoomLike, onMessage: (msg: Sync
     broadcast: (msg) => {
       // send 返回 Promise，fire-and-forget；失败仅记录不中断同步循环
       action.send(encodeMsg(msg)).catch((e) => console.error('[room] broadcast failed:', e))
+    },
+    sendTo: (peerId, msg) => {
+      // 定向发送：Trystero 通过 options.target 指定接收方 peerId
+      action.send(encodeMsg(msg), { target: peerId }).catch((e) => console.error('[room] sendTo failed:', e))
     },
     peers,
     onPeerJoin: (cb) => joinCbs.push(cb),

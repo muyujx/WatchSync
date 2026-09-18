@@ -11,6 +11,8 @@
           <span v-if="m.isHost" class="badge-host">房主</span>
           <span v-if="m.rtt != null" class="badge-rtt" :class="rttClass(m.rtt)" title="到该成员的往返延迟">{{ m.rtt }}ms</span>
           <span v-else-if="!m.self" class="badge-rtt" title="延迟测量中">--</span>
+          <!-- 房主可把房主身份转让给其他在线成员 -->
+          <button v-if="iAmHost && !m.self" class="member-action" title="把房主转让给该成员" @click="emit('transfer', m.id)">转让房主</button>
           <span class="dot" :class="{ online: m.online }" :title="m.online ? '在线' : '离线'"></span>
         </li>
       </ul>
@@ -43,10 +45,10 @@ export interface MemberItem {
   rtt: number | null
 }
 
-/** 组件属性：open 面板显隐；members 成员列表 */
-defineProps<{ open: boolean; members: MemberItem[] }>()
-/** 组件事件：close 关闭面板 */
-const emit = defineEmits<{ close: [] }>()
+/** 组件属性：open 面板显隐；members 成员列表；iAmHost 本端是否房主（决定是否显示转让按钮） */
+defineProps<{ open: boolean; members: MemberItem[]; iAmHost: boolean }>()
+/** 组件事件：close 关闭面板；transfer 把房主转让给指定成员（参数为成员 peerId） */
+const emit = defineEmits<{ close: []; transfer: [id: string] }>()
 
 /**
  * 延迟徽标分级样式。

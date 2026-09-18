@@ -65,6 +65,11 @@ describe('createRoom（注入 fake，0.25 API）', () => {
     r.broadcast(msg)
     expect(f.sendSpy).toHaveBeenCalledWith(JSON.stringify(msg))
 
+    // 定向发送：载荷相同但通过 options.target 指定接收方
+    const transfer: SyncMsg = { t: 'transfer', to: 'peer-2' }
+    r.sendTo('peer-2', transfer)
+    expect(f.sendSpy).toHaveBeenCalledWith(JSON.stringify(transfer), { target: 'peer-2' })
+
     f.emitLeave('peer-1')
     expect(r.peers.has('peer-1')).toBe(false)
     r.leave()

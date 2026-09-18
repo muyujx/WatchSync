@@ -12,6 +12,8 @@ describe('protocol encode/decode', () => {
       { t: 'profile', name: '追番人-8f3k' },
       { t: 'profile', name: '房主', host: true },
       { t: 'dissolve' },
+      { t: 'transfer', to: 'peer-1' },
+      { t: 'hostChange', host: 'peer-1' },
     ]
     for (const m of msgs) expect(decodeMsg(encodeMsg(m))).toEqual(m)
   })
@@ -24,5 +26,9 @@ describe('protocol encode/decode', () => {
     expect(decodeMsg(JSON.stringify({ t: 'profile' }))).toBeNull() // 缺 name
     expect(decodeMsg(JSON.stringify({ t: 'profile', name: 42 }))).toBeNull() // name 非字符串
     expect(decodeMsg(JSON.stringify({ t: 'profile', name: 'x', host: 'yes' }))).toBeNull() // host 非布尔
+    expect(decodeMsg(JSON.stringify({ t: 'transfer' }))).toBeNull() // 缺 to
+    expect(decodeMsg(JSON.stringify({ t: 'transfer', to: 1 }))).toBeNull() // to 非字符串
+    expect(decodeMsg(JSON.stringify({ t: 'hostChange' }))).toBeNull() // 缺 host
+    expect(decodeMsg(JSON.stringify({ t: 'hostChange', host: false }))).toBeNull() // host 非字符串
   })
 })

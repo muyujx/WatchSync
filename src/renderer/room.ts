@@ -62,6 +62,8 @@ export class RoomController {
   hostPeerId = ''
   /** 房间被房主解散回调（成员端收到 dissolve 时触发） */
   onDissolved: (() => void) | null = null
+  /** 本端房主角色变化回调（转让/接管后触发，UI 据此更新 isHost） */
+  onRoleChanged: ((isHost: boolean) => void) | null = null
   /** 当前视频页地址（房主广播/成员导航用） */
   videoUrl = ''
   private room: RoomHandle | null = null
@@ -201,6 +203,71 @@ export class RoomController {
   }
 
   /**
+   * 房主：把房主身份转让给指定成员。
+   * 参数：toPeerId 目标成员 peerId（须仍在本房间成员集合内）。
+   * 说明：先定向发送移交指令，本端随即降级为成员，避免出现双房主同时广播进度。
+   */
+  transferHost(toPeerId: string): void {
+    if (this.role !== 'host' || !this.room || !this.peers.has(toPeerId)) return
+    p2pLog('transfer host', toPeerId)
+    this.room.sendTo(toPeerId, { t: 'transfer', to: toPeerId })
+    this.becomeFollower(toPeerId)
+  }
+
+  /**
+   * 切换为房主（收到移交指令时调用）：停跟随、启心跳、解除跟随守卫并广播房主身份。
+   * 说明：不在此处广播进度，由调用方随后 sendState 触发，保证 hostChange 先于 state 送达。
+   */
+  private becomeHost(): void {
+    // 停止成员侧校准循环与加入看门狗
+    if (this.followTimer) {
+      clearInterval(this.followTimer)
+      this.followTimer = null
+    }
+    this.clearJoinWatchdog()
+    // 停止可能残留的房主轮询（防御性）
+    this.stopPolling()
+    this.role = 'host'
+    // 房主自身即权威，无需识别他人为房主
+    this.hostPeerId = ''
+    this.connected = true
+    this.lastSnapshot = null
+    this.lastStateAt = 0
+    this.connectionLost = false
+    this.startHeartbeat()
+    // 房主可自由操作视频：解除跟随守卫
+    void window.p2pApi.inject(false)
+    // 广播新的角色标记，供其他成员更新房主标识
+    this.announceProfile()
+    this.onRoleChanged?.(true)
+    // 触发成员面板刷新（本机房主徽标）
+    this.onPeersChanged?.()
+  }
+
+  /**
+   * 切换为成员（转让后降级、或收到他人 hostChange 时调用）：停心跳、启跟随、开守卫。
+   * 参数：newHostPeerId 新房主 peerId。
+   */
+  private becomeFollower(newHostPeerId: string): void {
+    // 停止房主侧心跳与事件广播
+    this.stopPolling()
+    this.role = 'follower'
+    this.hostPeerId = newHostPeerId
+    // 清空同步基准并重置断线状态，等待新房主心跳重建
+    this.lastSnapshot = null
+    this.lastStateAt = 0
+    this.connectionLost = false
+    // 成员端禁止本地操作：开启跟随守卫
+    void window.p2pApi.inject(true)
+    this.startFollowLoop()
+    // 广播角色变化（host:false）
+    this.announceProfile()
+    this.onRoleChanged?.(false)
+    // 触发成员面板刷新（房主徽标转移）
+    this.onPeersChanged?.()
+  }
+
+  /**
    * 处理收到的同步消息。
    * 参数：msg 同步消息；peerId 发送方。
    */
@@ -231,6 +298,34 @@ export class RoomController {
       this.onPeersChanged?.()
       return
     }
+    // 房主移交指令（定向发送）：仅当前房主可发起，收到即接管为新房主
+    if (msg.t === 'transfer') {
+      if (this.role !== 'follower' || !this.hostPeerId || peerId !== this.hostPeerId) return
+      p2pLog('become host (transfer)', msg.to)
+      this.becomeHost()
+      // 先宣告新权威，再广播全量进度：保证成员按序先切 hostPeerId 再采纳 state
+      this.room?.broadcast({ t: 'hostChange', host: msg.to })
+      this.sendState()
+      return
+    }
+    // 房主变更通知（全员广播）：host 必须与发送者一致，防止他人伪造权威
+    if (msg.t === 'hostChange') {
+      if (msg.host !== peerId) return
+      // 本端仍是房主：合法流程中房主不会收到 hostChange，视为伪造/竞态直接忽略，不主动降级
+      if (this.role === 'host') {
+        p2pLog('ignore hostChange while hosting', peerId)
+        return
+      }
+      // 成员：切换到新房主，重置同步基准等待其心跳
+      if (this.hostPeerId !== msg.host) {
+        this.hostPeerId = msg.host
+        this.lastStateAt = 0
+        this.connectionLost = false
+        // 房主换了：刷新成员面板徽标
+        this.onPeersChanged?.()
+      }
+      return
+    }
     // 房主解散指令：成员端通知 UI 自动退出（房主自身无需处理）
     if (msg.t === 'dissolve') {
       if (this.role === 'follower') this.onDissolved?.()
@@ -242,6 +337,11 @@ export class RoomController {
       return
     }
     // 成员：应用房主指令
+    // 来源过滤：已识别房主时只接受该房主的进度指令，避免转让切换瞬间旧房主/他人干扰
+    if (this.hostPeerId && peerId !== this.hostPeerId) {
+      p2pLog('drop non-host sync msg', msg.t, 'from', peerId)
+      return
+    }
     if (msg.t === 'state') {
       // 收到房主心跳即证明数据通道已打通
       this.markConnected()

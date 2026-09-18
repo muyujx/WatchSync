@@ -17,6 +17,10 @@ export type SyncMsg =
   | { t: 'profile'; name: string; host?: boolean }
   /** 房主解散房间（房主→全员）：成员收到后自动退出 */
   | { t: 'dissolve' }
+  /** 房主移交（现任房主→目标成员，定向发送）：to 为目标成员 peerId，收到即接管为新房主 */
+  | { t: 'transfer'; to: string }
+  /** 房主变更通知（新房主→全员广播）：host 为新任房主 peerId，全员据此切换同步基准 */
+  | { t: 'hostChange'; host: string }
   /** 延迟探测（任意端→全员广播）：ts 为发起方时间戳，接收方原样回 pong */
   | { t: 'ping'; ts: number }
   /** 延迟应答（→全员广播）：原样带回发起方 ts，仅发起方（pending 集合命中者）消费 */
@@ -31,6 +35,8 @@ const NUMERIC_FIELDS: Record<SyncMsg['t'], string[]> = {
   seek: ['position', 'at'],
   profile: [],
   dissolve: [],
+  transfer: [],
+  hostChange: [],
   ping: ['ts'],
   pong: ['ts'],
 }
@@ -60,6 +66,9 @@ export function decodeMsg(raw: string): SyncMsg | null {
     }
     if (t === 'state' && typeof o.url !== 'string') return null
     if ((t === 'state' || t === 'seek') && typeof o.playing !== 'boolean') return null
+    // 房主移交/变更：目标与新权威均为字符串 peerId
+    if (t === 'transfer' && typeof o.to !== 'string') return null
+    if (t === 'hostChange' && typeof o.host !== 'string') return null
     if (t === 'profile') {
       if (typeof o.name !== 'string') return null
       // host 可选；一旦出现必须是布尔
