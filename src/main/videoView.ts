@@ -35,10 +35,19 @@ export class VideoViewController {
   private currentAdapterId = ''
   /** 页面标题变化回调（UI 标签页标题展示） */
   private onTitleCb: ((title: string, url: string) => void) | null = null
+  /** 网页 HTML 全屏状态（点网页播放器全屏按钮时置位） */
+  private isHtmlFullscreen = false
+  /** HTML 全屏状态变化回调（通知渲染层隐藏/恢复顶部栏） */
+  private onFullscreenCb: ((fullscreen: boolean) => void) | null = null
 
   /** 注册页面标题变化回调（title + 当前 URL） */
   setOnTitle(cb: (title: string, url: string) => void): void {
     this.onTitleCb = cb
+  }
+
+  /** 注册 HTML 全屏状态变化回调（true = 进入全屏，false = 退出全屏） */
+  setOnFullscreen(cb: (fullscreen: boolean) => void): void {
+    this.onFullscreenCb = cb
   }
 
   /**
@@ -57,6 +66,18 @@ export class VideoViewController {
       // 标题变化转发 UI（标签页标题）
       this.view.webContents.on('page-title-updated', (_e, title) => {
         this.onTitleCb?.(title, this.view?.webContents.getURL() ?? url)
+      })
+      // 网页播放器点全屏按钮（HTML Fullscreen API）：切换视图 bounds 并通知 UI。
+      // 原生视图原本固定从 y=CHROME_TOP 起绘，不调整则全屏视频只会铺满该区域、顶部栏始终露出。
+      this.view.webContents.on('enter-html-full-screen', () => {
+        this.isHtmlFullscreen = true
+        this.resize(win)
+        this.onFullscreenCb?.(true)
+      })
+      this.view.webContents.on('leave-html-full-screen', () => {
+        this.isHtmlFullscreen = false
+        this.resize(win)
+        this.onFullscreenCb?.(false)
       })
       win.contentView.addChildView(this.view)
       this.resize(win)
@@ -151,14 +172,12 @@ export class VideoViewController {
       .catch(() => {})
   }
 
-  /** 视口随窗口尺寸调整（顶部预留标签行 + 工具栏，UI 控件常驻不被覆盖） */
+  /** 视口随窗口尺寸调整：HTML 全屏时铺满整窗，否则顶部预留标签行 + 工具栏（UI 控件常驻不被覆盖） */
   resize(win: BrowserWindow): void {
-    this.view?.setBounds({
-      x: 0,
-      y: CHROME_TOP,
-      width: win.getContentBounds().width,
-      height: win.getContentBounds().height - CHROME_TOP,
-    })
+    const width = win.getContentBounds().width
+    const height = win.getContentBounds().height
+    const top = this.isHtmlFullscreen ? 0 : CHROME_TOP
+    this.view?.setBounds({ x: 0, y: top, width, height: height - top })
   }
 
   /**
@@ -185,6 +204,7 @@ export class VideoViewController {
       this.ensureTimer = null
     }
     this.currentAdapterId = ''
+    this.isHtmlFullscreen = false
     this.view?.webContents.close()
     this.view = null
   }

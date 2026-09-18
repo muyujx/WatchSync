@@ -33,6 +33,8 @@ contextBridge.exposeInMainWorld('p2pApi', {
   setVideoVisible: (visible: boolean) => ipcRenderer.invoke('setVideoVisible', visible),
   /** 订阅标签页标题变化（title + url） */
   onPageTitle: (cb: (info: { title: string; url: string }) => void) => ipcRenderer.on('page-title', (_e, t) => cb(t)),
+  /** 订阅网页 HTML 全屏状态变化（全屏时 UI 隐藏顶部栏，让视频铺满整窗） */
+  onVideoFullscreen: (cb: (fullscreen: boolean) => void) => ipcRenderer.on('video-fullscreen', (_e, f) => cb(f)),
   /** 读取用户设置（首次调用生成默认昵称） */
   getSettings: () => ipcRenderer.invoke('getSettings'),
   /** 保存用户设置（增量合并：昵称/自定义中继/可达中继），返回保存后的完整设置 */

@@ -42,6 +42,8 @@ declare global {
       setVideoVisible(visible: boolean): Promise<void>
       /** 订阅标签页标题变化（title + url） */
       onPageTitle(cb: (info: { title: string; url: string }) => void): void
+      /** 订阅网页 HTML 全屏状态变化（全屏时 UI 隐藏顶部栏，让视频铺满整窗） */
+      onVideoFullscreen(cb: (fullscreen: boolean) => void): void
       /** 读取用户设置（首次调用生成默认昵称） */
       getSettings(): Promise<{
         nickname: string

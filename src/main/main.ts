@@ -96,6 +96,8 @@ app.whenReady().then(() => {
   ipcMain.handle('setVideoVisible', (_e, visible: boolean) => video.setVisible(visible))
   // 标签页标题变化 → UI
   video.setOnTitle((title, url) => mainWindow?.webContents.send('page-title', { title, url }))
+  // 网页 HTML 全屏状态变化 → UI（隐藏/恢复自绘顶部栏）
+  video.setOnFullscreen((fullscreen) => mainWindow?.webContents.send('video-fullscreen', fullscreen))
   // ---- 用户设置：读取（首次生成默认昵称）与保存 ----
   ipcMain.handle('getSettings', () => loadSettings())
   ipcMain.handle('setSettings', (_e, patch: Partial<Settings>) => {

@@ -1,8 +1,8 @@
 <template>
-  <TabStrip :tab="tab" :is-max="isMax" @close="closeTab" @win="win" />
+  <TabStrip v-show="!videoFullscreen" :tab="tab" :is-max="isMax" @close="closeTab" @win="win" />
 
-  <!-- 工具栏 44px（Chrome 式）：导航 + 地址栏 + 房间操作，常驻可见不被视频覆盖 -->
-  <div class="toolbar">
+  <!-- 工具栏 44px（Chrome 式）：导航 + 地址栏 + 房间操作；网页视频全屏时隐藏，让视频铺满整窗 -->
+  <div v-show="!videoFullscreen" class="toolbar">
     <button class="icon-btn" title="后退" :disabled="!tab" @click="nav('back')">←</button>
     <button class="icon-btn" title="前进" :disabled="!tab" @click="nav('forward')">→</button>
     <button class="icon-btn" title="刷新" :disabled="!tab" @click="nav('reload')">↻</button>
@@ -77,6 +77,9 @@ const sites = reactive(HOME_SITES.map((s) => ({ ...s, iconFailed: false })))
 
 /** 窗口最大化状态（控制按钮图标切换） */
 const isMax = ref(false)
+
+/** 网页视频 HTML 全屏状态（全屏时隐藏自绘顶部栏，让原生视频视图铺满整窗） */
+const videoFullscreen = ref(false)
 
 /** 窗口控制按钮（自定义标题栏，转发 TabStrip 事件） */
 function win(action: string): void {
@@ -376,6 +379,8 @@ onMounted(() => {
   })
   // 窗口最大化状态初始化与订阅
   window.p2pApi.onWinState((m) => (isMax.value = m))
+  // 网页播放器全屏状态订阅：全屏时隐藏顶部栏，退出后恢复
+  window.p2pApi.onVideoFullscreen((f) => (videoFullscreen.value = f))
   // 标签页标题实时更新；地址栏同步显示视频页实际地址（聚焦时不覆盖输入）
   window.p2pApi.onPageTitle((info) => {
     if (!tab.value && info.url && info.url.startsWith('http')) {
