@@ -1,3 +1,4 @@
+/// <reference types="vite/client" />
 /**
  * 渲染进程环境类型：preload 暴露的受控 API。
  */
@@ -42,9 +43,27 @@ declare global {
       /** 订阅标签页标题变化（title + url） */
       onPageTitle(cb: (info: { title: string; url: string }) => void): void
       /** 读取用户设置（首次调用生成默认昵称） */
-      getSettings(): Promise<{ nickname: string }>
+      getSettings(): Promise<{
+        nickname: string
+        /** 用户自定义信令中继 */
+        customRelays: string[]
+        /** 最近一次探测到的可达中继 */
+        reachableRelays: string[]
+        /** 最近一次探测时间（ms；0=未探测） */
+        relayCheckedAt: number
+      }>
       /** 保存用户设置（增量合并），返回保存后的完整设置 */
-      setSettings(patch: { nickname?: string }): Promise<{ nickname: string }>
+      setSettings(patch: {
+        nickname?: string
+        customRelays?: string[]
+        reachableRelays?: string[]
+        relayCheckedAt?: number
+      }): Promise<{
+        nickname: string
+        customRelays: string[]
+        reachableRelays: string[]
+        relayCheckedAt: number
+      }>
     }
   }
 }

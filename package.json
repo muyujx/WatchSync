@@ -9,6 +9,7 @@
     "dev": "electron-vite dev",
     "build": "electron-vite build",
     "build:win": "electron-vite build && electron-builder --win --x64",
+    "build:debug": "electron-vite build && electron-builder --win portable --x64 --publish never -c.compression=store -c.npmRebuild=false",
     "build:dir": "electron-vite build && electron-builder --dir",
     "start": "electron-vite preview",
     "test": "vitest run",
@@ -33,6 +34,10 @@
     "directories": {
       "output": "dist"
     },
+    "electronDownload": {
+      "mirror": "https://npmmirror.com/mirrors/electron/"
+    },
+    "electronDist": "node_modules/electron/dist",
     "files": [
       "!**/.vscode/*",
       "!docs/*",

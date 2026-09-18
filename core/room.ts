@@ -5,6 +5,7 @@
  * 适配 @trystero-p2p/* 0.25 属性赋值制 API。
  */
 import { decodeMsg, encodeMsg, type SyncMsg } from './protocol'
+import { p2pLog } from './log'
 
 /** makeAction 上下文（仅用到 peerId） */
 export interface ActionContext {
@@ -81,12 +82,34 @@ export function createRoom(trysteroRoom: TrysteroRoomLike, onMessage: (msg: Sync
   }
 }
 
+/** 打开真实房间的选项 */
+export interface OpenRoomOptions {
+  /** 连接使用的中继地址；为空则用 Trystero 默认（按 appId 确定性挑选，保证双方一致） */
+  relayUrls?: string[]
+  /** 中继/ICE 建连失败回调（reason 为可读原因，来自 Trystero onJoinError） */
+  onJoinError?: (reason: string) => void
+}
+
 /**
  * 打开真实房间（唯一与 @trystero-p2p/nostr 耦合的位置）。
- * 参数：roomId 房间 ID。
+ * 参数：roomId 房间 ID；opts 中继列表与错误回调。
  * 返回值：Trystero 房间对象。
  */
-export async function openRealRoom(roomId: string): Promise<TrysteroRoomLike> {
+export async function openRealRoom(roomId: string, opts: OpenRoomOptions = {}): Promise<TrysteroRoomLike> {
   const { joinRoom } = await import('@trystero-p2p/nostr')
-  return joinRoom({ appId: APP_ID }, roomId) as unknown as TrysteroRoomLike
+  const urls = (opts.relayUrls ?? []).filter(Boolean)
+  const config = {
+    appId: APP_ID,
+    // 显式给出中继列表时 Trystero 会全部使用（不再按 appId 随机挑选）
+    ...(urls.length ? { relayConfig: { urls } } : {}),
+  }
+  // 始终注册回调：即使 UI 未订阅也要留日志，便于排查信令/ICE 失败
+  const callbacks = {
+    onJoinError: (d: { error: string; appId: string; roomId: string; peerId: string }) => {
+      p2pLog('onJoinError', d)
+      opts.onJoinError?.(d.error)
+    },
+  }
+  p2pLog('joinRoom', { appId: APP_ID, roomId, relays: urls.length ? urls : '(trystero 默认：按 appId 确定性挑选)' })
+  return joinRoom(config, roomId, callbacks) as unknown as TrysteroRoomLike
 }

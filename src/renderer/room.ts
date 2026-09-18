@@ -6,12 +6,16 @@ import { computeTargetPosition, decideCorrection, isConnectionLost, type StateSn
 import { buildShareUrl, generateRoomId } from '../../core/shareLink'
 import { createRoom, openRealRoom, type RoomHandle } from '../../core/room'
 import type { SyncMsg } from '../../core/protocol'
+import { p2pLog } from '../../core/log'
 
 /** 房间角色 */
 export type Role = 'host' | 'follower'
 
 /** 成员端断线判定阈值（ms）：超过该时长未收到房主 state 心跳即视为连接断开 */
 const STATE_TIMEOUT_MS = 8000
+
+/** 成员端加入超时（ms）：超过该时长仍未与房主建立任何数据往来即判定加入失败 */
+const JOIN_TIMEOUT_MS = 15000
 
 /** 房间控制器：UI 与 P2P/视频层之间的唯一中介 */
 export class RoomController {
@@ -29,6 +33,12 @@ export class RoomController {
   onConnectionLost: (() => void) | null = null
   /** 连接恢复回调（断线后重新收到房主心跳） */
   onConnectionRestored: (() => void) | null = null
+  /** 加入失败回调（中继建连失败或超时未连上房主；reason 为可读原因） */
+  onJoinFailed: ((reason: string) => void) | null = null
+  /** 与房主建立数据连接回调（首次收到房主心跳/profile） */
+  onHostConnected: (() => void) | null = null
+  /** 连接使用的中继地址（UI 探测结果；为空则用 Trystero 默认中继） */
+  relayUrls: string[] = []
   /** 成员离开回调（参数：peerId、昵称；昵称空串表示离开前尚未收到 profile） */
   onPeerLeft: ((peerId: string, name: string) => void) | null = null
   /** 成员加入回调（首次收到该成员 profile 时触发：peerId、昵称） */
@@ -45,9 +55,13 @@ export class RoomController {
   private lastStateAt = 0
   /** 成员端是否已判定为断线（避免重复触发回调） */
   private connectionLost = false
+  /** 本次加入是否已与房主建立数据连接（未建立时由加入看门狗判定失败） */
+  private connected = false
   private heartbeatTimer: number | null = null
   private followTimer: number | null = null
   private pollTimer: number | null = null
+  /** 加入看门狗定时器 */
+  private joinTimer: number | null = null
 
   /**
    * 创建房间（房主）。
@@ -58,10 +72,13 @@ export class RoomController {
   async host(roomId?: string): Promise<string> {
     this.role = 'host'
     this.roomId = roomId || generateRoomId()
-    // 房主不需要识别他人为房主
+    // 房主不需要识别他人为房主；切换角色时清掉上一轮的加入状态
     this.hostPeerId = ''
+    this.connected = false
+    this.clearJoinWatchdog()
     await this.attach()
     this.startHeartbeat()
+    p2pLog('host ready', { roomId: this.roomId, relays: this.relayUrls })
     return buildShareUrl(this.roomId)
   }
 
@@ -75,19 +92,65 @@ export class RoomController {
     // 重置断线监控与房主识别：首次收到房主心跳/profile 后再建立
     this.lastStateAt = 0
     this.connectionLost = false
+    this.connected = false
     this.hostPeerId = ''
     await this.attach()
+    p2pLog('join start', { roomId, relays: this.relayUrls })
     // 立即请求全量状态（hello 广播全员，房主响应）
     this.room?.broadcast({ t: 'hello' })
     this.startFollowLoop()
+    this.startJoinWatchdog()
+  }
+
+  /** 启动加入看门狗：超时仍未见房主数据往来则判定加入失败 */
+  private startJoinWatchdog(): void {
+    this.clearJoinWatchdog()
+    this.joinTimer = window.setTimeout(() => {
+      this.joinTimer = null
+      if (!this.connected) {
+        p2pLog('join timeout', { roomId: this.roomId, relays: this.relayUrls })
+        this.onJoinFailed?.('未连接到房主，可能是中继不通或房主不在线')
+      }
+    }, JOIN_TIMEOUT_MS)
+  }
+
+  /** 停止加入看门狗 */
+  private clearJoinWatchdog(): void {
+    if (this.joinTimer) {
+      clearTimeout(this.joinTimer)
+      this.joinTimer = null
+    }
+  }
+
+  /** 标记已与房主建立数据连接：停止看门狗并通知 UI（仅成员端） */
+  private markConnected(): void {
+    if (this.role !== 'follower' || this.connected) return
+    this.connected = true
+    this.clearJoinWatchdog()
+    p2pLog('host connected')
+    this.onHostConnected?.()
+  }
+
+  /** 是否已与房主建立数据连接（供诊断快照读取） */
+  get hostConnected(): boolean {
+    return this.connected
   }
 
   /** 建立 P2P 房间并注册消息处理 */
   private async attach(): Promise<void> {
-    const raw = await openRealRoom(this.roomId)
+    const raw = await openRealRoom(this.roomId, {
+      relayUrls: this.relayUrls,
+      // 中继/ICE 建连失败：离开房间后由 UI 提示（避免成员端静默停在“房间里没人”）
+      onJoinError: (reason) => {
+        if (!this.room || this.role !== 'follower') return
+        this.clearJoinWatchdog()
+        this.onJoinFailed?.(reason)
+      },
+    })
     this.room = createRoom(raw, (msg, peerId) => this.handleMsg(msg, peerId))
     this.room.onPeerJoin((id) => {
       this.peers.add(id)
+      p2pLog('peerJoin', id)
       // 新成员加入：向其自我介绍（对方也会介绍自己）
       this.announceProfile()
       this.onPeersChanged?.()
@@ -95,6 +158,7 @@ export class RoomController {
     this.room.onPeerLeave((id) => {
       // 先取昵称再删除，供 UI 提示“谁离开了房间”
       const name = this.peerNames.get(id) || ''
+      p2pLog('peerLeave', id, name)
       this.peers.delete(id)
       this.peerNames.delete(id)
       // 离开的是房主：清除房主标记，成员列表不再标注
@@ -114,13 +178,18 @@ export class RoomController {
    * 参数：msg 同步消息；peerId 发送方。
    */
   private handleMsg(msg: SyncMsg, peerId: string): void {
+    // state 心跳每 2s 一次，日志量太大：只打其余消息类型，便于排查信令
+    if (msg.t !== 'state') p2pLog('recv', msg.t, 'from', peerId, msg)
     // 昵称消息不分角色：任何一端都记录并在 UI 展示
     if (msg.t === 'profile') {
       const name = msg.name.slice(0, 20)
       const first = !this.peerNames.has(peerId)
       this.peerNames.set(peerId, name)
-      // 房主身份标记：成员端据此在成员列表标注房主
-      if (msg.host) this.hostPeerId = peerId
+      // 房主身份标记：成员端据此在成员列表标注房主；收到房主资料即视为已连上
+      if (msg.host) {
+        this.hostPeerId = peerId
+        this.markConnected()
+      }
       // 首次得知该成员即视为加入，供 UI 提示
       if (first) this.onPeerJoined?.(peerId, name)
       this.onPeersChanged?.()
@@ -138,6 +207,8 @@ export class RoomController {
     }
     // 成员：应用房主指令
     if (msg.t === 'state') {
+      // 收到房主心跳即证明数据通道已打通
+      this.markConnected()
       this.markAlive()
       this.applySnapshot({ position: msg.position, playing: msg.playing, at: msg.at }, msg.url)
     } else if (msg.t === 'play') {
@@ -217,6 +288,7 @@ export class RoomController {
       // 断线看门狗：曾与房主建立同步后长时间无心跳 → 判定连接断开（仅提示，不自动退出）
       if (!this.connectionLost && isConnectionLost(this.lastStateAt, Date.now(), STATE_TIMEOUT_MS)) {
         this.connectionLost = true
+        p2pLog('connection lost (heartbeat timeout)')
         this.onConnectionLost?.()
       }
       if (!this.lastSnapshot) return
@@ -251,6 +323,7 @@ export class RoomController {
   /** 离开房间并清理全部定时器 */
   async leave(): Promise<void> {
     this.stopPolling()
+    this.clearJoinWatchdog()
     if (this.followTimer) {
       clearInterval(this.followTimer)
       this.followTimer = null
@@ -261,6 +334,7 @@ export class RoomController {
     // 重置断线监控与房主识别状态
     this.lastStateAt = 0
     this.connectionLost = false
+    this.connected = false
     this.hostPeerId = ''
     this.peers.clear()
     this.peerNames.clear()

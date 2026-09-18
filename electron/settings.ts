@@ -6,6 +6,12 @@ import { app } from 'electron'
 export interface Settings {
   /** 用户昵称（房间内展示） */
   nickname: string
+  /** 用户自定义信令中继（wss:// 地址） */
+  customRelays: string[]
+  /** 最近一次探测得到的可达中继 */
+  reachableRelays: string[]
+  /** 最近一次中继探测时间（ms；0=尚未探测） */
+  relayCheckedAt: number
 }
 
 /** 默认昵称词库（随机组合，用户可改） */
@@ -19,16 +25,36 @@ const NICK_SUFFIX = () => Math.random().toString(36).slice(2, 6)
 export function loadSettings(): Settings {
   const file = join(app.getPath('userData'), 'settings.json')
   try {
-    const s = JSON.parse(readFileSync(file, 'utf8')) as Settings
-    if (typeof s.nickname === 'string' && s.nickname) return s
+    const s = JSON.parse(readFileSync(file, 'utf8')) as Partial<Settings>
+    if (typeof s.nickname === 'string' && s.nickname) {
+      // 旧版本设置无中继字段：补齐默认值，避免读取处出现 undefined
+      return {
+        nickname: s.nickname,
+        customRelays: toStringArray(s.customRelays),
+        reachableRelays: toStringArray(s.reachableRelays),
+        relayCheckedAt: typeof s.relayCheckedAt === 'number' ? s.relayCheckedAt : 0,
+      }
+    }
   } catch {
     // 首次启动/文件损坏：走默认生成
   }
   const fresh: Settings = {
     nickname: `${NICK_PREFIX[Math.floor(Math.random() * NICK_PREFIX.length)]}-${NICK_SUFFIX()}`,
+    customRelays: [],
+    reachableRelays: [],
+    relayCheckedAt: 0,
   }
   saveSettings(fresh)
   return fresh
+}
+
+/**
+ * 过滤出字符串数组（设置文件可能被手改，做类型兜底）。
+ * 参数：v 待校验值。
+ * 返回值：仅含字符串的数组；非法返回空数组。
+ */
+function toStringArray(v: unknown): string[] {
+  return Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : []
 }
 
 /**

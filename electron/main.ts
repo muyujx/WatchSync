@@ -2,7 +2,7 @@ import { join } from 'node:path'
 import { app, BrowserWindow, clipboard, ipcMain, Menu } from 'electron'
 import { parseShareUrl } from '../core/shareLink'
 import { VideoViewController } from './videoView'
-import { loadSettings, saveSettings } from './settings'
+import { loadSettings, saveSettings, type Settings } from './settings'
 
 /**
  * 应用入口。
@@ -46,6 +46,14 @@ function createWindow(): void {
       sandbox: false,
     },
   })
+  // 开发模式：把渲染进程 console 转发到终端，便于排查 P2P 日志（生产静默）
+  if (!app.isPackaged) {
+    // Electron 33 实际用旧签名 (event, level, message, ...)；部分版本第二参为 MessageDetails 对象：两种都兼容
+    mainWindow.webContents.on('console-message', (_e, arg, message) => {
+      const text = typeof arg === 'object' && arg !== null ? (arg as { message?: string }).message : message
+      if (text) console.log('[renderer] ' + text)
+    })
+  }
   if (process.env.ELECTRON_RENDERER_URL) mainWindow.loadURL(process.env.ELECTRON_RENDERER_URL)
   else mainWindow.loadFile(join(import.meta.dirname, '../renderer/index.html'))
   mainWindow.on('resize', () => video.resize(mainWindow!))
@@ -81,7 +89,7 @@ app.whenReady().then(() => {
   video.setOnTitle((title, url) => mainWindow?.webContents.send('page-title', { title, url }))
   // ---- 用户设置：读取（首次生成默认昵称）与保存 ----
   ipcMain.handle('getSettings', () => loadSettings())
-  ipcMain.handle('setSettings', (_e, patch: { nickname?: string }) => {
+  ipcMain.handle('setSettings', (_e, patch: Partial<Settings>) => {
     const s = { ...loadSettings(), ...patch }
     saveSettings(s)
     return s

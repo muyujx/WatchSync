@@ -94,6 +94,27 @@
         <input v-model="nickInput" maxlength="20" placeholder="1-20 个字符，房间内展示" @keydown.enter="saveSettings" />
         <span class="field-hint">房间内其他成员将看到此用户名</span>
       </label>
+
+      <!-- 信令中继：可达性探测结果 + 自定义增删（双方需有共同可达中继才能连上） -->
+      <div class="relay-section">
+        <div class="relay-head">
+          <span class="field-label">信令中继（{{ reachableCount }}/{{ relayProbes.length }} 可达）</span>
+          <button class="m-btn tonal" :disabled="probing" @click="refreshRelays">{{ probing ? '探测中…' : '重新探测' }}</button>
+        </div>
+        <ul class="relay-list">
+          <li v-for="p in relayProbes" :key="p.url" class="relay-row">
+            <span class="dot" :class="{ online: p.reachable }"></span>
+            <span class="relay-url" :title="p.url">{{ hostOf(p.url) }}</span>
+            <span class="relay-latency" :class="{ online: p.reachable }">{{ p.reachable ? p.latencyMs + 'ms' : '不可达' }}</span>
+            <button v-if="customRelays.includes(p.url)" class="relay-del" title="删除自定义中继" @click="removeRelay(p.url)">✕</button>
+          </li>
+        </ul>
+        <div class="relay-add">
+          <input v-model="newRelay" placeholder="添加中继，如 relay.example.com" @keydown.enter="addRelay" />
+          <button class="m-btn tonal" :disabled="!newRelay.trim()" @click="addRelay">添加</button>
+        </div>
+      </div>
+
       <div class="dialog-actions">
         <button class="m-btn" @click="closeSettings">取消</button>
         <button class="m-btn filled" :disabled="!nickInput.trim()" @click="saveSettings">保存</button>
@@ -111,6 +132,7 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import { RoomController } from './room'
 import { buildShareUrl } from '../../core/shareLink'
+import { normalizeRelayUrl, probeRelays, selectRelays, type RelayProbe } from '../../core/relay'
 
 /** 标签页信息结构 */
 interface TabInfo {
@@ -170,12 +192,12 @@ function hostOf(url: string): string {
   }
 }
 
-/** 状态提示 8 秒自动消失（snackbar 语义） */
+/** 状态提示 4 秒自动消失（snackbar 语义） */
 let snackTimer: ReturnType<typeof setTimeout> | null = null
 function notify(text: string): void {
   statusText.value = text
   if (snackTimer) clearTimeout(snackTimer)
-  snackTimer = setTimeout(() => (statusText.value = ''), 8000)
+  snackTimer = setTimeout(() => (statusText.value = ''), 4000)
 }
 
 /** 点击站点卡片：填入地址并打开（房主状态下自动进入同步流程） */
@@ -226,6 +248,65 @@ async function saveSettings(): Promise<void> {
   notify('用户名已保存')
 }
 
+/** ===== 信令中继探测与设置 ===== */
+/** 全部候选中继及其最近探测状态（设置页展示） */
+const relayProbes = ref<RelayProbe[]>([])
+/** 用户自定义中继（wss:// 地址） */
+const customRelays = ref<string[]>([])
+/** 探测进行中标记（避免重复探测） */
+const probing = ref(false)
+/** 新中继输入框内容 */
+const newRelay = ref('')
+/** 可达中继数量（设置页标题展示） */
+const reachableCount = computed(() => relayProbes.value.filter((p) => p.reachable).length)
+
+/**
+ * 组装候选中继：Trystero 默认中继 + 用户自定义（去重）。
+ * 返回值：待探测的中继地址列表。
+ */
+async function candidateRelays(): Promise<string[]> {
+  const { defaultRelayUrls } = await import('@trystero-p2p/nostr')
+  return [...new Set([...defaultRelayUrls, ...customRelays.value])]
+}
+
+/** 并发探测全部中继：更新设置页状态，保存可达列表并作为连接用中继（空则回退默认） */
+async function refreshRelays(): Promise<void> {
+  if (probing.value) return
+  probing.value = true
+  try {
+    const results = await probeRelays(await candidateRelays())
+    relayProbes.value = results
+    const reachable = selectRelays(results)
+    // 显式给出可达中继；为空数组时 Trystero 用默认中继（按 appId 确定性挑选）
+    controller.relayUrls = reachable
+    await window.p2pApi.setSettings({ reachableRelays: reachable, relayCheckedAt: Date.now() })
+  } finally {
+    probing.value = false
+  }
+}
+
+/** 添加自定义中继：规范化地址、持久化并重新探测 */
+async function addRelay(): Promise<void> {
+  const url = normalizeRelayUrl(newRelay.value)
+  if (!url) return
+  if (!customRelays.value.includes(url)) {
+    customRelays.value = [...customRelays.value, url]
+    await window.p2pApi.setSettings({ customRelays: customRelays.value })
+  }
+  newRelay.value = ''
+  await refreshRelays()
+}
+
+/**
+ * 删除自定义中继：持久化并从候选列表移除后重新探测。
+ * 参数：url 待删除的中继地址。
+ */
+async function removeRelay(url: string): Promise<void> {
+  customRelays.value = customRelays.value.filter((u) => u !== url)
+  await window.p2pApi.setSettings({ customRelays: customRelays.value })
+  await refreshRelays()
+}
+
 /** ===== 成员展示（昵称） ===== */
 const peerTick = ref(0)
 // 昵称表变化时触发响应式更新
@@ -233,16 +314,25 @@ controller.onPeersChanged = () => peerTick.value++
 // 成员端断线：仅提示，房间状态与后续操作交给用户自己决定
 controller.onConnectionLost = () => {
   connectionLost.value = true
-  notify('与房主连接已断开，可点「退出房间」后重新加入')
+  notify('与房主连接已断开')
 }
 // 断线后重新收到房主心跳：清除提示
 controller.onConnectionRestored = () => {
   connectionLost.value = false
-  notify('已重新连接房主')
+  notify('已重连房主')
 }
-// 有成员加入（首次收到其昵称）：识别到房主则提示已连接，其余提示加入
+// 真正连上房主（收到房主心跳/资料）：此时才提示连接成功
+controller.onHostConnected = () => notify('已连接房主')
+// 加入失败（中继建连失败或超时没连上房主）：报错并退出房间回初始态，便于重试
+controller.onJoinFailed = (reason) => {
+  notify('连接失败：' + reason)
+  void controller.leave()
+  resetRoomState()
+}
+// 有成员加入（首次收到其昵称）：房主连接成功已由 onHostConnected 提示，这里只报其他成员
 controller.onPeerJoined = (id, name) => {
-  notify(id === controller.hostPeerId ? `已连接房主 ${name}` : `${name} 加入了房间`)
+  if (id === controller.hostPeerId) return
+  notify(`${name} 加入了房间`)
 }
 // 有成员离开：提示谁离开了房间
 controller.onPeerLeft = (_id, name) => notify(`${name || '一名成员'} 离开了房间`)
@@ -280,6 +370,26 @@ function syncDebug(): void {
   ;(window as unknown as { __p2pDebug: unknown }).__p2pDebug = { roomId: roomId.value, isHost: isHost.value, myName: myName.value }
 }
 
+/**
+ * 连接诊断快照：房间/连接/中继状态（drive.cjs debug 命令读取）。
+ * 返回值：含 selfId、各中继 readyState、peers 的快照对象。
+ */
+async function diagSnapshot(): Promise<unknown> {
+  const { getRelaySockets, selfId } = await import('@trystero-p2p/nostr')
+  const sockets = (getRelaySockets?.() ?? {}) as Record<string, WebSocket | undefined>
+  return {
+    roomId: roomId.value,
+    isHost: isHost.value,
+    myName: myName.value,
+    selfId,
+    hostConnected: controller.hostConnected,
+    hostPeerId: controller.hostPeerId,
+    peers: [...controller.peers],
+    peerNames: Object.fromEntries(controller.peerNames),
+    relays: Object.entries(sockets).map(([url, ws]) => ({ url, readyState: ws?.readyState ?? -1 })),
+  }
+}
+
 /** 房主：创建房间并复制邀请链接（不依赖视频地址；有地址则顺带打开并注入桥） */
 async function onHost(): Promise<void> {
   try {
@@ -292,16 +402,14 @@ async function onHost(): Promise<void> {
     controller.announceProfile()
     await window.p2pApi.copyText(link)
 
-    let hint = '房间已创建，邀请链接已复制'
+    let hint = '房间已创建'
     if (videoUrl.value) {
       // 地址栏已有地址：顺带打开视频并注入，房主即可开始操作
       await window.p2pApi.openVideo(videoUrl.value)
       tabSet(videoUrl.value)
       controller.videoUrl = videoUrl.value
       const injected = await window.p2pApi.inject(false)
-      if (injected !== 'ok' && injected !== 'already') hint += `；该页面暂未找到视频元素（${injected}）`
-    } else {
-      hint += '；打开视频网页后自动同步'
+      if (injected !== 'ok' && injected !== 'already') hint = '房间已创建，未找到视频元素'
     }
     syncDebug()
     notify(hint)
@@ -314,17 +422,17 @@ async function onHost(): Promise<void> {
 async function onJoinLink(): Promise<void> {
   const parsed = await window.p2pApi.parseLink(joinInput.value.trim())
   if (!parsed) {
-    notify('邀请链接格式错误')
+    notify('链接无效')
     return
   }
-  notify('加入房间中...')
+  notify('正在连接房主…')
   isHost.value = false
   roomId.value = parsed.roomId
   controller.myName = myName.value
   await controller.join(parsed.roomId)
   controller.announceProfile()
   syncDebug()
-  notify('已加入，等待房主同步状态')
+  // 成功与否由 onHostConnected / onJoinFailed 回调决定，不在此处提前宣告
 }
 
 /** 打开/切换视频页（房主） */
@@ -335,21 +443,21 @@ async function onOpen(): Promise<void> {
   if (roomId.value && isHost.value) {
     const injected = await window.p2pApi.inject(false)
     controller.videoUrl = videoUrl.value
-    notify(injected === 'ok' ? '视频已就绪，开始同步' : '页面尚未出现视频元素')
+    notify(injected === 'ok' ? '已开始同步' : '未找到视频元素')
   }
 }
 
 /** 复制邀请链接（仅含房间号，不含任何同步信息） */
 async function onCopyLink(): Promise<void> {
   await window.p2pApi.copyText(buildShareUrl(roomId.value))
-  notify('邀请链接已复制')
+  notify('链接已复制')
 }
 
 // 房主解散房间：成员自动退出（不关闭视频页）
 controller.onDissolved = () => {
   void controller.leave()
   resetRoomState()
-  notify('房主已解散房间')
+  notify('房间已解散')
 }
 
 /** 清理本机房间状态，回到可创建/加入的初始态（不关闭视频页） */
@@ -370,10 +478,15 @@ async function exitRoom(): Promise<void> {
 }
 
 onMounted(() => {
-  // 读取用户设置（首次启动生成默认昵称）
+  // 暴露诊断快照给联调脚本（drive.cjs debug）
+  ;(window as unknown as { __p2pDiag: () => Promise<unknown> }).__p2pDiag = diagSnapshot
+  // 读取用户设置（首次启动生成默认昵称）；装载上次可达中继并后台重新探测
   window.p2pApi.getSettings().then((s) => {
     myName.value = s.nickname
     controller.myName = s.nickname
+    customRelays.value = s.customRelays
+    controller.relayUrls = s.reachableRelays
+    void refreshRelays()
   })
   // 系统唤起（second-instance/open-url）传来的邀请链接自动加入
   window.p2pApi.onProtocolUrl(async (url) => {
@@ -457,6 +570,23 @@ body { font-family: 'Segoe UI', 'Microsoft YaHei', system-ui, sans-serif; backgr
 .field-hint { display: block; font-size: 11px; color: #80868b; margin-top: 6px; }
 .dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 20px; }
 
+/* ===== 设置页：信令中继列表 ===== */
+.relay-section { margin-top: 18px; }
+.relay-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.relay-head .m-btn { height: 26px; padding: 0 12px; font-size: 12px; }
+.relay-list { list-style: none; padding: 0; margin: 8px 0 0; max-height: 160px; overflow-y: auto; border: 1px solid #f1f3f4; border-radius: 8px; }
+.relay-row { display: flex; align-items: center; gap: 8px; padding: 5px 10px; border-bottom: 1px solid #f8f9fa; }
+.relay-row:last-child { border-bottom: none; }
+.relay-url { flex: 1; font-size: 12px; color: #202124; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.relay-latency { font-size: 11px; color: #bdc1c6; }
+.relay-latency.online { color: #137333; }
+.relay-del { width: 18px; height: 18px; flex: none; border: none; border-radius: 50%; background: transparent; color: #5f6368; font-size: 10px; line-height: 1; cursor: pointer; }
+.relay-del:hover { background: #fce8e6; color: #c5221f; }
+.relay-add { display: flex; gap: 8px; margin-top: 8px; }
+.relay-add input { flex: 1; height: 30px; padding: 0 10px; border: 1px solid #dadce0; border-radius: 15px; font-size: 12px; outline: none; }
+.relay-add input:focus { border-color: #1a73e8; }
+.relay-add .m-btn { height: 30px; padding: 0 14px; font-size: 12px; }
+
 /* ===== 成员面板（群聊式在线成员列表）===== */
 .members-dialog { width: 320px; }
 .member-list { list-style: none; padding: 0; margin: 0; max-height: 320px; overflow-y: auto; }
@@ -472,8 +602,8 @@ body { font-family: 'Segoe UI', 'Microsoft YaHei', system-ui, sans-serif; backgr
 .flex-spacer { flex: 1; }
 
 /* ===== Material snackbar ===== */
-/* 顶部提示条：视频画面（原生视图）从工具栏下方开始，底部提示会被遮挡，故放顶部 */
-.snackbar { position: fixed; left: 50%; top: 46px; transform: translateX(-50%); max-width: 70%; padding: 10px 20px; border-radius: 8px; background: #323639; color: #e8eaed; font-size: 13px; box-shadow: 0 3px 10px rgba(0, 0, 0, 0.3); z-index: 99; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* 提示条放在标签行（0–36px）中部拖动区：不遮挡工具栏按钮，也不会被视频原生视图覆盖 */
+.snackbar { position: fixed; left: 50%; top: 5px; transform: translateX(-50%); max-width: 420px; height: 26px; line-height: 26px; padding: 0 14px; border-radius: 13px; background: #323639; color: #e8eaed; font-size: 12px; box-shadow: 0 2px 8px rgba(0, 0, 0, 0.28); z-index: 99; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .snack-enter-active, .snack-leave-active { transition: opacity 0.25s, transform 0.25s; }
-.snack-enter-from, .snack-leave-to { opacity: 0; transform: translateX(-50%) translateY(-12px); }
+.snack-enter-from, .snack-leave-to { opacity: 0; transform: translateX(-50%) translateY(-8px); }
 </style>

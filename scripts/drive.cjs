@@ -297,6 +297,13 @@ async function main() {
     }
     a.close()
     b.close()
+  } else if (stage === 'debug') {
+    // 打印指定实例的连接诊断快照：debug <port>
+    const port = Number(process.argv[3] || 9222)
+    const c = await attachMainPage(port)
+    const snap = await c.eval('window.__p2pDiag ? window.__p2pDiag() : null')
+    console.log(JSON.stringify(snap, null, 2))
+    c.close()
   } else if (stage === 'ui-eval') {
     // 在指定实例的 UI 页面执行任意表达式：ui-eval <port> <expression>
     const port = Number(process.argv[3])
