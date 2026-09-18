@@ -1,8 +1,8 @@
 /**
  * 一键启动/关闭两个本地联调实例。
  * 用法：
- *   node scripts/dev-two.cjs        启动房主 A(CDP 9222) 与成员 B(CDP 9223)
- *   node scripts/dev-two.cjs stop   按 --profile 关闭两个实例
+ *   node scripts/dev/dev-two.cjs        启动房主 A(CDP 9222) 与成员 B(CDP 9223)
+ *   node scripts/dev/dev-two.cjs stop   按 --profile 关闭两个实例
  *
  * 说明：默认单实例锁下需用 --profile 区分 userData 才能同机多开；
  * 子进程 detached 脱离当前进程树，命令立即返回不占终端；
@@ -13,8 +13,8 @@ const { mkdirSync, openSync, closeSync } = require('node:fs')
 const net = require('node:net')
 const { join } = require('node:path')
 
-/** 项目根目录（脚本位于 scripts/ 下） */
-const ROOT = join(__dirname, '..')
+/** 项目根目录（脚本位于 scripts/dev/ 下） */
+const ROOT = join(__dirname, '..', '..')
 /** 日志目录 */
 const LOG_DIR = join(ROOT, 'logs')
 
@@ -50,7 +50,7 @@ function start() {
     closeSync(out)
     console.log(`[dev:two] 启动实例 ${inst.profile} → CDP ${inst.port}，日志 logs/${inst.log}`)
   }
-  console.log('[dev:two] 数秒就绪后可执行：node scripts/drive.cjs host-init')
+  console.log('[dev:two] 数秒就绪后可执行：node scripts/e2e/drive.cjs host-init')
   console.log('[dev:two] 关闭：npm run dev:two:stop')
 }
 

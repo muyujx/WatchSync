@@ -11,5 +11,5 @@
     "types": ["vitest/globals"],
     "noEmit": true
   },
-  "include": ["electron", "core", "src", "inject", "electron.vite.config.ts"]
+  "include": ["src", "test", "electron.vite.config.ts"]
 }

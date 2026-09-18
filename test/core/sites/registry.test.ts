@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { SITE_ADAPTERS, selectAdapter } from './index'
+import { SITE_ADAPTERS, selectAdapter } from '../../../src/core/sites'
 
 describe('selectAdapter', () => {
   it('次元城域名命中 cycani 适配器', () => {

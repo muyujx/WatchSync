@@ -41,7 +41,7 @@
 
 **步骤**：
 
-1. 写一个独立 `spike/index.html` + `spike/spike.js`（不进 Electron，任意静态服务器打开）
+1. 写一个独立 `scripts/spike/index.html` + `scripts/spike/spike.js`（不进 Electron，任意静态服务器打开）
 2. 同机开两个不同浏览器窗口（Chrome + Edge），A 点"创建房间"生成 roomId，B 输入同一 roomId 加入
 3. 观察双方控制台输出 `peerJoin` 事件与互相发送的测试消息
 

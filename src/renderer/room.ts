@@ -2,11 +2,11 @@
  * UI 侧房间控制器：串联 shareLink/protocol/room/syncEngine 与 Electron API。
  * 职责：创建/加入房间、房主心跳+事件广播、成员校准循环、成员列表维护。
  */
-import { computeTargetPosition, decideCorrection, decidePlayback, isConnectionLost, type StateSnapshot } from '../../core/syncEngine'
-import { buildShareUrl, generateRoomId } from '../../core/shareLink'
-import { createRoom, openRealRoom, type RoomHandle } from '../../core/room'
-import type { SyncMsg } from '../../core/protocol'
-import { p2pLog } from '../../core/log'
+import { computeTargetPosition, decideCorrection, decidePlayback, isConnectionLost, type StateSnapshot } from '../core/syncEngine'
+import { buildShareUrl, generateRoomId } from '../core/shareLink'
+import { createRoom, openRealRoom, type RoomHandle } from '../core/room'
+import type { SyncMsg } from '../core/protocol'
+import { p2pLog } from '../core/log'
 import { RttProbe } from './rtt'
 
 /** 房间角色 */

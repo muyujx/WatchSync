@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { normalizeRelayUrl, probeRelay, probeRelays, selectRelays, type SocketLike } from './relay'
+import { normalizeRelayUrl, probeRelay, probeRelays, selectRelays, type SocketLike } from '../../src/core/relay'
 
 /**
  * 构造可控的 fake socket：手动触发 open/message/error，并记录发送内容。

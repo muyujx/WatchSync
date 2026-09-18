@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
-import { createRoom } from './room'
-import type { SyncMsg } from './protocol'
+import { createRoom } from '../../src/core/room'
+import type { SyncMsg } from '../../src/core/protocol'
 
 /**
  * 构造符合 TrysteroRoomLike 接口的 fake 房间（0.25 属性赋值制 API）。

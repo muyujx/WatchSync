@@ -1,12 +1,12 @@
 /**
  * cycani.org 测试账号自动注册脚本（仅开发用）。
  * 流程：创建 mail.tm 临时邮箱 → CDP 填写注册表单 → 发送验证码 → API 收码 → 完成注册。
- * 用法：node scripts/register-cycani.cjs [cdp端口，默认9223]
- * 成功后凭据写入 scripts/test-account.local.json（已被 .gitignore 排除）。
+ * 用法：node scripts/site/register-cycani.cjs [cdp端口，默认9223]
+ * 成功后凭据写入 scripts/site/test-account.local.json（已被 .gitignore 排除）。
  */
 const http = require('node:http')
 const fs = require('node:fs')
-const { attachVideoPage } = require('./cdp-client.cjs')
+const { attachVideoPage } = require('../lib/cdp-client.cjs')
 
 const PORT = Number(process.argv[2] || 9223)
 const MAIL_API = 'https://api.mail.tm'

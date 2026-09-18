@@ -17,7 +17,7 @@ Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ `
 ```
 
 - 就绪探测：轮询 `http://localhost:9222/json/version`（实例 B 用 9223）
-- 自动化联调：`node scripts/drive.cjs host-init | follower-join <链接> | check-video <端口> | video-cmd <端口> <action> [arg]`
+- 自动化联调：`node scripts/e2e/drive.cjs host-init | follower-join <链接> | check-video <端口> | video-cmd <端口> <action> [arg]`
 
 
 

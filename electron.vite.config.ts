@@ -5,10 +5,10 @@ import vue from '@vitejs/plugin-vue'
 // electron-vite 三段构建：主进程 / 预加载 / 渲染进程
 export default defineConfig({
   main: {
-    build: { rollupOptions: { input: { index: resolve('electron/main.ts') } } },
+    build: { rollupOptions: { input: { index: resolve('src/main/main.ts') } } },
   },
   preload: {
-    build: { rollupOptions: { input: { index: resolve('electron/preload.ts') } } },
+    build: { rollupOptions: { input: { index: resolve('src/main/preload.ts') } } },
   },
   renderer: { root: 'src/renderer', plugins: [vue()] },
 })

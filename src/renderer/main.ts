@@ -1,6 +1,6 @@
 import { createApp } from 'vue'
 import App from './App.vue'
-import { setLogEnabled } from '../../core/log'
+import { setLogEnabled } from '../core/log'
 
 // 全局样式：按区块拆分，级联顺序为 基础 → 标签行 → 工具栏 → 主页 → 对话框 → 提示条
 import './styles/base.css'

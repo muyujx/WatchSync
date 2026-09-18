@@ -1,10 +1,10 @@
 /**
  * cycani.org 登录脚本（仅开发联调用）。
  * 行为：检测登录态 → 未登录才执行登录（cookie 持久化在 userData，之后重启无需再登录）。
- * 用法：node scripts/login-cycani.cjs [cdp端口]（凭据读 scripts/test-account.local.json）
+ * 用法：node scripts/site/login-cycani.cjs [cdp端口]（凭据读 scripts/site/test-account.local.json）
  */
 const fs = require('node:fs')
-const { attachVideoPage } = require('./cdp-client.cjs')
+const { attachVideoPage } = require('../lib/cdp-client.cjs')
 
 const PORT = Number(process.argv[2] || 9223)
 const CRED_FILE = __dirname + '/test-account.local.json'

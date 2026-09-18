@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { decodeMsg, encodeMsg, type SyncMsg } from './protocol'
+import { decodeMsg, encodeMsg, type SyncMsg } from '../../src/core/protocol'
 
 describe('protocol encode/decode', () => {
   it('全部消息类型编解码往返一致', () => {

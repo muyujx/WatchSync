@@ -36,11 +36,11 @@
 
 | 模块 | 职责 |
 |------|------|
-| 主进程（electron/main） | 窗口管理、WebContentsView 生命周期、`p2psync://` 协议注册与唤起分发 |
-| 预加载脚本（electron/preload） | 向渲染进程暴露受控 API（打开视频页、注入脚本、剪贴板） |
-| 渲染进程 UI（src/） | 房间操作界面、成员列表、地址栏、状态提示 |
-| 核心逻辑（core/） | 房间管理、同步消息协议、同步引擎、分享链接生成/解析；不依赖 Electron，可独立单元测试 |
-| 注入脚本（inject/） | 房主端 monitor：监听视频 play/pause/seek 事件并上报；成员端 follower：接收指令控制视频 |
+| 主进程（src/main/main.ts） | 窗口管理、WebContentsView 生命周期、`p2psync://` 协议注册与唤起分发 |
+| 预加载脚本（src/main/preload.ts） | 向渲染进程暴露受控 API（打开视频页、注入脚本、剪贴板） |
+| 渲染进程 UI（src/renderer/） | 房间操作界面、成员列表、地址栏、状态提示 |
+| 核心逻辑（src/core/） | 房间管理、同步消息协议、同步引擎、分享链接生成/解析；不依赖 Electron，可独立单元测试 |
+| 站点注入脚本（src/core/sites/harness.ts） | 房主端监听视频 play/pause/seek 事件并上报；成员端接收指令控制视频并拦截本地操作 |
 
 ## 3. 技术选型
 
@@ -125,20 +125,30 @@ type SyncMsg =
 
 ```
 p2pSync/
-├── electron/              # 主进程与预加载脚本
-│   ├── main.ts            # 入口：窗口、WebContentsView、协议注册
-│   └── preload.ts         # 渲染进程受控 API 桥
-├── src/                   # 渲染进程 UI（Vue3）
-│   ├── App.vue
-│   └── views/             # 房间面板、成员列表、地址栏
-├── core/                  # 与平台无关的核心逻辑（可单测）
-│   ├── room.ts            # 房间管理（Trystero 封装：创建/加入/离开/成员事件）
-│   ├── protocol.ts        # SyncMsg 类型定义与编解码
-│   ├── syncEngine.ts      # 同步引擎：事件分发、周期校准、漂移补偿
-│   └── shareLink.ts       # 分享链接生成/解析、roomId 生成
-├── inject/                # 注入到视频页的脚本
-│   ├── monitor.ts         # 房主端：监听视频事件并回调
-│   └── follower.ts        # 成员端：执行同步指令、拦截本地操作
+├── src/                   # 全部项目源码
+│   ├── main/              # 主进程与预加载脚本
+│   │   ├── main.ts        # 入口：窗口、WebContentsView、协议注册
+│   │   ├── preload.ts     # 渲染进程受控 API 桥
+│   │   ├── settings.ts    # 用户设置读写
+│   │   └── videoView.ts   # 视频页 WebContentsView 管理
+│   ├── core/              # 与平台无关的核心逻辑（可单测）
+│   │   ├── room.ts        # 房间管理（Trystero 封装：创建/加入/离开/成员事件）
+│   │   ├── protocol.ts    # SyncMsg 类型定义与编解码
+│   │   ├── syncEngine.ts  # 同步引擎：事件分发、周期校准、漂移补偿
+│   │   ├── relay.ts       # 信令中继探测与选择
+│   │   ├── shareLink.ts   # 分享链接生成/解析、roomId 生成
+│   │   └── sites/         # 站点适配器与注入 harness
+│   └── renderer/          # 渲染进程 UI（Vue3）
+│       ├── App.vue
+│       └── components/    # 房间面板、成员列表、地址栏
+├── test/                  # 单元测试（Vitest，镜像 src/core 结构）
+│   └── core/
+├── scripts/               # 本地开发/联调/自动化脚本
+│   ├── dev/               # 双实例本地开发
+│   ├── e2e/               # CDP 自动化联调
+│   ├── site/              # 站点账号/测试页辅助
+│   ├── lib/               # 脚本公共模块
+│   └── spike/             # 早期技术验证
 └── docs/
 ```
 
@@ -155,7 +165,7 @@ p2pSync/
 
 ## 9. 测试策略
 
-- **core/ 单元测试**：同步引擎的误差计算、消息编解码、链接生成/解析（Vitest）
+- **src/core/ 单元测试（test/core/）**：同步引擎的误差计算、消息编解码、链接生成/解析（Vitest）
 - **注入脚本**：在本地测试页（含 `<video>` 的静态 HTML）上验证监听与控制
 - **双实例联调**：本机同时运行两个应用实例（不同 userData 目录）模拟房主与成员
 - **真实网络**：手机热点 + 家庭宽带跨网络验证打洞成功率

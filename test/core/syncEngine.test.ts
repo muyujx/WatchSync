@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { computeTargetPosition, decideCorrection, decidePlayback, isConnectionLost } from './syncEngine'
+import { computeTargetPosition, decideCorrection, decidePlayback, isConnectionLost } from '../../src/core/syncEngine'
 
 describe('computeTargetPosition', () => {
   it('播放中按时间外推', () => {

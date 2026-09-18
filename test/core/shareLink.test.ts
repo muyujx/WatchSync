@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { buildShareUrl, generateRoomId, parseShareUrl } from './shareLink'
+import { buildShareUrl, generateRoomId, parseShareUrl } from '../../src/core/shareLink'
 
 describe('generateRoomId', () => {
   it('生成 16 字符 Base32，且随机', () => {

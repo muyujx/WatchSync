@@ -1,6 +1,6 @@
 /**
  * T0 Spike 本地静态服务器（仅开发用）。
- * 启动：node spike/serve.js [端口]，默认 8931。
+ * 启动：node scripts/spike/serve.cjs [端口]，默认 8931。
  * 功能：以 spike 目录为根提供静态文件服务。
  */
 const http = require('node:http')

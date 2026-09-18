@@ -1,7 +1,7 @@
 /**
  * 通用视频页检查脚本（测试用）：conn <port> <expression>
  * 连接指定 CDP 端口上 URL 含 bilibili 的视频页 target，执行表达式并输出 JSON。
- * 用法：node scripts/check-bili.cjs 9222 "window.__p2pBridge ? window.__p2pBridge.status() : 'no-bridge'"
+ * 用法：node scripts/e2e/check-bili.cjs 9222 "window.__p2pBridge ? window.__p2pBridge.status() : 'no-bridge'"
  */
 const http = require('node:http')
 

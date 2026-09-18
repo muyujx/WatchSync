@@ -93,7 +93,7 @@ Trystero 通过 `appId + roomId` 共同确定信令主题：
 - 步骤 6 起中继完全退出，视频页面地址、播放进度等业务数据全部走 P2P 直连
 - 第 3 个及以后的成员加入流程相同，Trystero 自动维护全网状（mesh）拓扑：每个成员与房间内其他所有成员各建立一条 DataChannel
 
-### 3.4 Trystero 接入设计（core/room.ts）
+### 3.4 Trystero 接入设计（src/core/room.ts）
 
 ```ts
 import { joinRoom } from 'trystero/nostr'
@@ -107,7 +107,7 @@ import { joinRoom } from 'trystero/nostr'
  * - roomId: 房间 ID（房主为生成值，成员来自分享链接）
  * - role: 'host' | 'follower'，用于日志与回调语义区分（Trystero 本身无角色概念）
  * 返回值：
- * - 房间句柄，含发送/接收消息与成员事件订阅能力（详见 core/protocol.ts）
+ * - 房间句柄，含发送/接收消息与成员事件订阅能力（详见 src/core/protocol.ts）
  */
 export function openRoom(roomId: string, role: 'host' | 'follower') {
   const config = {

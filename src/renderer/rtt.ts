@@ -3,7 +3,7 @@
  * 职责：周期广播 ping、应答 pong、记录各成员 RTT 与最后更新时间、清理离线成员状态。
  * 与房间控制器的耦合通过构造函数回调注入，可独立单测。
  */
-import type { SyncMsg } from '../../core/protocol'
+import type { SyncMsg } from '../core/protocol'
 
 /** RTT 有效期（ms）：超过该时长未收到成员 pong 视为测量失效，UI 显示占位符 */
 export const RTT_STALE_MS = 6000

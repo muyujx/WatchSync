@@ -14,8 +14,8 @@
     "start": "electron-vite preview",
     "test": "vitest run",
     "typecheck": "vue-tsc --noEmit",
-    "dev:two": "node scripts/dev-two.cjs",
-    "dev:two:stop": "node scripts/dev-two.cjs stop"
+    "dev:two": "node scripts/dev/dev-two.cjs",
+    "dev:two:stop": "node scripts/dev/dev-two.cjs stop"
   },
   "devDependencies": {
     "@vitejs/plugin-vue": "^5.2.0",
@@ -43,12 +43,9 @@
     "files": [
       "!**/.vscode/*",
       "!docs/*",
-      "!spike/*",
       "!scripts/*",
       "!src/*",
-      "!core/*",
-      "!electron/*",
-      "!inject/*",
+      "!test/*",
       "!electron.vite.config.{js,ts,mjs,cjs}",
       "!{.env,.env.*,.npmrc,package-lock.json}",
       "!{tsconfig.json,tsconfig.node.json,tsconfig.web.json,AGENTS.md}"

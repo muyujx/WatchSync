@@ -60,8 +60,8 @@
  */
 import { computed, onMounted, reactive, ref } from 'vue'
 import { RoomController } from './room'
-import { buildShareUrl } from '../../core/shareLink'
-import { HOME_SITES } from '../../core/sites'
+import { buildShareUrl } from '../core/shareLink'
+import { HOME_SITES } from '../core/sites'
 import { setRelaySink, useRelays } from './composables/useRelays'
 import { hostOf } from './format'
 import TabStrip, { type TabInfo } from './components/TabStrip.vue'

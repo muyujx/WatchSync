@@ -1,6 +1,6 @@
 /**
  * T1 联调 CDP 驱动脚本（仅开发用）。
- * 用法：node scripts/drive.cjs <阶段>
+ * 用法：node scripts/e2e/drive.cjs <阶段>
  * 阶段：host-init（实例A：打开视频页+建房并输出邀请链接）| follower-join（实例B：加入并输出状态）
  * 原理：连接 Electron 渲染进程的 CDP 端点，Runtime.evaluate 直接操作 UI 与读取状态。
  */

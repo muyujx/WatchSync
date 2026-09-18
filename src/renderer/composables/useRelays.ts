@@ -4,7 +4,7 @@
  * 状态跨组件共享：设置页 UI 与 App 启动探测读写同一份数据。
  */
 import { computed, ref } from 'vue'
-import { normalizeRelayUrl, probeRelays, selectRelays, type RelayProbe } from '../../../core/relay'
+import { normalizeRelayUrl, probeRelays, selectRelays, type RelayProbe } from '../../core/relay'
 
 /** ===== 模块级单例状态（跨组件共享） ===== */
 /** 全部候选中继及其最近探测状态（设置页展示） */
