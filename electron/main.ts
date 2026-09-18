@@ -19,6 +19,9 @@ if (profileArg) app.setPath('userData', app.getPath('userData') + '-' + profileA
 const isProfileMode = Boolean(profileArg)
 if (!isProfileMode && !app.requestSingleInstanceLock()) app.quit()
 
+// 成员端被动起播时可能没有用户手势：显式放宽 Chromium 自动播放策略
+app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required')
+
 // 注册自定义协议（开发模式下需传 electron.exe 路径与参数，否则系统无法唤起）
 if (app.isPackaged) app.setAsDefaultProtocolClient('p2psync')
 else app.setAsDefaultProtocolClient('p2psync', process.execPath, [app.getAppPath()])

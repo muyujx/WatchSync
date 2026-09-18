@@ -2,7 +2,7 @@
  * UI 侧房间控制器：串联 shareLink/protocol/room/syncEngine 与 Electron API。
  * 职责：创建/加入房间、房主心跳+事件广播、成员校准循环、成员列表维护。
  */
-import { computeTargetPosition, decideCorrection, isConnectionLost, type StateSnapshot } from '../../core/syncEngine'
+import { computeTargetPosition, decideCorrection, decidePlayback, isConnectionLost, type StateSnapshot } from '../../core/syncEngine'
 import { buildShareUrl, generateRoomId } from '../../core/shareLink'
 import { createRoom, openRealRoom, type RoomHandle } from '../../core/room'
 import type { SyncMsg } from '../../core/protocol'
@@ -16,6 +16,9 @@ const STATE_TIMEOUT_MS = 8000
 
 /** 成员端加入超时（ms）：超过该时长仍未与房主建立任何数据往来即判定加入失败 */
 const JOIN_TIMEOUT_MS = 15000
+
+/** 成员端等待视频桥就绪的时长（ms）：播放器异步创建 video，需轮询注入 */
+const BRIDGE_WAIT_MS = 8000
 
 /** 房间控制器：UI 与 P2P/视频层之间的唯一中介 */
 export class RoomController {
@@ -62,6 +65,10 @@ export class RoomController {
   private pollTimer: number | null = null
   /** 加入看门狗定时器 */
   private joinTimer: number | null = null
+  /** 成员端桥就绪标记（视频元素已创建并注入；换页后重置） */
+  private bridgeReady = false
+  /** 防止 applySnapshot 并发（等待桥就绪期间可能又收到心跳） */
+  private applyingSnapshot = false
 
   /**
    * 创建房间（房主）。
@@ -94,6 +101,7 @@ export class RoomController {
     this.connectionLost = false
     this.connected = false
     this.hostPeerId = ''
+    this.bridgeReady = false
     await this.attach()
     p2pLog('join start', { roomId, relays: this.relayUrls })
     // 立即请求全量状态（hello 广播全员，房主响应）
@@ -231,18 +239,51 @@ export class RoomController {
   }
 
   /**
-   * 成员端应用状态快照：必要时导航视频页并跳到目标位置。
+   * 成员端应用状态快照：按需导航视频页，并在桥就绪后对齐位置与播放状态。
    * 参数：s 快照；url 房主当前视频页（空串表示房主尚未打开视频）。
    */
   private async applySnapshot(s: StateSnapshot, url: string): Promise<void> {
-    if (url && url !== this.videoUrl) {
-      this.videoUrl = url
-      await window.p2pApi.openVideo(url)
-      await window.p2pApi.inject(true)
-      await window.p2pApi.videoCmd('seek', s.position)
-      if (s.playing) await window.p2pApi.videoCmd('play')
+    // 等待桥就绪期间会有新心跳：直接更新快照（位置由跟随循环持续校正），避免并发重入
+    if (this.applyingSnapshot) {
+      this.lastSnapshot = s
+      return
+    }
+    this.applyingSnapshot = true
+    try {
+      if (url && url !== this.videoUrl) {
+        this.videoUrl = url
+        // 换视频/换剧集：导航后桥需重建，等待播放器创建 video
+        this.bridgeReady = false
+        await window.p2pApi.openVideo(url)
+      }
+      // 播放器异步创建：桥未就绪时轮询等待，就绪后立即对齐位置与播放状态（解决成员端不起播）
+      if (url && !this.bridgeReady) {
+        this.bridgeReady = await this.waitForBridge(BRIDGE_WAIT_MS)
+        if (this.bridgeReady) {
+          await window.p2pApi.inject(true)
+          await window.p2pApi.videoCmd('seek', s.position)
+          await window.p2pApi.videoCmd(s.playing ? 'play' : 'pause')
+        }
+      }
+    } finally {
+      this.applyingSnapshot = false
     }
     this.lastSnapshot = s
+  }
+
+  /**
+   * 轮询等待视频页桥就绪（播放器创建 video 并完成注入）。
+   * 参数：timeoutMs 最长等待时长（ms）。
+   * 返回值：true 桥已就绪；false 超时仍未就绪。
+   */
+  private async waitForBridge(timeoutMs: number): Promise<boolean> {
+    const deadline = Date.now() + timeoutMs
+    while (Date.now() < deadline) {
+      const st = await window.p2pApi.videoStatus()
+      if (st?.hasVideo) return true
+      await new Promise((r) => setTimeout(r, 300))
+    }
+    return false
   }
 
   /** 房主：开启周期心跳（2s）+ 本地视频事件轮询广播 */
@@ -292,9 +333,16 @@ export class RoomController {
         this.onConnectionLost?.()
       }
       if (!this.lastSnapshot) return
-      const target = computeTargetPosition(this.lastSnapshot, Date.now())
       const st = await window.p2pApi.videoStatus()
-      if (!st) return
+      // 桥未就绪（播放器还在创建）时本轮不动作，由 applySnapshot 负责首次对齐
+      if (!st || !st.hasVideo) return
+      // 播放状态优先对齐：房主在播而本地暂停（或反之）直接下发，位置校正留到下一轮
+      const pb = decidePlayback(this.lastSnapshot.playing, st.paused)
+      if (pb !== 'none') {
+        await window.p2pApi.videoCmd(pb)
+        return
+      }
+      const target = computeTargetPosition(this.lastSnapshot, Date.now())
       const c = decideCorrection(target, st.position)
       if (c.kind === 'seek') await window.p2pApi.videoCmd('seek', c.position)
       else if (c.kind === 'rate') await window.p2pApi.videoCmd('rate', c.rate)
@@ -336,6 +384,8 @@ export class RoomController {
     this.connectionLost = false
     this.connected = false
     this.hostPeerId = ''
+    this.bridgeReady = false
+    this.applyingSnapshot = false
     this.peers.clear()
     this.peerNames.clear()
     this.onPeersChanged?.()

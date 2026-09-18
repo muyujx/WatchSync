@@ -28,3 +28,5 @@ cache/
 
 # local test credentials (not committed)
 *.local.json
+
+account.md

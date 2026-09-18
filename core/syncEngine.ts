@@ -54,6 +54,20 @@ export function decideCorrection(target: number, actual: number): Correction {
   return { kind: 'rate', rate: Math.round(clamped * 1000) / 1000 }
 }
 
+/** 播放状态校正决策 */
+export type PlaybackCorrection = 'play' | 'pause' | 'none'
+
+/**
+ * 依据房主播放状态与本地暂停状态给出播放/暂停校正决策。
+ * 参数：hostPlaying 房主是否正在播放（心跳快照）；localPaused 本地视频是否暂停。
+ * 返回值：'play' 本地需起播；'pause' 本地需暂停；'none' 已一致。
+ */
+export function decidePlayback(hostPlaying: boolean, localPaused: boolean): PlaybackCorrection {
+  if (hostPlaying && localPaused) return 'play'
+  if (!hostPlaying && !localPaused) return 'pause'
+  return 'none'
+}
+
 /**
  * 判断成员端是否已与房主失联（心跳超时）。
  * 参数：lastStateAt 最近一次收到房主心跳的时间（0 表示尚未建立同步）；now 当前时间（ms）；timeoutMs 超时阈值（ms）。

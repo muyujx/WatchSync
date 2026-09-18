@@ -13,7 +13,9 @@
     "build:dir": "electron-vite build && electron-builder --dir",
     "start": "electron-vite preview",
     "test": "vitest run",
-    "typecheck": "vue-tsc --noEmit"
+    "typecheck": "vue-tsc --noEmit",
+    "dev:two": "node scripts/dev-two.cjs",
+    "dev:two:stop": "node scripts/dev-two.cjs stop"
   },
   "devDependencies": {
     "@vitejs/plugin-vue": "^5.2.0",

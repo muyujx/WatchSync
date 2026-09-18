@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { computeTargetPosition, decideCorrection, isConnectionLost } from './syncEngine'
+import { computeTargetPosition, decideCorrection, decidePlayback, isConnectionLost } from './syncEngine'
 
 describe('computeTargetPosition', () => {
   it('播放中按时间外推', () => {
@@ -21,6 +21,19 @@ describe('decideCorrection', () => {
     expect(decideCorrection(10.1, 10)).toEqual({ kind: 'none' }) // 0.1s 忽略
   })
   it('零偏差不动作', () => expect(decideCorrection(10, 10)).toEqual({ kind: 'none' }))
+})
+
+describe('decidePlayback', () => {
+  it('房主在播而本地暂停 → 起播', () => {
+    expect(decidePlayback(true, true)).toBe('play')
+  })
+  it('房主暂停而本地在播 → 暂停', () => {
+    expect(decidePlayback(false, false)).toBe('pause')
+  })
+  it('播放状态一致时不动作', () => {
+    expect(decidePlayback(true, false)).toBe('none')
+    expect(decidePlayback(false, true)).toBe('none')
+  })
 })
 
 describe('isConnectionLost', () => {

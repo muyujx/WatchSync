@@ -1,8 +1,15 @@
 import { WebContentsView, type BrowserWindow } from 'electron'
-import { FOLLOWER_GUARD_SCRIPT, MONITOR_SCRIPT } from '../inject/scripts'
+import { selectAdapter } from '../core/sites'
 
 /** 桥注入重试间隔（ms）：播放器创建 video 是异步的，需轮询直到成功 */
 const INJECT_RETRY_MS = 1000
+
+/** 成员端跟随模式标记脚本：设置后桥安装/重装时自动带守卫 */
+const GUARD_ON_SCRIPT = 'window.__p2pGuard = true; "ok"'
+
+/** 解绑当前桥脚本：站点切换/重装前调用，避免旧绑定残留 */
+const DISPOSE_BRIDGE_SCRIPT =
+  'window.__p2pBridge && window.__p2pBridge.dispose && window.__p2pBridge.dispose(); window.__p2pBridge = null; "ok"'
 
 /** Chrome 式标签行高度（px）；UI 侧 CSS 须保持一致（App.vue .tabstrip） */
 export const TAB_HEIGHT = 36
@@ -12,7 +19,7 @@ export const TOOLBAR_HEIGHT = 44
 export const CHROME_TOP = TAB_HEIGHT + TOOLBAR_HEIGHT
 
 /**
- * 视频页视图管理：在主窗口内加载视频网页，提供注入/轮询/指令通道。
+ * 视频页视图管理：在主窗口内加载视频网页，按站点适配器注入桥并提供指令通道。
  * 事件采用轮询 drain 模式（由渲染进程周期调用），实现简单且规避 IPC 时序问题。
  */
 export class VideoViewController {
@@ -21,6 +28,8 @@ export class VideoViewController {
   private guardWanted = false
   /** 常驻注入定时器 */
   private ensureTimer: NodeJS.Timeout | null = null
+  /** 当前已注入适配器 id（站点切换时用于强制重装） */
+  private currentAdapterId = ''
   /** 页面标题变化回调（UI 标签页标题展示） */
   private onTitleCb: ((title: string, url: string) => void) | null = null
 
@@ -45,38 +54,43 @@ export class VideoViewController {
       this.startEnsureInject()
     }
     await this.view.webContents.loadURL(url)
-    // 自动播放无需用户手势（成员端可能被动播放）
-    await this.view.webContents
-      .executeJavaScript('document.querySelector("video")?.play().catch(() => {}); "ok"')
-      .catch(() => {})
   }
 
-  /** 常驻确保注入：桥缺失（首次/SPA 重建/换剧集）时自动补装，存在则跳过 */
+  /** 常驻确保注入：桥缺失（首次/SPA 重建/换剧集）或站点变化时自动补装/重装 */
   private startEnsureInject(): void {
     if (this.ensureTimer) return
-    this.ensureTimer = setInterval(() => {
-      void this.view?.webContents
-        .executeJavaScript(MONITOR_SCRIPT)
-        .then((r) => {
-          // 桥刚装好且处于成员模式，补设守卫标记供后续页面重建恢复
-          if (r === 'ok' && this.guardWanted) {
-            return this.view?.webContents.executeJavaScript(FOLLOWER_GUARD_SCRIPT).catch(() => {})
-          }
-        })
-        .catch(() => {})
-    }, INJECT_RETRY_MS) as NodeJS.Timeout
+    this.ensureTimer = setInterval(() => void this.ensureInject(), INJECT_RETRY_MS) as NodeJS.Timeout
+  }
+
+  /** 执行一次注入：按当前 URL 选站点适配器，站点变化时先解绑，再安装桥与可选守卫 */
+  private async ensureInject(): Promise<void> {
+    const wc = this.view?.webContents
+    if (!wc) return
+    const adapter = selectAdapter(wc.getURL())
+    if (this.currentAdapterId !== adapter.id) {
+      await wc.executeJavaScript(DISPOSE_BRIDGE_SCRIPT).catch(() => {})
+      this.currentAdapterId = adapter.id
+    }
+    if (this.guardWanted) await wc.executeJavaScript(GUARD_ON_SCRIPT).catch(() => {})
+    await wc.executeJavaScript(adapter.injectScript).catch(() => {})
   }
 
   /**
    * 设置注入需求：成员端开跟随模式（桥安装时自动带守卫）。
    * 参数：guard 是否跟随模式。
-   * 返回值：注入结果（ok/already/novideo/noview/inject-error）。
+   * 返回值：注入结果（ok/already/novideo/nosite/noview/inject-error）。
    */
   async inject(guard = false): Promise<string> {
     if (!this.view) return 'noview'
     this.guardWanted = guard
-    if (guard) await this.view.webContents.executeJavaScript(FOLLOWER_GUARD_SCRIPT).catch(() => {})
-    const r = await this.view.webContents.executeJavaScript(MONITOR_SCRIPT).catch(() => 'inject-error')
+    const wc = this.view.webContents
+    const adapter = selectAdapter(wc.getURL())
+    if (this.currentAdapterId !== adapter.id) {
+      await wc.executeJavaScript(DISPOSE_BRIDGE_SCRIPT).catch(() => {})
+      this.currentAdapterId = adapter.id
+    }
+    if (guard) await wc.executeJavaScript(GUARD_ON_SCRIPT).catch(() => {})
+    const r = await wc.executeJavaScript(adapter.injectScript).catch(() => 'inject-error')
     return String(r)
   }
 
@@ -160,6 +174,7 @@ export class VideoViewController {
       clearInterval(this.ensureTimer)
       this.ensureTimer = null
     }
+    this.currentAdapterId = ''
     this.view?.webContents.close()
     this.view = null
   }
