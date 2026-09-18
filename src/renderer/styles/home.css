@@ -5,7 +5,7 @@
 .site-card { display: flex; flex-direction: column; align-items: center; gap: 8px; width: 128px; padding: 20px 8px 14px; border: none; border-radius: 14px; background: #fff; cursor: pointer; box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1); transition: box-shadow 0.2s, transform 0.15s; font-family: inherit; }
 .site-card:hover { box-shadow: 0 4px 16px rgba(0, 0, 0, 0.16); transform: translateY(-2px); }
 .site-icon { width: 56px; height: 56px; border-radius: 14px; object-fit: contain; }
-.site-icon.fallback { display: flex; align-items: center; justify-content: center; background: #1a73e8; color: #fff; font-size: 26px; font-weight: 600; }
+.site-icon.fallback { display: flex; align-items: center; justify-content: center; background: var(--ws-primary); color: #fff; font-size: 26px; font-weight: 600; }
 .site-name { font-size: 14px; color: #202124; font-weight: 500; }
 .site-host { font-size: 11px; color: #80868b; }
 .home-hint { margin-top: 24px; color: #80868b; font-size: 13px; }

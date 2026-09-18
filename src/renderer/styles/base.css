@@ -1,14 +1,23 @@
 /* ===== 全局基础 + 通用控件 ===== */
+/* 品牌主题色：取自应用图标（青绿主色 + 天蓝辅助色），统一在此调整 */
+:root {
+  --ws-primary: #34d399;
+  --ws-primary-dark: #10b981;
+  --ws-accent: #0ea5e9;
+  --ws-accent-dark: #0284c7;
+  --ws-accent-soft: #e0f2fe;
+  --ws-accent-soft-hover: #bae6fd;
+}
 * { margin: 0; box-sizing: border-box; }
 body { font-family: 'Segoe UI', 'Microsoft YaHei', system-ui, sans-serif; background: #f8f9fb; }
 
-/* Material 圆角按钮：filled（蓝底）/tonal（浅蓝）/默认（灰底） */
+/* Material 圆角按钮：filled（青绿主色）/tonal（天蓝浅底）/默认（灰底） */
 .m-btn { height: 32px; padding: 0 16px; border: none; border-radius: 16px; font-size: 13px; cursor: pointer; white-space: nowrap; }
 .m-btn:disabled { opacity: 0.45; cursor: not-allowed; }
-.m-btn.filled { background: #1a73e8; color: #fff; }
-.m-btn.filled:hover:not(:disabled) { background: #1765cc; box-shadow: 0 1px 3px rgba(26, 115, 232, 0.4); }
-.m-btn.tonal { background: #e8f0fe; color: #1a73e8; }
-.m-btn.tonal:hover:not(:disabled) { background: #d2e3fc; }
+.m-btn.filled { background: var(--ws-primary); color: #fff; }
+.m-btn.filled:hover:not(:disabled) { background: var(--ws-primary-dark); box-shadow: 0 1px 3px rgba(52, 211, 153, 0.4); }
+.m-btn.tonal { background: var(--ws-accent-soft); color: var(--ws-accent-dark); }
+.m-btn.tonal:hover:not(:disabled) { background: var(--ws-accent-soft-hover); }
 .m-btn:not(.filled):not(.tonal) { background: #f1f3f4; color: #202124; }
 
 /* 状态徽标 chip（绿色正常/红色危险） */
