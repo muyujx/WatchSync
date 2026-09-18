@@ -45,6 +45,12 @@ export class VideoViewController {
   async open(win: BrowserWindow, url: string): Promise<void> {
     if (!this.view) {
       this.view = new WebContentsView({ webPreferences: { contextIsolation: true } })
+      // 拦截 window.open / target=_blank：拒绝弹独立窗口，改为当前视图内导航，
+      // 保证桥注入与同步始终作用于应用内页面（视频不会"逃逸"到无桥的新窗口）
+      this.view.webContents.setWindowOpenHandler(({ url: target }) => {
+        if (/^https?:/.test(target)) void this.view?.webContents.loadURL(target).catch(() => {})
+        return { action: 'deny' }
+      })
       // 标题变化转发 UI（标签页标题）
       this.view.webContents.on('page-title-updated', (_e, title) => {
         this.onTitleCb?.(title, this.view?.webContents.getURL() ?? url)

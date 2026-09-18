@@ -22,6 +22,12 @@ if (!isProfileMode && !app.requestSingleInstanceLock()) app.quit()
 // 成员端被动起播时可能没有用户手势：显式放宽 Chromium 自动播放策略
 app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required')
 
+// 全局 UA 伪装：所有 webContents（UI 壳 + 视频视图）统一为标准 Chrome，
+// 去掉 Electron 标识，规避站点（如 B 站）的环境检测。
+// userAgentFallback 是官方全局兜底 API；须在 app.ready 前设置（appendSwitch('user-agent') 在 Electron 33 实测不生效）
+app.userAgentFallback =
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36'
+
 // 注册自定义协议（开发模式下需传 electron.exe 路径与参数，否则系统无法唤起）
 if (app.isPackaged) app.setAsDefaultProtocolClient('p2psync')
 else app.setAsDefaultProtocolClient('p2psync', process.execPath, [app.getAppPath()])
