@@ -1,10 +1,10 @@
 {
-  "name": "p2psync",
+  "name": "watchsync",
   "version": "0.1.0",
   "description": "无服务器 P2P 网页视频同步观影",
   "main": "out/main/index.js",
   "type": "module",
-  "author": "p2pSync",
+  "author": "WatchSync",
   "scripts": {
     "dev": "electron-vite dev",
     "build": "electron-vite build",
@@ -31,10 +31,11 @@
     "vue": "^3.5.0"
   },
   "build": {
-    "appId": "com.p2psync.app",
-    "productName": "p2pSync",
+    "appId": "com.watchsync.app",
+    "productName": "WatchSync",
     "directories": {
-      "output": "dist"
+      "output": "dist",
+      "buildResources": "assets"
     },
     "electronDownload": {
       "mirror": "https://npmmirror.com/mirrors/electron/"
@@ -51,6 +52,7 @@
       "!{tsconfig.json,tsconfig.node.json,tsconfig.web.json,AGENTS.md}"
     ],
     "win": {
+      "icon": "icon.ico",
       "target": [
         {
           "target": "portable",

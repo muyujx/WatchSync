@@ -29,4 +29,7 @@ cache/
 # local test credentials (not committed)
 *.local.json
 
+# brainstorm visual companion session
+.superpowers/
+
 account.md
