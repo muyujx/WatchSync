@@ -10,7 +10,9 @@
     <input ref="omniboxEl" v-model="videoUrl" class="url omnibox" placeholder="输入或粘贴视频网页地址，回车打开" @keydown.enter="onOpen" />
 
     <template v-if="!roomId">
-      <button class="m-btn filled" title="以当前打开的视频网页创建同步房间" @click="onHost">创建房间</button>
+      <button class="m-btn filled" :disabled="!!busy" title="以当前打开的视频网页创建同步房间" @click="onHost">
+        <span v-if="busy === 'hosting'" class="spinner"></span>{{ busy === 'hosting' ? '创建中…' : '创建房间' }}
+      </button>
     </template>
     <template v-else>
       <button class="m-btn" @click="onCopyLink">复制邀请</button>
@@ -19,8 +21,10 @@
       <button class="m-btn" @click="exitRoom">{{ isHost ? '解散房间' : '退出房间' }}</button>
     </template>
 
-    <input v-if="!roomId" v-model="joinInput" class="join" placeholder="粘贴邀请链接" />
-    <button v-if="!roomId" class="m-btn tonal" :disabled="!joinInput" @click="onJoinLink">加入</button>
+    <input v-if="!roomId" v-model="joinInput" class="join" placeholder="粘贴邀请链接" :disabled="!!busy" />
+    <button v-if="!roomId" class="m-btn tonal" :disabled="!joinInput || !!busy" @click="onJoinLink">
+      <span v-if="busy === 'joining'" class="spinner"></span>{{ busy === 'joining' ? '连接中…' : '加入' }}
+    </button>
 
     <div class="flex-spacer"></div>
     <button class="icon-btn settings-btn" title="设置" @click="openSettings">
@@ -121,6 +125,8 @@ const joinInput = ref('')
 const roomId = ref('')
 const isHost = ref(true)
 const statusText = ref('')
+/** 创建/加入进行中的忙碌状态（驱动按钮 loading 与禁用；'' 表示空闲） */
+const busy = ref<'' | 'hosting' | 'joining'>('')
 /** 成员端与房主连接是否已断开（仅用于提示，不自动退出房间） */
 const connectionLost = ref(false)
 const controller = new RoomController()
@@ -187,7 +193,11 @@ controller.onConnectionRestored = () => {
   notify('已重连房主')
 }
 // 真正连上房主（收到房主心跳/资料）：此时才提示连接成功
-controller.onHostConnected = () => notify('已连接房主')
+controller.onHostConnected = () => {
+  // 真正连上房主：结束加入 loading
+  busy.value = ''
+  notify('已连接房主')
+}
 // 加入失败（中继建连失败或超时没连上房主）：报错并退出房间回初始态，便于重试
 controller.onJoinFailed = (reason) => {
   notify('连接失败：' + reason)
@@ -276,6 +286,7 @@ async function diagSnapshot(): Promise<unknown> {
 
 /** 房主：创建房间并复制邀请链接（不依赖视频地址；有地址则顺带打开并注入桥） */
 async function onHost(): Promise<void> {
+  busy.value = 'hosting'
   try {
     notify('创建房间中...')
     // 建房只依赖房间号；视频地址在连接建立后由心跳同步给成员
@@ -299,6 +310,9 @@ async function onHost(): Promise<void> {
     notify(hint)
   } catch (e) {
     notify('创建失败: ' + String(e))
+  } finally {
+    // 建房流程整体结束（含打开视频与注入）后解除 loading
+    busy.value = ''
   }
 }
 
@@ -309,11 +323,20 @@ async function onJoinLink(): Promise<void> {
     notify('链接无效')
     return
   }
+  // 进入连接中状态：由 onHostConnected / onJoinFailed 回调解除（最长等待看门狗 15s）
+  busy.value = 'joining'
   notify('正在连接房主…')
   isHost.value = false
   roomId.value = parsed.roomId
   controller.myName = myName.value
-  await controller.join(parsed.roomId)
+  try {
+    await controller.join(parsed.roomId)
+  } catch (e) {
+    // 建连过程直接抛错（如中继不可用）：立即回空闲态并提示
+    busy.value = ''
+    notify('加入失败：' + String(e))
+    return
+  }
   controller.announceProfile()
   syncDebug()
   // 成功与否由 onHostConnected / onJoinFailed 回调决定，不在此处提前宣告
@@ -349,6 +372,8 @@ function resetRoomState(): void {
   roomId.value = ''
   isHost.value = true
   connectionLost.value = false
+  // 解散/退出/加入失败均回到空闲态，解除按钮 loading
+  busy.value = ''
   syncDebug()
 }
 
