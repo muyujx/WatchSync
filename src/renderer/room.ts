@@ -22,7 +22,7 @@ const JOIN_TIMEOUT_MS = 15000
 const BRIDGE_WAIT_MS = 8000
 
 /** 房主事件采样间隔（ms）：视频操作事件即时广播的轮询粒度，决定操作同步延迟上限 */
-const EVENT_POLL_MS = 200
+const EVENT_POLL_MS = 80
 
 /** 房间控制器：UI 与 P2P/视频层之间的唯一中介 */
 export class RoomController {
@@ -348,10 +348,19 @@ export class RoomController {
       this.markAlive()
       this.applySnapshot({ position: msg.position, playing: msg.playing, at: msg.at }, msg.url)
     } else if (msg.t === 'play') {
+      // 关键：同步更新本地基准，避免 followTimer 用旧快照（playing=false）把刚起播又暂停
+      this.lastSnapshot = { position: msg.position, playing: true, at: msg.at }
+      this.markAlive()
       window.p2pApi.videoCmd('play')
     } else if (msg.t === 'pause') {
+      // pause 消息无 at：暂停时不做位置推算，基准位置即房主暂停点
+      this.lastSnapshot = { position: msg.position, playing: false, at: Date.now() }
+      this.markAlive()
       window.p2pApi.videoCmd('pause')
     } else if (msg.t === 'seek') {
+      // 先更新基准再下发，避免同轮 followTimer 按旧位置反向校正
+      this.lastSnapshot = { position: msg.position, playing: msg.playing, at: msg.at }
+      this.markAlive()
       window.p2pApi.videoCmd('seek', msg.position)
       if (msg.playing) window.p2pApi.videoCmd('play')
     }
@@ -391,6 +400,13 @@ export class RoomController {
           await window.p2pApi.inject(true)
           await window.p2pApi.videoCmd('seek', s.position)
           await window.p2pApi.videoCmd(s.playing ? 'play' : 'pause')
+        }
+      } else if (url && this.bridgeReady) {
+        // 桥已就绪：每次心跳立即对齐播放状态，不再只依赖 2s 周期的 followTimer 兜底
+        const st = await window.p2pApi.videoStatus()
+        if (st?.hasVideo) {
+          const pb = decidePlayback(s.playing, st.paused)
+          if (pb !== 'none') await window.p2pApi.videoCmd(pb)
         }
       }
     } finally {

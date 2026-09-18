@@ -25,13 +25,19 @@ export const HARNESS_SCRIPT = `
   if (prev && typeof prev.dispose === 'function') prev.dispose()
 
   const q = []
-  const push = (ev) => q.push({ ev, position: video.currentTime, paused: video.paused })
+  // 跟随端（守卫开启）不采集事件：其播放均由房主指令驱动，采集只会污染队列，
+  // 并在转让房主后把历史事件误当作新房主操作广播出去
+  const push = (ev) => {
+    if (window.__p2pGuard) return
+    q.push({ ev, position: video.currentTime, paused: video.paused })
+  }
   const onPlay = () => push('play')
   const onPause = () => push('pause')
   const onSeek = () => push('seek')
   video.addEventListener('play', onPlay)
   video.addEventListener('pause', onPause)
-  video.addEventListener('seeked', onSeek)
+  // 监听 seeking 而非 seeked：拖动进度条即刻入队广播，无需等待缓冲到目标帧，降低 seek 同步延迟
+  video.addEventListener('seeking', onSeek)
 
   // 跟随守卫：同步命令放行窗口内不拦截，窗口外拦截站点自身的播放控制事件
   const FOLLOW_WINDOW_MS = 1500
@@ -55,7 +61,7 @@ export const HARNESS_SCRIPT = `
   const dispose = () => {
     video.removeEventListener('play', onPlay)
     video.removeEventListener('pause', onPause)
-    video.removeEventListener('seeked', onSeek)
+    video.removeEventListener('seeking', onSeek)
     disableGuard()
   }
 

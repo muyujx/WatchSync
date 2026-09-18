@@ -7,6 +7,9 @@ const INJECT_RETRY_MS = 1000
 /** 成员端跟随模式标记脚本：设置后桥安装/重装时自动带守卫 */
 const GUARD_ON_SCRIPT = 'window.__p2pGuard = true; "ok"'
 
+/** 关闭跟随模式标记脚本：转让成房主时显式复位，否则残留的守卫会拦截采集与本地操作 */
+const GUARD_OFF_SCRIPT = 'window.__p2pGuard = false; "ok"'
+
 /** 解绑当前桥脚本：站点切换/重装前调用，避免旧绑定残留 */
 const DISPOSE_BRIDGE_SCRIPT =
   'window.__p2pBridge && window.__p2pBridge.dispose && window.__p2pBridge.dispose(); window.__p2pBridge = null; "ok"'
@@ -95,7 +98,8 @@ export class VideoViewController {
       await wc.executeJavaScript(DISPOSE_BRIDGE_SCRIPT).catch(() => {})
       this.currentAdapterId = adapter.id
     }
-    if (guard) await wc.executeJavaScript(GUARD_ON_SCRIPT).catch(() => {})
+    // 显式写入守卫标记：guard=false 时也要复位，避免转让房主后残留 __p2pGuard=true
+    await wc.executeJavaScript(guard ? GUARD_ON_SCRIPT : GUARD_OFF_SCRIPT).catch(() => {})
     const r = await wc.executeJavaScript(adapter.injectScript).catch(() => 'inject-error')
     return String(r)
   }
