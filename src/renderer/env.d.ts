@@ -13,12 +13,14 @@ declare global {
       inject(guard: boolean): Promise<string>
       /** 取走视频事件队列 */
       drainEvents(): Promise<Array<{ ev: string; position: number; paused: boolean }>>
-      /** 查询视频状态（pageUrl 为视频视图实时地址，hasVideo 表示页面是否已装桥） */
+      /** 查询视频状态（pageUrl 为视频视图实时地址，hasVideo 表示页面是否已装桥，readyState 为视频就绪程度） */
       videoStatus(): Promise<{
         position: number
         paused: boolean
         rate: number
         duration: number
+        /** 就绪程度（0 无数据 ~ 4；<1 无 metadata，<2 正在缓冲） */
+        readyState: number
         pageUrl: string
         hasVideo: boolean
       } | null>

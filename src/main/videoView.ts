@@ -143,6 +143,8 @@ export class VideoViewController {
     paused: boolean
     rate: number
     duration: number
+    /** 就绪程度（0 无数据 ~ 4 足够播放；<1 无 metadata 时 seek 不可靠，<2 表示正在缓冲） */
+    readyState: number
     pageUrl: string
     hasVideo: boolean
   } | null> {
@@ -155,10 +157,11 @@ export class VideoViewController {
         paused: st?.paused ?? true,
         rate: st?.rate ?? 1,
         duration: st?.duration ?? 0,
+        readyState: st?.readyState ?? 0,
         pageUrl,
         hasVideo: Boolean(st),
       }))
-      .catch(() => ({ position: 0, paused: true, rate: 1, duration: 0, pageUrl, hasVideo: false }))
+      .catch(() => ({ position: 0, paused: true, rate: 1, duration: 0, readyState: 0, pageUrl, hasVideo: false }))
   }
 
   /**

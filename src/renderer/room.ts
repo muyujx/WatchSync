@@ -21,6 +21,9 @@ const JOIN_TIMEOUT_MS = 15000
 /** 成员端等待视频桥就绪的时长（ms）：播放器异步创建 video，需轮询注入 */
 const BRIDGE_WAIT_MS = 8000
 
+/** 成员端 seek 宽限期（ms）：seek 后缓冲到位置需要时间，期间禁止重复 seek/rate，避免打断加载造成卡顿 */
+const SEEK_GRACE_MS = 2000
+
 /** 房主事件采样间隔（ms）：视频操作事件即时广播的轮询粒度，决定操作同步延迟上限 */
 const EVENT_POLL_MS = 80
 
@@ -87,6 +90,8 @@ export class RoomController {
   private bridgeReady = false
   /** 防止 applySnapshot 并发（等待桥就绪期间可能又收到心跳） */
   private applyingSnapshot = false
+  /** 成员端最近一次下发 seek 的时间（0=从未；宽限期内不再重复 seek/rate） */
+  private lastSeekAt = 0
 
   /**
    * 创建房间（房主）。
@@ -361,6 +366,8 @@ export class RoomController {
       // 先更新基准再下发，避免同轮 followTimer 按旧位置反向校正
       this.lastSnapshot = { position: msg.position, playing: msg.playing, at: msg.at }
       this.markAlive()
+      // 本地跳转后同样需要缓冲，进入宽限期防止跟随循环重复 seek
+      this.lastSeekAt = Date.now()
       window.p2pApi.videoCmd('seek', msg.position)
       if (msg.playing) window.p2pApi.videoCmd('play')
     }
@@ -398,6 +405,8 @@ export class RoomController {
         this.bridgeReady = await this.waitForBridge(BRIDGE_WAIT_MS)
         if (this.bridgeReady) {
           await window.p2pApi.inject(true)
+          // 初次对齐同样进入 seek 宽限期，避免跟随循环在其缓冲期间重复 seek
+          this.lastSeekAt = Date.now()
           await window.p2pApi.videoCmd('seek', s.position)
           await window.p2pApi.videoCmd(s.playing ? 'play' : 'pause')
         }
@@ -417,14 +426,15 @@ export class RoomController {
 
   /**
    * 轮询等待视频页桥就绪（播放器创建 video 并完成注入）。
+   * 额外要求 readyState >= 1（已有 metadata）：过早 seek 会打在空视频上不可靠，且易触发重复校正。
    * 参数：timeoutMs 最长等待时长（ms）。
-   * 返回值：true 桥已就绪；false 超时仍未就绪。
+   * 返回值：true 桥已就绪且视频可 seek；false 超时仍未就绪。
    */
   private async waitForBridge(timeoutMs: number): Promise<boolean> {
     const deadline = Date.now() + timeoutMs
     while (Date.now() < deadline) {
       const st = await window.p2pApi.videoStatus()
-      if (st?.hasVideo) return true
+      if (st?.hasVideo && st.readyState >= 1) return true
       await new Promise((r) => setTimeout(r, 300))
     }
     return false
@@ -499,10 +509,15 @@ export class RoomController {
         await window.p2pApi.videoCmd(pb)
         return
       }
+      // seek 宽限期/缓冲中不做位置校正：此时 position 尚未到位或数据未缓冲，
+      // 读到的旧值会误判为大偏差而重复 seek，反复打断加载造成卡顿
+      if (st.readyState < 2 || Date.now() - this.lastSeekAt < SEEK_GRACE_MS) return
       const target = computeTargetPosition(this.lastSnapshot, Date.now())
       const c = decideCorrection(target, st.position)
-      if (c.kind === 'seek') await window.p2pApi.videoCmd('seek', c.position)
-      else if (c.kind === 'rate') await window.p2pApi.videoCmd('rate', c.rate)
+      if (c.kind === 'seek') {
+        this.lastSeekAt = Date.now()
+        await window.p2pApi.videoCmd('seek', c.position)
+      } else if (c.kind === 'rate') await window.p2pApi.videoCmd('rate', c.rate)
     }, 2000)
   }
 
@@ -550,6 +565,7 @@ export class RoomController {
     this.hostPeerId = ''
     this.bridgeReady = false
     this.applyingSnapshot = false
+    this.lastSeekAt = 0
     this.peers.clear()
     this.peerNames.clear()
     this.onPeersChanged?.()

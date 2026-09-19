@@ -81,7 +81,7 @@ export const HARNESS_SCRIPT = `
         site.setRate ? site.setRate(video, arg) : (video.playbackRate = arg)
       }
     },
-    status: () => ({ position: video.currentTime, paused: video.paused, rate: video.playbackRate, duration: video.duration }),
+    status: () => ({ position: video.currentTime, paused: video.paused, rate: video.playbackRate, duration: video.duration, readyState: video.readyState }),
     setFollow: (on) => { window.__p2pGuard = !!on; on ? enableGuard() : disableGuard() },
     dispose,
   }
