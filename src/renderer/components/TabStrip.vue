@@ -25,8 +25,13 @@
           <circle v-if="t.id === syncId" cx="6" cy="6" r="2" fill="currentColor" />
         </svg>
       </button>
-      <!-- 成员：仅同步页签显示只读徽标（成员不能切换同步目标） -->
-      <span v-else-if="role === 'follower' && t.id === syncId" class="tab-sync-badge" title="房主正在同步此页签">同步中</span>
+      <!-- 成员：同步页签显示只读绿点（与房主端同步按钮同款圆环+圆点，不可点击） -->
+      <span v-else-if="role === 'follower' && t.id === syncId" class="tab-sync-dot" title="房主正在同步此页签">
+        <svg viewBox="0 0 12 12" width="10" height="10">
+          <circle cx="6" cy="6" r="4" fill="none" stroke="currentColor" stroke-width="1.6" />
+          <circle cx="6" cy="6" r="2" fill="currentColor" />
+        </svg>
+      </span>
       <!-- 关闭按钮：成员端同步页签不可关闭（退出房间后解锁） -->
       <button
         v-if="!(role === 'follower' && t.id === syncId)"
@@ -62,7 +67,7 @@
  * 标签行组件：多网页标签展示 + 同步标记 + 主页按钮 + 窗口控制按钮（最小化/最大化/关闭）。
  * 纯展示组件：状态由父级（App）持有，交互通过事件上报。
  * - role='host'：每页签渲染同步按钮（点按钮=切换同步目标，点本体=切换查看）
- * - role='follower'：仅同步页签渲染只读"同步中"徽标，且该页签无关闭按钮
+ * - role='follower'：仅同步页签渲染只读同步绿点（圆环+圆点），且该页签无关闭按钮
  * - role='none'：普通浏览器页签行为
  */
 import { reactive } from 'vue'
@@ -80,7 +85,7 @@ export interface TabInfo {
   favicon: string
 }
 
-/** 页签角色语义：host=可切换同步目标；follower=只读同步徽标；none=普通页签 */
+/** 页签角色语义：host=可切换同步目标；follower=只读同步绿点；none=普通页签 */
 export type TabRole = 'host' | 'follower' | 'none'
 
 /** 组件属性：tabs 页签列表；activeId 当前显示页签；syncId 同步页签；role 角色语义；isMax 窗口最大化 */
