@@ -297,17 +297,16 @@ async function onHost(): Promise<void> {
     controller.announceProfile()
     await window.p2pApi.copyText(link)
 
-    let hint = '房间已创建'
+    // 无视频的页面属正常情况，注入失败不作特殊提示
     if (videoUrl.value) {
       // 地址栏已有地址：顺带打开视频并注入，房主即可开始操作
       await window.p2pApi.openVideo(videoUrl.value)
       tabSet(videoUrl.value)
       controller.videoUrl = videoUrl.value
-      const injected = await window.p2pApi.inject(false)
-      if (injected !== 'ok' && injected !== 'already') hint = '房间已创建，未找到视频元素'
+      await window.p2pApi.inject(false)
     }
     syncDebug()
-    notify(hint)
+    notify('房间已创建')
   } catch (e) {
     notify('创建失败: ' + String(e))
   } finally {
@@ -350,7 +349,8 @@ async function onOpen(): Promise<void> {
   if (roomId.value && isHost.value) {
     const injected = await window.p2pApi.inject(false)
     controller.videoUrl = videoUrl.value
-    notify(injected === 'ok' ? '已开始同步' : '未找到视频元素')
+    // 无视频的页面属正常情况，仅注入成功时提示
+    if (injected === 'ok') notify('已开始同步')
   }
 }
 
