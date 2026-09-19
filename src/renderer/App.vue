@@ -275,9 +275,14 @@ async function goHome(): Promise<void> {
 
 /**
  * 打开视频网页：激活页签内导航；主页状态（无激活页签）时新开页签并激活。
- * 参数：url 目标地址。
+ * 输入规范化：去首尾空格；无协议头时自动补 https://（与 Chrome 一致）——
+ * Electron loadURL 不像浏览器地址栏会自动补全，缺前缀会直接导航失败。
+ * 参数：raw 地址栏原始输入。
  */
-async function openInTab(url: string): Promise<void> {
+async function openInTab(raw: string): Promise<void> {
+  raw = raw.trim()
+  if (!raw) return
+  const url = /^[a-z][a-z0-9+.-]*:\/\//i.test(raw) ? raw : 'https://' + raw
   if (activeTabId.value != null) {
     await window.p2pApi.openVideo(url, activeTabId.value)
     const t = tabs.value.find((x) => x.id === activeTabId.value)
