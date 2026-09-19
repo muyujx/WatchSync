@@ -16,9 +16,11 @@
 .tab-sync-badge { flex: none; padding: 1px 6px; border-radius: 8px; background: var(--ws-primary); color: #fff; font-size: 10px; line-height: 1.4; }
 .tab-close { width: 18px; height: 18px; flex: none; border: none; border-radius: 50%; background: transparent; color: #5f6368; font-size: 10px; line-height: 1; cursor: pointer; }
 .tab-close:hover { background: #e8eaed; color: #202124; }
-/* 主页按钮（新建页签入口）：紧跟页签之后 */
-.home-btn { width: 36px; height: 30px; color: #5f6368; }
 .drag-area { flex: 1; height: 100%; -webkit-app-region: drag; }
 .win-btn { width: 44px; height: 36px; border: none; background: transparent; color: #3c4043; font-size: 13px; cursor: pointer; -webkit-app-region: no-drag; }
 .win-btn:hover { background: #c7cbd1; }
 .win-btn.close:hover { background: #e81123; color: #fff; }
+/* 主页按钮（新标签页入口，Chrome 式）：紧跟页签的小号圆形图标按钮，hover 浅色圆底。
+   须置于 .win-btn 之后声明，否则 44px 窗口按钮尺寸会反向覆盖 */
+.home-btn { width: 28px; height: 28px; margin-left: 6px; align-self: center; border-radius: 50%; color: #5f6368; display: flex; align-items: center; justify-content: center; padding: 0; }
+.home-btn:hover { background: rgba(255, 255, 255, 0.65); color: #202124; }
