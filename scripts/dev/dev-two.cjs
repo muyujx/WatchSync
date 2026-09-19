@@ -5,17 +5,18 @@
  *   node scripts/dev/dev-two.cjs stop   按 --profile 关闭两个实例
  *
  * 说明：默认单实例锁下需用 --profile 区分 userData 才能同机多开；
- * 子进程 detached 脱离当前进程树，命令立即返回不占终端；
- * 输出写入 logs/dev-a.log、logs/dev-b.log。
+ * 启动经 WMI（Win32_Process.Create），进程父级是系统 WMI 服务，
+ * 完全脱离当前进程树，命令立即返回不占终端（spawn/detached 会继承输出句柄导致 shell 卡住）；
+ * 输出覆盖写入 logs/dev-a.log、logs/dev-b.log。
  */
-const { spawn, execFileSync } = require('node:child_process')
-const { mkdirSync, openSync, closeSync } = require('node:fs')
+const { execFileSync } = require('node:child_process')
+const { mkdirSync } = require('node:fs')
 const net = require('node:net')
 const { join } = require('node:path')
 
 /** 项目根目录（脚本位于 scripts/dev/ 下） */
 const ROOT = join(__dirname, '..', '..')
-/** 日志目录 */
+/** 日志目录：WMI 子进程无控制台句柄，npm 输出重定向到此 */
 const LOG_DIR = join(ROOT, 'logs')
 
 /** 实例配置：profile 区分 userData，port 供 CDP 自动化联调 */
@@ -38,40 +39,58 @@ function isPortBusy(port) {
   })
 }
 
-/** 启动两个实例（各自 dev server 脱离当前进程树，命令立即返回） */
-function start() {
+/**
+ * 把字符串包成 PowerShell 单引号字面量（内部单引号双写转义）。
+ * 参数：s 任意字符串（命令行、路径等）。
+ * 返回值：形如 'xxx' 的安全 PS 字符串字面量。
+ */
+function psStr(s) {
+  return `'${String(s).replace(/'/g, "''")}'`
+}
+
+/**
+ * 执行 PowerShell 脚本：经 -EncodedCommand（Base64 UTF-16LE）传输，
+ * 彻底绕开管道符/花括号/$_ 等在多层 shell 传递中的转义问题。
+ * 参数：script 完整 PS 脚本文本。
+ * 返回值：无。脚本以非零码退出时抛错。
+ */
+function runPs(script) {
+  const encoded = Buffer.from(script, 'utf16le').toString('base64')
+  execFileSync('powershell', ['-NoProfile', '-EncodedCommand', encoded], { stdio: 'inherit' })
+}
+
+/**
+ * 经 WMI 启动单个实例：进程父级为 WMI 服务，本命令立即返回不阻塞 shell。
+ * 参数：inst 实例配置（profile 用户数据后缀 / port CDP 调试端口 / log 日志文件名）。
+ * 返回值：无。WMI 创建失败（ReturnValue != 0）时以非零码退出。
+ */
+function startInstance(inst) {
   mkdirSync(LOG_DIR, { recursive: true })
-  for (const inst of INSTANCES) {
-    const out = openSync(join(LOG_DIR, inst.log), 'a')
-    const cmd = `npm run dev -- -- --profile=${inst.profile} --remote-debugging-port=${inst.port}`
-    const child = spawn(cmd, { cwd: ROOT, detached: true, stdio: ['ignore', out, out], shell: true })
-    child.unref()
-    // 子进程已复制 fd，父进程侧关闭即可
-    closeSync(out)
-    console.log(`[dev:two] 启动实例 ${inst.profile} → CDP ${inst.port}，日志 logs/${inst.log}`)
-  }
+  const log = join(LOG_DIR, inst.log)
+  // cmd /c 包一层以解析 npm.cmd；> 覆盖重定向日志（每次启动生成新日志，避免无限追加）
+  const cmdLine = `cmd /c npm run dev -- -- --profile=${inst.profile} --remote-debugging-port=${inst.port} > "${log}" 2>&1`
+  const script =
+    `$r = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ ` +
+    `CommandLine = ${psStr(cmdLine)}; CurrentDirectory = ${psStr(ROOT)} }; ` +
+    `if ($r.ReturnValue -ne 0) { Write-Error "WMI create failed: $($r.ReturnValue)"; exit 1 }`
+  runPs(script)
+  console.log(`[dev:two] 启动实例 ${inst.profile} → CDP ${inst.port}，日志 logs/${inst.log}`)
+}
+
+/** 启动两个实例（WMI 脱离启动，命令立即返回） */
+function start() {
+  for (const inst of INSTANCES) startInstance(inst)
   console.log('[dev:two] 数秒就绪后可执行：node scripts/e2e/drive.cjs host-init')
   console.log('[dev:two] 关闭：npm run dev:two:stop')
 }
 
 /** 关闭两个实例：按命令行中的 --profile 匹配进程并结束 */
 function stop() {
-  if (process.platform === 'win32') {
-    const filter = INSTANCES.map((i) => `$_.CommandLine -like '*--profile=${i.profile}*'`).join(' -or ')
-    const script =
-      `Get-CimInstance Win32_Process | Where-Object { ${filter} } | ` +
-      'ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }'
-    // 用 execFileSync 直接调 powershell，避免管道符被 cmd 解释
-    execFileSync('powershell', ['-NoProfile', '-Command', script], { stdio: 'inherit' })
-  } else {
-    for (const i of INSTANCES) {
-      try {
-        execFileSync('pkill', ['-f', `profile=${i.profile}`], { stdio: 'ignore' })
-      } catch {
-        // 进程不存在时忽略
-      }
-    }
-  }
+  const filter = INSTANCES.map((i) => `$_.CommandLine -like '*--profile=${i.profile}*'`).join(' -or ')
+  const script =
+    `Get-CimInstance Win32_Process | Where-Object { ${filter} } | ` +
+    'ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }'
+  runPs(script)
   console.log('[dev:two] 已关闭两个实例')
 }
 

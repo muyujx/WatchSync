@@ -49,15 +49,17 @@ async function connect(wsUrl) {
     }
   }
   return {
-    /** 执行 CDP 命令 */
-    send(method, params = {}) {
+    /** 执行 CDP 命令（session 可选：传入则为该 target 会话内执行） */
+    send(method, params = {}, session) {
       const id = ++seq
-      ws.send(JSON.stringify({ id, method, params }))
+      const msg = { id, method, params }
+      if (session) msg.sessionId = session
+      ws.send(JSON.stringify(msg))
       return new Promise((res, rej) => pending.set(id, (m) => (m.error ? rej(new Error(m.error.message)) : res(m.result))))
     },
-    /** 在页面上下文执行表达式并返回 JSON 结果 */
-    async eval(expr) {
-      const r = await this.send('Runtime.evaluate', { expression: expr, returnByValue: true, awaitPromise: true })
+    /** 在页面上下文执行表达式并返回 JSON 结果（session 可选） */
+    async eval(expr, session) {
+      const r = await this.send('Runtime.evaluate', { expression: expr, returnByValue: true, awaitPromise: true }, session)
       if (r.exceptionDetails) throw new Error('page error: ' + JSON.stringify(r.exceptionDetails.exception?.description || r.exceptionDetails.text))
       return r.result.value
     },
@@ -297,6 +299,78 @@ async function main() {
     }
     a.close()
     b.close()
+  } else if (stage === 'front') {
+    // 把指定实例窗口置前（CDP Page.bringToFront）：消除后台遮挡节流对 perf/截图测量的影响
+    // 用法：front [port]
+    const port = Number(process.argv[3] || 9222)
+    const c = await attachMainPage(port)
+    await c.send('Page.bringToFront')
+    console.log(JSON.stringify({ port, fronted: true }))
+    c.close()
+  } else if (stage === 'perf') {
+    // 播放性能诊断：连接视频页 target，读取分辨率/掉帧计数，并用 requestVideoFrameCallback 实测 2 秒真实渲染帧率
+    // （measuredFps 明显低于视频帧率或 dropRate 高 → 播放不流畅；配合 codec 阶段判断是否软解）
+    // 用法：perf <port>
+    const port = Number(process.argv[3])
+    const targets = await listTargets(port)
+    const v = targets.find((t) => t.type === 'page' && !t.url.startsWith('devtools') && !t.url.includes('localhost:5'))
+    if (!v) throw new Error('no video target on ' + port + ': ' + JSON.stringify(targets.map((t) => t.url)))
+    const c = await connect(v.webSocketDebuggerUrl)
+    const r = await c.eval(`new Promise(async (resolve) => {
+      const v = document.querySelector('video')
+      if (!v) return resolve({ error: 'no-video' })
+      let resumed = false
+      if (v.paused) {
+        try { await v.play(); resumed = true } catch { return resolve({ error: 'cannot-play', t: v.currentTime }) }
+        await new Promise((r) => setTimeout(r, 1500))
+      }
+      if (v.paused) return resolve({ error: 'still-paused', t: v.currentTime })
+      const q1 = v.getVideoPlaybackQuality()
+      const t1 = performance.now()
+      let frames = 0
+      let active = true
+      const step = () => { if (!active) return; frames++; v.requestVideoFrameCallback(step) }
+      v.requestVideoFrameCallback(step)
+      setTimeout(() => {
+        active = false
+        const q2 = v.getVideoPlaybackQuality()
+        const dt = (performance.now() - t1) / 1000
+        resolve({
+          url: location.host,
+          visibility: document.visibilityState,
+          resolution: v.videoWidth + 'x' + v.videoHeight,
+          currentTime: Math.round(v.currentTime),
+          playbackRate: v.playbackRate,
+          resumed,
+          measuredFps: Math.round((frames / dt) * 10) / 10,
+          sampledSec: Math.round(dt * 10) / 10,
+          totalFrames: q2.totalVideoFrames,
+          dropped: q2.droppedVideoFrames,
+          dropRate: q2.totalVideoFrames ? Math.round((100 * q2.droppedVideoFrames) / q2.totalVideoFrames) + '%' : '0%',
+          sessionDropped: q2.droppedVideoFrames - q1.droppedVideoFrames,
+        })
+      }, 2000)
+    })`)
+    console.log(JSON.stringify(r, null, 1))
+    c.close()
+  } else if (stage === 'codec') {
+    // 解码能力诊断：在 UI 壳页面用 mediaCapabilities 逐个测试常见视频编码，
+    // powerEfficient=true 通常代表走 GPU 硬解（false 大概率软解，是掉帧卡顿的元凶）。
+    // 用法：codec [port]
+    const port = Number(process.argv[3] || 9222)
+    const c = await attachMainPage(port)
+    const test = async (codec) => {
+      const r = await c.eval(
+        `navigator.mediaCapabilities.decodingInfo({type:'file',video:{contentType:'video/mp4; codecs="${codec}"',width:1920,height:1080,bitrate:8000000,framerate:30}}).then(r=>({supported:r.supported,smooth:r.smooth,powerEfficient:r.powerEfficient}))`
+      )
+      return { codec, ...r }
+    }
+    const results = []
+    for (const cc of ['avc1.640028', 'hvc1.1.6.L150.90', 'vp09.00.10.08', 'av01.0.08M.08']) {
+      results.push(await test(cc).catch((e) => ({ codec: cc, error: e.message })))
+    }
+    console.log(JSON.stringify(results, null, 1))
+    c.close()
   } else if (stage === 'debug') {
     // 打印指定实例的连接诊断快照：debug <port>
     const port = Number(process.argv[3] || 9222)

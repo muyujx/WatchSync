@@ -22,6 +22,11 @@ if (!isProfileMode && !app.requestSingleInstanceLock()) app.quit()
 // 成员端被动起播时可能没有用户手势：显式放宽 Chromium 自动播放策略
 app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required')
 
+// Windows 无边框窗口（frame:false）下原生遮挡检测会误判窗口被完全遮挡：
+// 页面 visibilityState=hidden → 渲染管线降帧/停摆，视频播放卡顿（窗口明明有焦点）。
+// 禁用该特性恢复恒可见判定，播放恢复满帧
+app.commandLine.appendSwitch('disable-features', 'CalculateNativeWinOcclusion')
+
 // 全局 UA 伪装：所有 webContents（UI 壳 + 视频视图）统一为标准 Chrome，
 // 去掉 Electron 标识，规避站点（如 B 站）的环境检测。
 // userAgentFallback 是官方全局兜底 API；须在 app.ready 前设置（appendSwitch('user-agent') 在 Electron 33 实测不生效）
