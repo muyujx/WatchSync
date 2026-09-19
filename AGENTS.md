@@ -4,6 +4,12 @@
 
 ## 开发调试
 
+### 调试网站
+
+cycani 需要登录账号才能播放，账号在 account.md 中
+
+### 执行调试
+
 不要直接跑 `npm run dev`（会卡住 shell），一律用：
 
 ```powershell
