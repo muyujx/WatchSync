@@ -47,21 +47,49 @@
     </button>
   </div>
 
-  <!-- 主页：无激活页签时显示（页签可保留在后台）；站点卡片点击新开页签 -->
+  <!-- 主页：无激活页签时显示（页签可保留在后台）；站点卡片点击新开页签，末尾加号可添加自定义书签 -->
   <div v-if="activeTabId == null" class="home">
-    <h3 class="home-title">支持的视频网站</h3>
+    <h3 class="home-title">视频网站</h3>
     <div class="sites">
-      <button v-for="s in sites" :key="s.url" class="site-card" @click="openSite(s)">
+      <!-- 站点卡片（div 而非 button：自定义卡片内嵌操作按钮，避免按钮嵌套） -->
+      <div
+        v-for="s in sites"
+        :key="s.url"
+        class="site-card"
+        role="button"
+        tabindex="0"
+        @click="openSite(s)"
+        @keydown.enter="openSite(s)"
+      >
+        <!-- 自定义书签：悬停显示编辑/删除按钮（固定适配站点不可删；确认删除时隐藏避免浮在确认层上方） -->
+        <span v-if="s.custom && !s.confirmDelete" class="card-actions">
+          <button class="card-btn" title="编辑站点" @click.stop="editSite(s)">✎</button>
+          <button class="card-btn danger" title="删除站点" @click.stop="removeSite(s)">✕</button>
+        </span>
         <img v-if="!s.iconFailed" class="site-icon" :src="s.icon" :alt="s.name" @error="s.iconFailed = true" />
         <span v-else class="site-icon fallback">{{ s.name[0] }}</span>
         <span class="site-name">{{ s.name }}</span>
         <span class="site-host">{{ hostOf(s.url) }}</span>
+        <!-- 删除二次确认层：覆盖卡片，防误删 -->
+        <span v-if="s.confirmDelete" class="card-confirm" @click.stop>
+          <span class="card-confirm-text">删除「{{ s.name }}」？</span>
+          <span class="card-confirm-actions">
+            <button class="m-btn" @click.stop="cancelRemove(s)">取消</button>
+            <button class="m-btn danger-fill" @click.stop="confirmRemove(s)">删除</button>
+          </span>
+        </span>
+      </div>
+      <!-- 加号卡片：打开添加站点对话框 -->
+      <button class="site-card add-card" title="添加站点书签" @click="addSite">
+        <span class="site-icon fallback add-icon">＋</span>
+        <span class="site-name">添加站点</span>
       </button>
     </div>
   </div>
 
   <MembersDialog :open="membersOpen" :members="memberList" :i-am-host="isHost" @close="closeMembers" @transfer="onTransferHost" />
   <SettingsDialog :open="settingsOpen" :nickname="myName" @close="closeSettings" @save="saveSettings" />
+  <SiteDialog :open="siteDialogOpen" :site="siteEditing" @close="siteDialogOpen = false" @save="saveSite" />
 </template>
 
 <script setup lang="ts">
@@ -78,6 +106,7 @@ import { hostOf } from './format'
 import TabStrip, { type TabInfo, type TabRole } from './components/TabStrip.vue'
 import MembersDialog, { type MemberItem } from './components/MembersDialog.vue'
 import SettingsDialog from './components/SettingsDialog.vue'
+import SiteDialog from './components/SiteDialog.vue'
 import { RTT_STALE_MS } from './rtt'
 
 /** 全部页签（与主进程 VideoViewController 的 tabId 对应；成员端同步页签恒在第一位） */
@@ -92,8 +121,123 @@ const closedTabIds = new Set<number>()
 /** 页签角色语义（决定同步按钮/徽标渲染）：房内房主=可切换同步；房内成员=只读徽标；其余=普通 */
 const tabRole = computed<TabRole>(() => (roomId.value ? (isHost.value ? 'host' : 'follower') : 'none'))
 
-/** 首页站点卡片（由适配器注册表 HOME_SITES 生成；iconFailed 为本地图标加载失败标记） */
-const sites = reactive(HOME_SITES.map((s) => ({ ...s, iconFailed: false })))
+/** 首页站点卡片条目：固定适配站点 + 用户自定义书签（custom 为 true 的可编辑/删除） */
+interface SiteCard {
+  /** 展示名 */
+  name: string
+  /** 主页地址（点击卡片打开） */
+  url: string
+  /** 卡片图标地址 */
+  icon: string
+  /** 本地图标加载失败标记（失败后显示首字母） */
+  iconFailed: boolean
+  /** 是否用户自定义书签（固定适配站点为 false，不可编辑/删除） */
+  custom: boolean
+  /** 删除二次确认层显隐标记 */
+  confirmDelete: boolean
+}
+
+/** 首页站点卡片列表：启动时先渲染固定站点，设置读取后补自定义书签 */
+const sites = reactive<SiteCard[]>([])
+
+/**
+ * 重建站点卡片列表：固定适配站点在前，后接自定义书签。
+ * 参数：custom 用户自定义书签数据（来自设置）。
+ */
+function rebuildSites(custom: { name: string; url: string }[]): void {
+  const fixed: SiteCard[] = HOME_SITES.map((s) => ({ ...s, iconFailed: false, custom: false, confirmDelete: false }))
+  const customCards: SiteCard[] = custom.map((s) => ({
+    name: s.name,
+    url: s.url,
+    icon: new URL(s.url).origin + '/favicon.ico',
+    iconFailed: false,
+    custom: true,
+    confirmDelete: false,
+  }))
+  sites.splice(0, sites.length, ...fixed, ...customCards)
+}
+
+/** 从当前卡片提取自定义书签数据（作为增删改操作的基准列表） */
+function customSitesOf(): { name: string; url: string }[] {
+  return sites.filter((s) => s.custom).map(({ name, url }) => ({ name, url }))
+}
+
+/** 保存自定义书签到设置并重建卡片列表 */
+async function persistSites(list: { name: string; url: string }[]): Promise<void> {
+  const saved = await window.p2pApi.setSettings({ customSites: list })
+  rebuildSites(saved.customSites)
+}
+
+/** ===== 站点书签增删改 ===== */
+/** 站点对话框显隐标记 */
+const siteDialogOpen = ref(false)
+/** 站点对话框编辑目标（null = 添加模式） */
+const siteEditing = ref<{ name: string; url: string } | null>(null)
+
+/** 打开添加站点对话框 */
+function addSite(): void {
+  siteEditing.value = null
+  siteDialogOpen.value = true
+}
+
+/**
+ * 打开编辑站点对话框（回填目标书签）。
+ * 参数：s 待编辑的卡片条目。
+ */
+function editSite(s: SiteCard): void {
+  siteEditing.value = { name: s.name, url: s.url }
+  siteDialogOpen.value = true
+}
+
+/**
+ * 保存站点（SiteDialog save 事件）：编辑模式按原 URL 定位替换；添加模式查重后追加。
+ * 参数：site 对话框提交的书签（name/url 已规范化）。
+ */
+async function saveSite(site: { name: string; url: string }): Promise<void> {
+  const list = customSitesOf()
+  if (siteEditing.value) {
+    // 编辑：按原 URL 定位替换（URL 也允许被修改）
+    const i = list.findIndex((x) => x.url === siteEditing.value!.url)
+    if (i >= 0) list[i] = site
+  } else {
+    // 添加：同地址查重，避免重复卡片
+    if (list.some((x) => x.url === site.url)) {
+      notify('该站点已存在')
+      return
+    }
+    list.push(site)
+  }
+  await persistSites(list)
+  const wasEditing = !!siteEditing.value
+  siteDialogOpen.value = false
+  siteEditing.value = null
+  notify(wasEditing ? '站点已更新' : '站点已添加')
+}
+
+/**
+ * 请求删除自定义站点：显示卡片上的二次确认层（防误删）。
+ * 参数：s 待删除的卡片条目。
+ */
+function removeSite(s: SiteCard): void {
+  s.confirmDelete = true
+}
+
+/**
+ * 取消删除：隐藏确认层。
+ * 参数：s 取消删除的卡片条目。
+ */
+function cancelRemove(s: SiteCard): void {
+  s.confirmDelete = false
+}
+
+/**
+ * 确认删除：从设置移除该书签并重建卡片。
+ * 参数：s 待删除的卡片条目。
+ */
+async function confirmRemove(s: SiteCard): Promise<void> {
+  await persistSites(customSitesOf().filter((x) => x.url !== s.url))
+  notify('站点已删除')
+}
 
 /** 窗口最大化状态（控制按钮图标切换） */
 const isMax = ref(false)
@@ -122,9 +266,10 @@ async function activateTab(id: number): Promise<void> {
   if (t) videoUrl.value = t.url
 }
 
-/** 回主页：隐藏所有页签显示站点卡片（页签保留在后台，点页签即可切回） */
+/** 回主页：隐藏所有页签显示站点卡片（页签保留在后台，点页签即可切回），并清空地址栏避免残留上一页签地址 */
 async function goHome(): Promise<void> {
   activeTabId.value = null
+  videoUrl.value = ''
   await window.p2pApi.setActiveTab(null)
 }
 
@@ -519,13 +664,14 @@ async function exitRoom(): Promise<void> {
 onMounted(() => {
   // 暴露诊断快照给联调脚本（drive.cjs debug）
   ;(window as unknown as { __p2pDiag: () => Promise<unknown> }).__p2pDiag = diagSnapshot
-  // 读取用户设置（首次启动生成默认昵称）；装载自定义中继并后台重新探测
+  // 读取用户设置（首次启动生成默认昵称）；装载自定义中继并后台重新探测；回填自定义站点书签
   window.p2pApi.getSettings().then((s) => {
     myName.value = s.nickname
     controller.myName = s.nickname
     initCustom(s.customRelays)
     controller.relayUrls = s.reachableRelays
     void refreshRelays()
+    rebuildSites(s.customSites)
   })
   // 系统唤起（second-instance/open-url）传来的邀请链接自动加入
   window.p2pApi.onProtocolUrl(async (url) => {

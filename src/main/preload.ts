@@ -43,11 +43,12 @@ contextBridge.exposeInMainWorld('p2pApi', {
   onVideoFullscreen: (cb: (fullscreen: boolean) => void) => ipcRenderer.on('video-fullscreen', (_e, f) => cb(f)),
   /** 读取用户设置（首次调用生成默认昵称） */
   getSettings: () => ipcRenderer.invoke('getSettings'),
-  /** 保存用户设置（增量合并：昵称/自定义中继/可达中继），返回保存后的完整设置 */
+  /** 保存用户设置（增量合并：昵称/自定义中继/可达中继/站点书签），返回保存后的完整设置 */
   setSettings: (patch: {
     nickname?: string
     customRelays?: string[]
     reachableRelays?: string[]
     relayCheckedAt?: number
+    customSites?: { name: string; url: string }[]
   }) => ipcRenderer.invoke('setSettings', patch),
 })

@@ -2,6 +2,14 @@ import { readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { app } from 'electron'
 
+/** 用户自定义站点书签（主页卡片，可增删改） */
+export interface CustomSite {
+  /** 展示名（默认取域名） */
+  name: string
+  /** 主页地址（点击卡片打开） */
+  url: string
+}
+
 /** 用户设置结构 */
 export interface Settings {
   /** 用户昵称（房间内展示） */
@@ -12,6 +20,8 @@ export interface Settings {
   reachableRelays: string[]
   /** 最近一次中继探测时间（ms；0=尚未探测） */
   relayCheckedAt: number
+  /** 用户自定义站点书签（主页展示，固定适配站点之外） */
+  customSites: CustomSite[]
 }
 
 /** 默认昵称词库（随机组合，用户可改） */
@@ -33,6 +43,7 @@ export function loadSettings(): Settings {
         customRelays: toStringArray(s.customRelays),
         reachableRelays: toStringArray(s.reachableRelays),
         relayCheckedAt: typeof s.relayCheckedAt === 'number' ? s.relayCheckedAt : 0,
+        customSites: toSiteArray(s.customSites),
       }
     }
   } catch {
@@ -43,6 +54,7 @@ export function loadSettings(): Settings {
     customRelays: [],
     reachableRelays: [],
     relayCheckedAt: 0,
+    customSites: [],
   }
   saveSettings(fresh)
   return fresh
@@ -55,6 +67,19 @@ export function loadSettings(): Settings {
  */
 function toStringArray(v: unknown): string[] {
   return Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : []
+}
+
+/**
+ * 过滤出站点书签数组（设置文件可能被手改，做类型兜底）。
+ * 参数：v 待校验值。
+ * 返回值：仅含合法 name/url 字段的书签数组；非法条目剔除，url 为空剔除。
+ */
+function toSiteArray(v: unknown): CustomSite[] {
+  if (!Array.isArray(v)) return []
+  return v
+    .filter((x): x is Partial<CustomSite> => !!x && typeof x === 'object')
+    .map((x) => ({ name: typeof x.name === 'string' ? x.name : '', url: typeof x.url === 'string' ? x.url : '' }))
+    .filter((x) => !!x.url)
 }
 
 /**

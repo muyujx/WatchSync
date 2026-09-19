@@ -61,6 +61,8 @@ declare global {
         reachableRelays: string[]
         /** 最近一次探测时间（ms；0=未探测） */
         relayCheckedAt: number
+        /** 用户自定义站点书签（主页展示） */
+        customSites: { name: string; url: string }[]
       }>
       /** 保存用户设置（增量合并），返回保存后的完整设置 */
       setSettings(patch: {
@@ -68,11 +70,13 @@ declare global {
         customRelays?: string[]
         reachableRelays?: string[]
         relayCheckedAt?: number
+        customSites?: { name: string; url: string }[]
       }): Promise<{
         nickname: string
         customRelays: string[]
         reachableRelays: string[]
         relayCheckedAt: number
+        customSites: { name: string; url: string }[]
       }>
     }
   }
