@@ -1,6 +1,8 @@
 /* ===== 标签行（Chrome 式 + Material）===== */
 .tabstrip { display: flex; align-items: flex-end; height: 36px; background: #dee1e6; user-select: none; }
-.tab { display: flex; align-items: center; gap: 6px; height: 30px; min-width: 0; flex: 0 1 220px; padding: 0 6px 0 10px; margin-left: 8px; background: #e9ebef; border-radius: 10px 10px 0 0; box-shadow: 0 -1px 3px rgba(0, 0, 0, 0.08); cursor: pointer; }
+/* 自定义标题栏按钮一律去掉浏览器默认焦点环（点击后出现的橙红圈，与主题色无关） */
+.tabstrip button:focus { outline: none; }
+.tab { display: flex; align-items: center; gap: 6px; height: 30px; min-width: 0; flex: 0 1 220px; padding: 0 6px 0 10px; margin-left: 2px; background: #e9ebef; border-radius: 10px 10px 0 0; box-shadow: 0 -1px 3px rgba(0, 0, 0, 0.08); cursor: pointer; }
 /* 激活页签：白底上浮；同步页签：顶部青绿条 + 淡青底 */
 .tab.active { background: #fff; }
 .tab.syncing:not(.active) { background: #e0f2f1; }
