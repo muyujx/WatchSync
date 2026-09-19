@@ -5,8 +5,9 @@
  *   node scripts/dev/dev-two.cjs stop   按 --profile 关闭两个实例
  *
  * 说明：默认单实例锁下需用 --profile 区分 userData 才能同机多开；
- * 启动经 WMI（Win32_Process.Create），进程父级是系统 WMI 服务，
- * 完全脱离当前进程树，命令立即返回不占终端（spawn/detached 会继承输出句柄导致 shell 卡住）；
+ * 启动经 PowerShell Start-Process（fire-and-forget，不等待不继承输出句柄），
+ * 命令立即返回不卡 shell，且进程留在交互桌面：Electron 窗口可见、渲染不冻结，
+ * CDP 截图正常（WMI Win32_Process.Create 会把窗口放到非交互上下文导致截图黑屏）；
  * 输出覆盖写入 logs/dev-a.log、logs/dev-b.log。
  */
 const { execFileSync } = require('node:child_process')
@@ -60,24 +61,25 @@ function runPs(script) {
 }
 
 /**
- * 经 WMI 启动单个实例：进程父级为 WMI 服务，本命令立即返回不阻塞 shell。
+ * 经 PowerShell Start-Process 启动单个实例：不等待、不继承输出句柄（不卡 shell），
+ * 进程留在交互桌面，Electron 窗口可见、渲染器不被 backgrounding 冻结，CDP 截图正常。
  * 参数：inst 实例配置（profile 用户数据后缀 / port CDP 调试端口 / log 日志文件名）。
- * 返回值：无。WMI 创建失败（ReturnValue != 0）时以非零码退出。
+ * 返回值：无。Start-Process 失败时 PowerShell 以非零码退出并抛错。
  */
 function startInstance(inst) {
   mkdirSync(LOG_DIR, { recursive: true })
   const log = join(LOG_DIR, inst.log)
-  // cmd /c 包一层以解析 npm.cmd；> 覆盖重定向日志（每次启动生成新日志，避免无限追加）
-  const cmdLine = `cmd /c npm run dev -- -- --profile=${inst.profile} --remote-debugging-port=${inst.port} > "${log}" 2>&1`
+  // cmd /c 包一层以解析 npm.cmd；> 覆盖重定向日志（每次启动生成新日志，避免无限追加）；
+  // -WindowStyle Hidden 仅隐藏 cmd 控制台，Electron 窗口正常显示
+  const cmdLine = `/c npm run dev -- -- --profile=${inst.profile} --remote-debugging-port=${inst.port} > "${log}" 2>&1`
   const script =
-    `$r = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ ` +
-    `CommandLine = ${psStr(cmdLine)}; CurrentDirectory = ${psStr(ROOT)} }; ` +
-    `if ($r.ReturnValue -ne 0) { Write-Error "WMI create failed: $($r.ReturnValue)"; exit 1 }`
+    `Start-Process -FilePath 'cmd.exe' -ArgumentList ${psStr(cmdLine)} ` +
+    `-WorkingDirectory ${psStr(ROOT)} -WindowStyle Hidden`
   runPs(script)
   console.log(`[dev:two] 启动实例 ${inst.profile} → CDP ${inst.port}，日志 logs/${inst.log}`)
 }
 
-/** 启动两个实例（WMI 脱离启动，命令立即返回） */
+/** 启动两个实例（Start-Process 脱离启动，命令立即返回） */
 function start() {
   for (const inst of INSTANCES) startInstance(inst)
   console.log('[dev:two] 数秒就绪后可执行：node scripts/e2e/drive.cjs host-init')
