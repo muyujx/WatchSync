@@ -1,6 +1,6 @@
 {
   "name": "watchsync",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "无服务器 P2P 网页视频同步观影",
   "main": "out/main/index.js",
   "type": "module",
