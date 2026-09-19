@@ -1,6 +1,10 @@
-# WatchSync
+<p align="center">
+  <img src="assets/icon.png" alt="WatchSync" width="128" height="128" />
+</p>
 
-> 无服务器的 P2P 网页视频同步观影工具：多人观看同一个网页视频，进度实时同步。
+<h1 align="center">WatchSync</h1>
+
+<p align="center">无服务器的 P2P 网页视频同步观影工具：多人观看同一个网页视频，进度实时同步。</p>
 
 WatchSync 是一款基于 Electron 的桌面应用，内置浏览器打开视频网页（哔哩哔哩、次元城及任意含 `<video>` 的站点），通过 WebRTC 在观看者之间建立点对点直连，由房主统一驱动播放，其他人自动跟随。**无需部署任何服务器、无需注册账号**。
 
@@ -140,4 +144,4 @@ npm run dev:two:stop
 
 ## 许可
 
-本项目暂未指定开源许可证。
+本项目基于 [MIT License](./LICENSE) 开源。
