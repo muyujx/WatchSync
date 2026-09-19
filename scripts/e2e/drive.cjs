@@ -371,6 +371,13 @@ async function main() {
     }
     console.log(JSON.stringify(results, null, 1))
     c.close()
+  } else if (stage === 'tabs') {
+    // 打印指定实例页签清单（id/地址/标题/激活/同步标记）：tabs <port>
+    const port = Number(process.argv[3] || 9222)
+    const c = await attachMainPage(port)
+    const snap = await c.eval('(window.__p2pDebug || {})')
+    console.log(JSON.stringify(snap, null, 2))
+    c.close()
   } else if (stage === 'debug') {
     // 打印指定实例的连接诊断快照：debug <port>
     const port = Number(process.argv[3] || 9222)

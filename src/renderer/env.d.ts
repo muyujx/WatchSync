@@ -7,9 +7,13 @@ export {}
 declare global {
   interface Window {
     p2pApi: {
-      /** 打开视频页 */
-      openVideo(url: string): Promise<void>
-      /** 注入桥脚本（guard 预留：成员端跟随模式开关） */
+      /** 打开视频页：tabId 缺省新建页签（自动激活），指定则在该页签内导航；返回页签 ID */
+      openVideo(url: string, tabId?: number): Promise<number>
+      /** 切换显示的页签（null = 回主页，所有页签隐藏） */
+      setActiveTab(tabId: number | null): Promise<void>
+      /** 设置同步目标页签并迁移跟随守卫（tabId = null 清除同步目标） */
+      setSyncTab(tabId: number | null, guard: boolean): Promise<void>
+      /** 注入桥脚本（guard 预留：成员端跟随模式开关），作用于同步页签 */
       inject(guard: boolean): Promise<string>
       /** 取走视频事件队列 */
       drainEvents(): Promise<Array<{ ev: string; position: number; paused: boolean }>>
@@ -38,12 +42,12 @@ declare global {
       onWinState(cb: (maximized: boolean) => void): void
       /** 工具栏网页导航：action = back | forward | reload */
       videoNav(action: string): Promise<void>
-      /** 关闭网页标签 → 回主页 */
-      closeVideo(): Promise<void>
+      /** 关闭指定页签（销毁其视图） */
+      closeVideo(tabId: number): Promise<void>
       /** 显示/隐藏视频画面（打开 UI 弹窗时用，避免原生视图遮挡界面） */
       setVideoVisible(visible: boolean): Promise<void>
-      /** 订阅标签页标题变化（title + url） */
-      onPageTitle(cb: (info: { title: string; url: string }) => void): void
+      /** 订阅标签页标题变化（tabId + title + url） */
+      onPageTitle(cb: (info: { tabId: number; title: string; url: string }) => void): void
       /** 订阅网页 HTML 全屏状态变化（全屏时 UI 隐藏顶部栏，让视频铺满整窗） */
       onVideoFullscreen(cb: (fullscreen: boolean) => void): void
       /** 读取用户设置（首次调用生成默认昵称） */

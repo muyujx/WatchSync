@@ -1,12 +1,45 @@
 <template>
-  <!-- 标签行 36px（Chrome 式）：网页标签 + 拖动区 + 窗口控制；视频视图挂在下方工具栏以下 -->
+  <!-- 标签行 36px（Chrome 式）：多网页标签 + 主页按钮 + 拖动区 + 窗口控制；视频视图挂在下方工具栏以下 -->
   <div class="tabstrip">
-    <div v-if="tab" class="tab" :title="tab.url">
-      <img v-if="!iconFailed" class="tab-icon" :src="tab.favicon" alt="" @error="iconFailed = true" />
-      <span v-else class="tab-icon fb">{{ faviconLetter }}</span>
-      <span class="tab-title">{{ tab.title || hostOf(tab.url) }}</span>
-      <button class="tab-close" title="关闭标签页" @click.stop="emit('close')">✕</button>
+    <div
+      v-for="t in tabs"
+      :key="t.id"
+      class="tab"
+      :class="{ active: t.id === activeId, syncing: t.id === syncId }"
+      :title="t.url"
+      @click="emit('activate', t.id)"
+    >
+      <img v-if="!iconFailed[t.id]" class="tab-icon" :src="t.favicon" alt="" @error="iconFailed[t.id] = true" />
+      <span v-else class="tab-icon fb">{{ letterOf(t) }}</span>
+      <span class="tab-title">{{ t.title || hostOf(t.url) }}</span>
+      <!-- 房主：每页签带同步按钮（当前同步页签为激活态），点按钮切换同步目标 -->
+      <button
+        v-if="role === 'host'"
+        class="tab-sync"
+        :class="{ on: t.id === syncId }"
+        :title="t.id === syncId ? '同步中——点击其他页签的此按钮切换同步' : '把同步切换到此页签'"
+        @click.stop="emit('setSync', t.id)"
+      >
+        <svg viewBox="0 0 12 12" width="10" height="10">
+          <circle cx="6" cy="6" r="4" fill="none" stroke="currentColor" stroke-width="1.6" />
+          <circle v-if="t.id === syncId" cx="6" cy="6" r="2" fill="currentColor" />
+        </svg>
+      </button>
+      <!-- 成员：仅同步页签显示只读徽标（成员不能切换同步目标） -->
+      <span v-else-if="role === 'follower' && t.id === syncId" class="tab-sync-badge" title="房主正在同步此页签">同步中</span>
+      <!-- 关闭按钮：成员端同步页签不可关闭（退出房间后解锁） -->
+      <button
+        v-if="!(role === 'follower' && t.id === syncId)"
+        class="tab-close"
+        title="关闭标签页"
+        @click.stop="emit('close', t.id)"
+      >
+        ✕
+      </button>
     </div>
+    <button class="win-btn home-btn" title="主页（从主页点站点卡片新开页签）" @click="emit('home')">
+      <svg viewBox="0 0 16 16" width="14" height="14"><path d="M8 3v10M3 8h10" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" /></svg>
+    </button>
     <div class="drag-area"></div>
     <button class="win-btn" title="最小化" @click="emit('win', 'minimize')">
       <svg viewBox="0 0 16 16" width="14" height="14"><path d="M3 8h10" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" /></svg>
@@ -26,14 +59,19 @@
 
 <script setup lang="ts">
 /**
- * 标签行组件：网页标签展示 + 窗口控制按钮（最小化/最大化/关闭）。
+ * 标签行组件：多网页标签展示 + 同步标记 + 主页按钮 + 窗口控制按钮（最小化/最大化/关闭）。
  * 纯展示组件：状态由父级（App）持有，交互通过事件上报。
+ * - role='host'：每页签渲染同步按钮（点按钮=切换同步目标，点本体=切换查看）
+ * - role='follower'：仅同步页签渲染只读"同步中"徽标，且该页签无关闭按钮
+ * - role='none'：普通浏览器页签行为
  */
-import { computed, ref, watch } from 'vue'
+import { reactive } from 'vue'
 import { hostOf } from '../format'
 
 /** 标签页信息结构（由父级 App 创建并维护） */
 export interface TabInfo {
+  /** 页签 ID（与主进程 VideoViewController 一致） */
+  id: number
   /** 页面地址 */
   url: string
   /** 页面标题（标题推送前为空串，回退显示域名） */
@@ -42,18 +80,19 @@ export interface TabInfo {
   favicon: string
 }
 
-/** 组件属性：tab 当前标签（null = 主页）；isMax 窗口最大化状态 */
-const props = defineProps<{ tab: TabInfo | null; isMax: boolean }>()
-/** 组件事件：close 关闭标签；win 窗口控制动作；nav 预留（当前未用） */
-const emit = defineEmits<{ close: []; win: [action: string] }>()
+/** 页签角色语义：host=可切换同步目标；follower=只读同步徽标；none=普通页签 */
+export type TabRole = 'host' | 'follower' | 'none'
 
-/** favicon 加载失败标记（换标签时重置） */
-const iconFailed = ref(false)
-watch(
-  () => props.tab?.url,
-  () => (iconFailed.value = false),
-)
+/** 组件属性：tabs 页签列表；activeId 当前显示页签；syncId 同步页签；role 角色语义；isMax 窗口最大化 */
+defineProps<{ tabs: TabInfo[]; activeId: number | null; syncId: number | null; role: TabRole; isMax: boolean }>()
+/** 组件事件：activate 切换查看；setSync 切换同步（房主）；close 关闭页签；home 回主页；win 窗口控制 */
+const emit = defineEmits<{ activate: [id: number]; setSync: [id: number]; close: [id: number]; home: []; win: [action: string] }>()
 
-/** 标签 favicon 加载失败时的字母占位 */
-const faviconLetter = computed(() => (props.tab ? (props.tab.title || hostOf(props.tab.url)).trim()[0]?.toUpperCase() || '?' : '?'))
+/** 各页签 favicon 加载失败标记（key = 页签 ID） */
+const iconFailed = reactive<Record<number, boolean>>({})
+
+/** 页签 favicon 加载失败时的字母占位 */
+function letterOf(t: TabInfo): string {
+  return (t.title || hostOf(t.url)).trim()[0]?.toUpperCase() || '?'
+}
 </script>

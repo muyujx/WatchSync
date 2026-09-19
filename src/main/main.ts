@@ -8,7 +8,7 @@ import { loadSettings, saveSettings, type Settings } from './settings'
  * 应用入口。
  * - --profile=<name>：切换 userData 目录，支持同机多实例联调（T1）
  * - watchsync:// 协议：Windows 下经 second-instance argv 传入，macOS 下经 open-url
- * - IPC 通道：openVideo / inject / drainEvents / videoStatus / videoCmd / copyText / parseLink
+ * - IPC 通道：openVideo / setActiveTab / setSyncTab / inject / drainEvents / videoStatus / videoCmd / closeVideo / copyText / parseLink
  */
 
 // --profile 参数必须在 app.ready 前设置路径
@@ -88,19 +88,23 @@ app.whenReady().then(() => {
     else if (action === 'toggleMaximize') (mainWindow.isMaximized() ? mainWindow.unmaximize : mainWindow.maximize).call(mainWindow)
     else if (action === 'close') mainWindow.close()
   })
-  ipcMain.handle('openVideo', (_e, url: string) => mainWindow && video.open(mainWindow, url))
+  ipcMain.handle('openVideo', (_e, url: string, tabId?: number) => (mainWindow ? video.open(mainWindow, url, tabId) : null))
+  // 切换显示的页签（null = 回主页，所有页签隐藏）
+  ipcMain.handle('setActiveTab', (_e, tabId: number | null) => mainWindow && video.setActive(mainWindow, tabId))
+  // 设置同步目标页签并迁移跟随守卫（tabId = null 清除同步目标）
+  ipcMain.handle('setSyncTab', (_e, tabId: number | null, guard: boolean) => video.setSyncTab(tabId, guard))
   ipcMain.handle('inject', (_e, guard: boolean) => video.inject(guard))
   ipcMain.handle('drainEvents', () => video.drainEvents())
   ipcMain.handle('videoStatus', () => video.status())
   ipcMain.handle('videoCmd', (_e, action: string, arg?: number) => video.cmd(action, arg))
-  // 工具栏导航：back | forward | reload
+  // 工具栏导航：back | forward | reload（作用于激活页签）
   ipcMain.handle('videoNav', (_e, action: string) => video.nav(action))
-  // 关闭网页标签 → 回主页
-  ipcMain.handle('closeVideo', () => video.close())
+  // 关闭指定页签（销毁视图）
+  ipcMain.handle('closeVideo', (_e, tabId: number) => mainWindow && video.close(mainWindow, tabId))
   // 打开 UI 弹窗时隐藏/恢复视频画面（原生视图会遮挡渲染层界面）
   ipcMain.handle('setVideoVisible', (_e, visible: boolean) => video.setVisible(visible))
-  // 标签页标题变化 → UI
-  video.setOnTitle((title, url) => mainWindow?.webContents.send('page-title', { title, url }))
+  // 标签页标题变化 → UI（带 tabId 供按页签路由）
+  video.setOnTitle((tabId, title, url) => mainWindow?.webContents.send('page-title', { tabId, title, url }))
   // 网页 HTML 全屏状态变化 → UI（隐藏/恢复自绘顶部栏）
   video.setOnFullscreen((fullscreen) => mainWindow?.webContents.send('video-fullscreen', fullscreen))
   // ---- 用户设置：读取（首次生成默认昵称）与保存 ----

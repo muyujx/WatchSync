@@ -14,6 +14,7 @@ describe('protocol encode/decode', () => {
       { t: 'dissolve' },
       { t: 'transfer', to: 'peer-1' },
       { t: 'hostChange', host: 'peer-1' },
+      { t: 'syncTab', url: 'https://a.com/v2' },
     ]
     for (const m of msgs) expect(decodeMsg(encodeMsg(m))).toEqual(m)
   })
@@ -30,5 +31,7 @@ describe('protocol encode/decode', () => {
     expect(decodeMsg(JSON.stringify({ t: 'transfer', to: 1 }))).toBeNull() // to 非字符串
     expect(decodeMsg(JSON.stringify({ t: 'hostChange' }))).toBeNull() // 缺 host
     expect(decodeMsg(JSON.stringify({ t: 'hostChange', host: false }))).toBeNull() // host 非字符串
+    expect(decodeMsg(JSON.stringify({ t: 'syncTab' }))).toBeNull() // 缺 url
+    expect(decodeMsg(JSON.stringify({ t: 'syncTab', url: 1 }))).toBeNull() // url 非字符串
   })
 })

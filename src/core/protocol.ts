@@ -21,6 +21,8 @@ export type SyncMsg =
   | { t: 'transfer'; to: string }
   /** 房主变更通知（新房主→全员广播）：host 为新任房主 peerId，全员据此切换同步基准 */
   | { t: 'hostChange'; host: string }
+  /** 房主切换同步页签（房主→全员广播）：url 为新同步页签当前地址，成员据此复用/新建页签并跳转 */
+  | { t: 'syncTab'; url: string }
   /** 延迟探测（任意端→全员广播）：ts 为发起方时间戳，接收方原样回 pong */
   | { t: 'ping'; ts: number }
   /** 延迟应答（→全员广播）：原样带回发起方 ts，仅发起方（pending 集合命中者）消费 */
@@ -37,6 +39,7 @@ const NUMERIC_FIELDS: Record<SyncMsg['t'], string[]> = {
   dissolve: [],
   transfer: [],
   hostChange: [],
+  syncTab: [],
   ping: ['ts'],
   pong: ['ts'],
 }
@@ -65,6 +68,8 @@ export function decodeMsg(raw: string): SyncMsg | null {
       if (typeof v !== 'number' || !Number.isFinite(v)) return null
     }
     if (t === 'state' && typeof o.url !== 'string') return null
+    // 切换同步页签消息：url 必须为字符串
+    if (t === 'syncTab' && typeof o.url !== 'string') return null
     if ((t === 'state' || t === 'seek') && typeof o.playing !== 'boolean') return null
     // 房主移交/变更：目标与新权威均为字符串 peerId
     if (t === 'transfer' && typeof o.to !== 'string') return null

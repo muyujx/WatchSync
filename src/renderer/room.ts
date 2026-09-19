@@ -67,8 +67,12 @@ export class RoomController {
   onDissolved: (() => void) | null = null
   /** 本端房主角色变化回调（转让/接管后触发，UI 据此更新 isHost） */
   onRoleChanged: ((isHost: boolean) => void) | null = null
-  /** 当前视频页地址（房主广播/成员导航用） */
+  /** 当前视频页地址（房主广播/成员导航用；指同步页签的期望地址） */
   videoUrl = ''
+  /** 当前同步页签 ID（UI 复用/新建同步页签后回填；applySnapshot 原地导航定向到它） */
+  syncTabId: number | null = null
+  /** 成员端收到房主切换同步页签回调（参数：新同步页签 url；UI 负责复用/新建/置顶/跳转并回填 syncTabId） */
+  onSyncTab: ((url: string) => void | Promise<void>) | null = null
   private room: RoomHandle | null = null
   private lastSnapshot: StateSnapshot | null = null
   /** 成员端最近一次收到房主 state 心跳的时间（0=尚未建立同步，不做断线判定） */
@@ -208,6 +212,14 @@ export class RoomController {
   }
 
   /**
+   * 房主：广播切换同步页签（房主点页签同步按钮时调用）。
+   * 参数：url 新同步页签当前地址，成员据此复用/新建页签并跳转。
+   */
+  broadcastSyncTab(url: string): void {
+    this.room?.broadcast({ t: 'syncTab', url })
+  }
+
+  /**
    * 房主：把房主身份转让给指定成员。
    * 参数：toPeerId 目标成员 peerId（须仍在本房间成员集合内）。
    * 说明：先定向发送移交指令，本端随即降级为成员，避免出现双房主同时广播进度。
@@ -240,8 +252,8 @@ export class RoomController {
     this.lastStateAt = 0
     this.connectionLost = false
     this.startHeartbeat()
-    // 房主可自由操作视频：解除跟随守卫
-    void window.p2pApi.inject(false)
+    // 房主可自由操作视频：解除同步页签跟随守卫（syncTabId 为空时调用无副作用）
+    void window.p2pApi.setSyncTab(this.syncTabId, false)
     // 广播新的角色标记，供其他成员更新房主标识
     this.announceProfile()
     this.onRoleChanged?.(true)
@@ -262,8 +274,8 @@ export class RoomController {
     this.lastSnapshot = null
     this.lastStateAt = 0
     this.connectionLost = false
-    // 成员端禁止本地操作：开启跟随守卫
-    void window.p2pApi.inject(true)
+    // 成员端禁止本地操作：把跟随守卫挂回当前同步页签（尚未建立同步时为 null，由后续 state/syncTab 流程建立）
+    void window.p2pApi.setSyncTab(this.syncTabId, true)
     this.startFollowLoop()
     // 广播角色变化（host:false）
     this.announceProfile()
@@ -331,6 +343,11 @@ export class RoomController {
       }
       return
     }
+    // 房主切换同步页签（全员广播）：仅成员消费，由 UI 复用/新建页签并跳转
+    if (msg.t === 'syncTab') {
+      if (this.role === 'follower') void this.onSyncTab?.(msg.url)
+      return
+    }
     // 房主解散指令：成员端通知 UI 自动退出（房主自身无需处理）
     if (msg.t === 'dissolve') {
       if (this.role === 'follower') this.onDissolved?.()
@@ -383,8 +400,8 @@ export class RoomController {
   }
 
   /**
-   * 成员端应用状态快照：按需导航视频页，并在桥就绪后对齐位置与播放状态。
-   * 参数：s 快照；url 房主当前视频页（空串表示房主尚未打开视频）。
+   * 成员端应用状态快照：按需建立/导航同步页签，并在桥就绪后对齐位置与播放状态。
+   * 参数：s 快照；url 房主当前视频页（空串表示房主尚未打开视频/已关闭同步页签）。
    */
   private async applySnapshot(s: StateSnapshot, url: string): Promise<void> {
     // 等待桥就绪期间会有新心跳：直接更新快照（位置由跟随循环持续校正），避免并发重入
@@ -394,11 +411,15 @@ export class RoomController {
     }
     this.applyingSnapshot = true
     try {
-      if (url && url !== this.videoUrl) {
+      if (url && this.syncTabId == null) {
+        // 尚无同步页签（首次收到心跳/同步页签缺失）：由 UI 复用或新建并回填 syncTabId
+        await this.onSyncTab?.(url)
+      }
+      if (url && url !== this.videoUrl && this.syncTabId != null) {
         this.videoUrl = url
-        // 换视频/换剧集：导航后桥需重建，等待播放器创建 video
+        // 房主在同一页签内换视频/换剧集：同步页签原地导航，桥需重建等待播放器创建 video
         this.bridgeReady = false
-        await window.p2pApi.openVideo(url)
+        await window.p2pApi.openVideo(url, this.syncTabId)
       }
       // 播放器异步创建：桥未就绪时轮询等待，就绪后立即对齐位置与播放状态（解决成员端不起播）
       if (url && !this.bridgeReady) {
@@ -555,6 +576,9 @@ export class RoomController {
       clearInterval(this.followTimer)
       this.followTimer = null
     }
+    // 解除跟随守卫并清空同步页签指针（页签保留，UI 端随后解锁为普通页签可关闭）
+    void window.p2pApi.setSyncTab(null, false)
+    this.syncTabId = null
     await this.room?.leave()
     this.room = null
     this.lastSnapshot = null
