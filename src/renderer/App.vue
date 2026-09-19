@@ -302,11 +302,9 @@ controller.onConnectionRestored = () => {
   connectionLost.value = false
   notify('已重连房主')
 }
-// 真正连上房主（收到房主心跳/资料）：此时才提示连接成功
+// 真正连上房主（收到房主心跳/资料）：结束加入 loading（成功不弹提示）
 controller.onHostConnected = () => {
-  // 真正连上房主：结束加入 loading
   busy.value = ''
-  notify('已连接房主')
 }
 // 加入失败（中继建连失败或超时没连上房主）：报错并退出房间回初始态，便于重试
 controller.onJoinFailed = (reason) => {
@@ -429,7 +427,6 @@ async function diagSnapshot(): Promise<unknown> {
 async function onHost(): Promise<void> {
   busy.value = 'hosting'
   try {
-    notify('创建房间中...')
     // 建房只依赖房间号；视频地址在连接建立后由心跳同步给成员
     const link = await controller.host()
     isHost.value = true
@@ -444,7 +441,6 @@ async function onHost(): Promise<void> {
       await openInTab(videoUrl.value)
     }
     syncDebug()
-    notify('房间已创建')
   } catch (e) {
     notify('创建失败: ' + String(e))
   } finally {
@@ -462,7 +458,6 @@ async function onJoinLink(): Promise<void> {
   }
   // 进入连接中状态：由 onHostConnected / onJoinFailed 回调解除（最长等待看门狗 15s）
   busy.value = 'joining'
-  notify('正在连接房主…')
   isHost.value = false
   roomId.value = parsed.roomId
   controller.myName = myName.value
