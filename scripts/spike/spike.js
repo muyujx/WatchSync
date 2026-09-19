@@ -26,7 +26,7 @@ document.getElementById('join').onclick = () => join(document.getElementById('ro
 function join(roomId) {
   if (!roomId) return log('错误：房间 ID 为空')
   // nostr 策略：config 仅含 appId，中继由 Trystero 默认列表提供
-  const room = joinRoom({ appId: 'p2psync-spike' }, roomId)
+  const room = joinRoom({ appId: 'watchsync-spike' }, roomId)
   const actions = room.makeAction('msg')
   sendMsg = actions[0]
   room.onPeerJoin((id) => log('peerJoin: ' + id))

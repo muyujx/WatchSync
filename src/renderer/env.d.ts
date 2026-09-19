@@ -26,9 +26,9 @@ declare global {
       videoCmd(action: string, arg?: number): Promise<void>
       /** 写剪贴板 */
       copyText(text: string): Promise<void>
-      /** 解析 p2psync:// 链接（仅房间号），非法返回 null */
+      /** 解析 watchsync:// 链接（仅房间号），非法返回 null */
       parseLink(input: string): Promise<{ roomId: string } | null>
-      /** 订阅系统唤起传来的 p2psync:// 链接事件 */
+      /** 订阅系统唤起传来的 watchsync:// 链接事件 */
       onProtocolUrl(cb: (url: string) => void): void
       /** 自定义标题栏窗口控制：action = minimize | toggleMaximize | close */
       winControl(action: string): void

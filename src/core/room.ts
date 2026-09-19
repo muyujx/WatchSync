@@ -27,7 +27,7 @@ export interface TrysteroRoomLike {
 }
 
 /** 应用命名空间：编入版本号，协议不兼容时切换，避免新旧版本串台 */
-export const APP_ID = 'p2psync-v1'
+export const APP_ID = 'watchsync-v1'
 
 /** 房间句柄：业务层唯一接触的房间接口 */
 export interface RoomHandle {

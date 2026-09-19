@@ -17,9 +17,9 @@ contextBridge.exposeInMainWorld('p2pApi', {
   videoCmd: (action: string, arg?: number) => ipcRenderer.invoke('videoCmd', action, arg),
   /** 写剪贴板 */
   copyText: (text: string) => ipcRenderer.invoke('copyText', text),
-  /** 解析 p2psync:// 链接 */
+  /** 解析 watchsync:// 链接 */
   parseLink: (input: string) => ipcRenderer.invoke('parseLink', input),
-  /** 订阅系统唤起传来的 p2psync:// 链接事件 */
+  /** 订阅系统唤起传来的 watchsync:// 链接事件 */
   onProtocolUrl: (cb: (url: string) => void) => ipcRenderer.on('protocol-url', (_e, url) => cb(url)),
   /** 自定义标题栏窗口控制：action = minimize | toggleMaximize | close */
   winControl: (action: string) => ipcRenderer.send('win-control', action),

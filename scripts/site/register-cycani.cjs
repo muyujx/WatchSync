@@ -86,7 +86,7 @@ async function main() {
     await c.eval(`location.href = 'https://www.cycani.org/register'; 'nav'`)
     await new Promise((r) => setTimeout(r, 3000))
   }
-  const r1 = await c.eval(`(${fillInput})(${JSON.stringify({ username: siteUser, nickname: 'p2pSync测试', email: address, password: sitePass, confirmPassword: sitePass })})`)
+  const r1 = await c.eval(`(${fillInput})(${JSON.stringify({ username: siteUser, nickname: 'WatchSync测试', email: address, password: sitePass, confirmPassword: sitePass })})`)
   if (r1 !== 'ok') throw new Error('表单填写失败: ' + r1)
   console.log('[2] 表单已填写, 用户名:', siteUser)
 
@@ -121,7 +121,7 @@ async function main() {
   console.log('[5] 提交后状态:', JSON.stringify(after))
 
   // ---- 6. 记录凭据（本地文件，git 已排除）----
-  const creds = { site: 'https://www.cycani.org', username: siteUser, password: sitePass, email: address, mailPassword: mailPass, note: 'p2pSync 联调测试账号' }
+  const creds = { site: 'https://www.cycani.org', username: siteUser, password: sitePass, email: address, mailPassword: mailPass, note: 'WatchSync 联调测试账号' }
   fs.writeFileSync(CRED_FILE, JSON.stringify(creds, null, 2))
   console.log('[6] 凭据已写入:', CRED_FILE)
   c.close()

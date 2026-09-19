@@ -108,7 +108,7 @@ async function main() {
     const c = await attachMainPage(9223)
     await c.eval('new Promise(r => setTimeout(r, 1500))')
     const link = process.argv[3]
-    if (!link) throw new Error('usage: drive.cjs follower-join <p2psync:// link>')
+    if (!link) throw new Error('usage: drive.cjs follower-join <watchsync:// link>')
     const setInput = (sel, val) => {
       const el = document.querySelector(sel)
       const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set
@@ -148,7 +148,7 @@ async function main() {
   } else if (stage === 'screenshot') {
     // 截取指定实例的视频页屏幕：screenshot <port> <输出文件>
     const port = Number(process.argv[3])
-    const out = process.argv[4] || `F:/Project/p2pSync/.shot-${port}.png`
+    const out = process.argv[4] || `F:/Project/WatchSync/.shot-${port}.png`
     const targets = await listTargets(port)
     const v = targets.find((t) => t.type === 'page' && t.url.includes('cycani'))
     if (!v) throw new Error('no cycani target on ' + port)
@@ -269,7 +269,7 @@ async function main() {
 
     const b = await attachMainPage(9223)
     await b.eval('new Promise(r => setTimeout(r, 1200))')
-    await b.eval(`(${setInput.toString()})('.toolbar .join', 'p2psync://join?room=${roomId}')`)
+    await b.eval(`(${setInput.toString()})('.toolbar .join', 'watchsync://join?room=${roomId}')`)
     await b.eval(`(${clickBtn.toString()})('加入')`)
 
     // 轮询 60 秒：两侧 members + B 视频页出现情况

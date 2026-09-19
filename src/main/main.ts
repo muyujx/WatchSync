@@ -7,7 +7,7 @@ import { loadSettings, saveSettings, type Settings } from './settings'
 /**
  * 应用入口。
  * - --profile=<name>：切换 userData 目录，支持同机多实例联调（T1）
- * - p2psync:// 协议：Windows 下经 second-instance argv 传入，macOS 下经 open-url
+ * - watchsync:// 协议：Windows 下经 second-instance argv 传入，macOS 下经 open-url
  * - IPC 通道：openVideo / inject / drainEvents / videoStatus / videoCmd / copyText / parseLink
  */
 
@@ -29,15 +29,15 @@ app.userAgentFallback =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36'
 
 // 注册自定义协议（开发模式下需传 electron.exe 路径与参数，否则系统无法唤起）
-if (app.isPackaged) app.setAsDefaultProtocolClient('p2psync')
-else app.setAsDefaultProtocolClient('p2psync', process.execPath, [app.getAppPath()])
+if (app.isPackaged) app.setAsDefaultProtocolClient('watchsync')
+else app.setAsDefaultProtocolClient('watchsync', process.execPath, [app.getAppPath()])
 
 let mainWindow: BrowserWindow | null = null
 const video = new VideoViewController()
 
-/** 解析 argv 中的 p2psync:// 链接并推送给 UI */
+/** 解析 argv 中的 watchsync:// 链接并推送给 UI */
 function handleProtocolUrl(argv: string[]): void {
-  const url = argv.find((a) => a.startsWith('p2psync://'))
+  const url = argv.find((a) => a.startsWith('watchsync://'))
   if (url && mainWindow) mainWindow.webContents.send('protocol-url', url)
 }
 
@@ -111,7 +111,7 @@ app.whenReady().then(() => {
 
   createWindow()
 
-  // Windows：第二实例唤起（含 p2psync:// 链接）→ 聚焦并转发
+  // Windows：第二实例唤起（含 watchsync:// 链接）→ 聚焦并转发
   app.on('second-instance', (_e, argv) => {
     if (mainWindow) {
       if (mainWindow.isMinimized()) mainWindow.restore()

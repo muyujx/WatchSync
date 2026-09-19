@@ -13,7 +13,7 @@
 # 启动实例 A（-Profile 区分 userData，CDP 端口供自动化联调；B 实例改端口与 profile 即可）
 Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ `
   CommandLine = "cmd /c npm run dev -- -- --profile=A --remote-debugging-port=9222" ; `
-  CurrentDirectory = "F:\Project\p2pSync" }
+  CurrentDirectory = "F:\Project\WatchSync" }
 ```
 
 - 就绪探测：轮询 `http://localhost:9222/json/version`（实例 B 用 9223）

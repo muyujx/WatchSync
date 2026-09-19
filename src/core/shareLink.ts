@@ -1,7 +1,7 @@
 /**
  * 房间 ID 与分享链接工具。
  * 房间 ID：10 字节随机数编码为 16 字符 Base32（约 80bit 熵），即房间准入凭证。
- * 分享链接：p2psync://join?room=<roomId>
+ * 分享链接：watchsync://join?room=<roomId>
  * 设计约束：邀请链接只承载建立 P2P 连接所需信息；视频地址等同步信息在连接建立后经 DataChannel 同步。
  */
 
@@ -32,10 +32,10 @@ export function generateRoomId(): string {
 /**
  * 生成分享链接。
  * 参数：roomId 房间 ID。
- * 返回值：p2psync:// 协议链接（仅含房间号，不含任何业务信息）。
+ * 返回值：watchsync:// 协议链接（仅含房间号，不含任何业务信息）。
  */
 export function buildShareUrl(roomId: string): string {
-  return `p2psync://join?room=${roomId}`
+  return `watchsync://join?room=${roomId}`
 }
 
 /**
@@ -47,7 +47,7 @@ export function buildShareUrl(roomId: string): string {
 export function parseShareUrl(input: string): { roomId: string } | null {
   try {
     const u = new URL(input)
-    if (u.protocol !== 'p2psync:' || u.host !== 'join') return null
+    if (u.protocol !== 'watchsync:' || u.host !== 'join') return null
     const roomId = u.searchParams.get('room') ?? ''
     if (!ROOM_ID_PATTERN.test(roomId)) return null
     return { roomId }
