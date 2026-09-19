@@ -8,7 +8,8 @@ export default defineConfig({
     build: { rollupOptions: { input: { index: resolve('src/main/main.ts') } } },
   },
   preload: {
-    build: { rollupOptions: { input: { index: resolve('src/main/preload.ts') } } },
+    // index：主窗口 UI 桥；toast：透明提示条小窗桥
+    build: { rollupOptions: { input: { index: resolve('src/main/preload.ts'), toast: resolve('src/main/toastPreload.ts') } } },
   },
   renderer: { root: 'src/renderer', plugins: [vue()] },
 })

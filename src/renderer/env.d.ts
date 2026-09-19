@@ -46,6 +46,8 @@ declare global {
       closeVideo(tabId: number): Promise<void>
       /** 显示/隐藏视频画面（打开 UI 弹窗时用，避免原生视图遮挡界面） */
       setVideoVisible(visible: boolean): Promise<void>
+      /** 弹出全局提示条（独立透明小窗，显示于视频画面顶部 UI 区正下方居中，4 秒自动消失） */
+      notify(text: string): Promise<void>
       /** 订阅标签页标题变化（tabId + title + url） */
       onPageTitle(cb: (info: { tabId: number; title: string; url: string }) => void): void
       /** 订阅网页 HTML 全屏状态变化（全屏时 UI 隐藏顶部栏，让视频铺满整窗） */

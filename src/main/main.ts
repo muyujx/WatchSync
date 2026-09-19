@@ -2,6 +2,7 @@ import { join } from 'node:path'
 import { app, BrowserWindow, clipboard, ipcMain, Menu } from 'electron'
 import { parseShareUrl } from '../core/shareLink'
 import { VideoViewController } from './videoView'
+import { repositionToast, showToast } from './toast'
 import { loadSettings, saveSettings, type Settings } from './settings'
 
 /**
@@ -70,7 +71,13 @@ function createWindow(): void {
   }
   if (process.env.ELECTRON_RENDERER_URL) mainWindow.loadURL(process.env.ELECTRON_RENDERER_URL)
   else mainWindow.loadFile(join(import.meta.dirname, '../renderer/index.html'))
-  mainWindow.on('resize', () => video.resize(mainWindow!))
+  mainWindow.on('resize', () => {
+    video.resize(mainWindow!)
+    // 提示条小窗跟随主窗口尺寸（顶部 UI 区正下方居中）
+    repositionToast(mainWindow!)
+  })
+  // 主窗口移动时提示条小窗跟随
+  mainWindow.on('move', () => repositionToast(mainWindow!))
   // 最大化状态变化推送 UI，供自定义按钮切换图标
   mainWindow.on('maximize', () => mainWindow?.webContents.send('win-state', true))
   mainWindow.on('unmaximize', () => mainWindow?.webContents.send('win-state', false))
@@ -103,6 +110,8 @@ app.whenReady().then(() => {
   ipcMain.handle('closeVideo', (_e, tabId: number) => mainWindow && video.close(mainWindow, tabId))
   // 打开 UI 弹窗时隐藏/恢复视频画面（原生视图会遮挡渲染层界面）
   ipcMain.handle('setVideoVisible', (_e, visible: boolean) => video.setVisible(visible))
+  // 全局提示条：独立透明小窗显示于视频画面顶部 UI 区正下方居中（4 秒自动消失）
+  ipcMain.handle('notify', (_e, text: string) => mainWindow && showToast(mainWindow, text))
   // 标签页标题变化 → UI（带 tabId 供按页签路由）
   video.setOnTitle((tabId, title, url) => mainWindow?.webContents.send('page-title', { tabId, title, url }))
   // 网页 HTML 全屏状态变化 → UI（隐藏/恢复自绘顶部栏）

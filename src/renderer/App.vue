@@ -62,11 +62,6 @@
 
   <MembersDialog :open="membersOpen" :members="memberList" :i-am-host="isHost" @close="closeMembers" @transfer="onTransferHost" />
   <SettingsDialog :open="settingsOpen" :nickname="myName" @close="closeSettings" @save="saveSettings" />
-
-  <!-- Material snackbar：操作状态提示 -->
-  <transition name="snack">
-    <div v-if="statusText" class="snackbar">{{ statusText }}</div>
-  </transition>
 </template>
 
 <script setup lang="ts">
@@ -225,12 +220,9 @@ function ensureTab(id: number, url: string): TabInfo | null {
   return t
 }
 
-/** 状态提示 4 秒自动消失（snackbar 语义） */
-let snackTimer: ReturnType<typeof setTimeout> | null = null
+/** 状态提示：走主进程 Toast 小窗（独立透明窗口，显示于视频画面顶部 UI 区正下方居中，4 秒自动消失） */
 function notify(text: string): void {
-  statusText.value = text
-  if (snackTimer) clearTimeout(snackTimer)
-  snackTimer = setTimeout(() => (statusText.value = ''), 4000)
+  void window.p2pApi.notify(text)
 }
 
 /** 点击站点卡片：填入地址并打开（无激活页签时新开页签；房内房主自动进入同步流程） */
@@ -243,7 +235,6 @@ const videoUrl = ref('')
 const joinInput = ref('')
 const roomId = ref('')
 const isHost = ref(true)
-const statusText = ref('')
 /** 创建/加入进行中的忙碌状态（驱动按钮 loading 与禁用；'' 表示空闲） */
 const busy = ref<'' | 'hosting' | 'joining'>('')
 /** 成员端与房主连接是否已断开（仅用于提示，不自动退出房间） */

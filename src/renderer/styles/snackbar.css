@@ -1,5 +1,0 @@
-/* ===== Material snackbar ===== */
-/* 提示条放在标签行（0–36px）中部拖动区：不遮挡工具栏按钮，也不会被视频原生视图覆盖 */
-.snackbar { position: fixed; left: 50%; top: 5px; transform: translateX(-50%); max-width: 420px; height: 26px; line-height: 26px; padding: 0 14px; border-radius: 13px; background: #323639; color: #e8eaed; font-size: 12px; box-shadow: 0 2px 8px rgba(0, 0, 0, 0.28); z-index: 99; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.snack-enter-active, .snack-leave-active { transition: opacity 0.25s, transform 0.25s; }
-.snack-enter-from, .snack-leave-to { opacity: 0; transform: translateX(-50%) translateY(-8px); }
