@@ -1,6 +1,6 @@
 //! 全局提示条（Toast）：独立透明小窗，浮于主窗口顶部 UI 区正下方。
-//! 对应 Electron 版 toast.ts；差异：Tauri 无 owned window 父子关系，
-//! 用 always_on_top + 鼠标穿透模拟（小尺寸透明窗，不影响他人使用）。
+//! 对应 Electron 版 toast.ts；差异：Tauri 无 owned window 父子关系 API，
+//! 创建后用 SetWindowLongPtrW(GWLP_HWNDPARENT) 挂 owner（z 序系统托管）+ 鼠标穿透模拟。
 
 use serde_json::json;
 use tauri::{Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
@@ -32,7 +32,7 @@ fn ensure_window(app: &tauri::AppHandle) -> tauri::WebviewWindow {
         .maximizable(false)
         .minimizable(false)
         .skip_taskbar(true)
-        .always_on_top(true)
+        // z 序由 owner 关系接管（见 attach_owner），不使用全局置顶（避免盖住其他应用）
         .shadow(false)
         .focused(false)
         .visible(true)
@@ -40,7 +40,24 @@ fn ensure_window(app: &tauri::AppHandle) -> tauri::WebviewWindow {
         .expect("创建 toast 小窗失败");
     // 纯展示无交互：整窗鼠标穿透，不挡视频画面点击
     let _ = win.set_ignore_cursor_events(true);
+    // 挂 owner 到主窗口：主窗口被其他应用遮挡时 toast 跟随压下，最小化时自动隐藏
+    attach_owner(&crate::tabs::main_window(app), &win);
     win
+}
+
+/// 将 toast 小窗的 owner 设为主窗口（GWL_HWNDPARENT 实际改 owner，微软文档明确行为）。
+/// owner 关系让系统接管 z 序：主窗口在前台时 toast 浮于其上，被其他应用
+/// 遮挡时跟随压下，最小化时自动隐藏——对齐 Electron 版 parent window 语义。
+/// 参数：main 主窗口；toast toast 小窗（仅首次创建时调用，重复设置无必要）。
+fn attach_owner(main: &tauri::Window, toast: &tauri::WebviewWindow) {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{SetWindowLongPtrW, GWLP_HWNDPARENT};
+    let (Ok(owner), Ok(child)) = (main.hwnd(), toast.hwnd()) else {
+        return;
+    };
+    // tauri 返回的 HWND 与 windows-sys 的 HWND(*mut c_void) 仅做裸指针/整型直转
+    unsafe {
+        SetWindowLongPtrW(child.0 as _, GWLP_HWNDPARENT, owner.0 as isize);
+    }
 }
 
 /// 把 Toast 小窗定位到主窗口顶部 UI 区正下方居中（物理坐标）。

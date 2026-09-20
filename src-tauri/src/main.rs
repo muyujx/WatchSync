@@ -133,6 +133,16 @@ fn main() {
             let last_max = std::sync::atomic::AtomicI8::new(-1); // -1 未初始化，0/1 非最大化/最大化
             win.on_window_event(move |e| match e {
                 tauri::WindowEvent::Resized(_) => {
+                    // UI 壳 webview 为子 webview，不随窗口自动缩放，需显式铺满全窗口
+                    if let (Some(w), Some(ui)) = (handle.get_window("main"), handle.get_webview("ui")) {
+                        let scale = w.scale_factor().unwrap_or(1.0);
+                        let sz = w.inner_size().unwrap_or_default();
+                        let (lw, lh) = (sz.width as f64 / scale, sz.height as f64 / scale);
+                        let _ = ui.set_bounds(tauri::Rect {
+                            position: tauri::LogicalPosition::new(0.0, 0.0).into(),
+                            size: tauri::LogicalSize::new(lw, lh).into(),
+                        });
+                    }
                     tabs::resize_active(&handle);
                     toast::reposition(&handle);
                     // 最大化状态变化推送 UI（自定义按钮切换图标）

@@ -25,6 +25,11 @@ features = ["derive"]
 [dependencies.serde_json]
 version = "1"
 
+# Windows API 直调（toast 小窗 owner 父子关系；版本对齐依赖树既有 windows-sys）
+[dependencies.windows-sys]
+version = "0.60"
+features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging"]
+
 [package]
 name = "watchsync"
 version = "0.3.0"
