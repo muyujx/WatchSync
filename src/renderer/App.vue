@@ -470,16 +470,40 @@ controller.onPeerJoined = (id, name) => {
 // 有成员离开：提示谁离开了房间
 controller.onPeerLeft = (_id, name) => notify(`${name || '一名成员'} 离开了房间`)
 
+/**
+ * URL 规范化比较键：origin + 去尾斜杠 path + query（忽略 hash 与尾部斜杠差异）。
+ * 用于成员端同步页签复用匹配——站点卡片 homeUrl（如 https://www.cycani.org，无尾斜杠）
+ * 与页面 location.href（主页带尾斜杠）指向同一页面，字符串全等会误判不匹配导致重复开页签。
+ * 参数：u 目标地址。
+ * 返回值：规范化后的比较键；解析失败时原样返回。
+ */
+function normUrlKey(u: string): string {
+  try {
+    const x = new URL(u)
+    return x.origin + x.pathname.replace(/\/+$/, '') + x.search
+  } catch {
+    return u
+  }
+}
+
 // 成员端：房主切换同步页签 → 复用相同地址页签或新建，置顶第一位并自动跳转显示。
 // 同样适用于首次心跳建立同步（syncTabId 为空时 applySnapshot 也会走这里）
 controller.onSyncTab = async (url) => {
-  let t = tabs.value.find((x) => x.url === url)
+  // 规范化匹配已有页签（忽略尾斜杠/hash 差异），避免同页重复开新页签
+  const key = normUrlKey(url)
+  let t = tabs.value.find((x) => normUrlKey(x.url) === key) ?? null
   if (!t) {
     const id = await window.p2pApi.openVideo(url)
     t = ensureTab(id, url)!
+  } else if (t.url !== url) {
+    // 复用页签但记录地址与房主不一致：原地导航纠正到房主精确地址（不新建页签）
+    await window.p2pApi.openVideo(url, t.id)
+    t.url = url
   }
-  // 同步页签恒排第一位（成员端固定规则）
-  tabs.value = [t, ...tabs.value.filter((x) => x !== t)]
+  // 同步页签恒排第一位（成员端固定规则）。
+  // 注意必须按 id 去重而非引用比较：ensureTab 新建分支返回 raw 对象，
+  // 而数组元素经 Vue reactive 包装为 Proxy，`x !== t` 恒真会导致同一页签写入两次（重复标签）
+  tabs.value = [t, ...tabs.value.filter((x) => x.id !== t.id)]
   syncTabId.value = t.id
   controller.syncTabId = t.id
   controller.videoUrl = url
