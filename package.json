@@ -6,17 +6,17 @@
   "author": "WatchSync",
   "license": "MIT",
   "scripts": {
-    "dev": "npm run tauri:frontend:dev",
-    "build": "npm run tauri:frontend:build",
+    "gen:adapters": "node scripts/tauri/gen-adapters.mjs",
+    "dev": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1",
+    "dev:two": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Two",
+    "build:frontend": "npm run gen:adapters && vite build --config vite.renderer.config.ts",
+    "build:rust": "cargo build --manifest-path src-tauri/Cargo.toml",
     "test": "vitest run",
     "typecheck": "vue-tsc --noEmit",
-    "tauri:gen-adapters": "node scripts/tauri/gen-adapters.mjs",
-    "tauri:frontend:dev": "npm run tauri:gen-adapters && vite --config vite.renderer.config.ts",
-    "tauri:frontend:build": "npm run tauri:gen-adapters && vite build --config vite.renderer.config.ts",
     "tauri": "tauri",
-    "tauri:dev": "tauri dev",
-    "tauri:dev:a": "tauri dev -- --profile=A --cdp-port=9223",
-    "tauri:build": "tauri build"
+    "tauri:build": "tauri build",
+    "debug:a": "powershell -NoProfile -Command \"Start-Process src-tauri\\target\\debug\\watchsync.exe -ArgumentList '--profile=A','--cdp-port=9222' -WindowStyle Hidden\"",
+    "debug:b": "powershell -NoProfile -Command \"Start-Process src-tauri\\target\\debug\\watchsync.exe -ArgumentList '--profile=B','--cdp-port=9223' -WindowStyle Hidden\""
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.11.5",
