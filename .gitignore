@@ -3,8 +3,6 @@ node_modules/
 
 # 构建产物
 dist/
-dist-electron/
-out/
 release/
 
 # Tauri
