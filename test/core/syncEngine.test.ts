@@ -24,6 +24,11 @@ describe('decideCorrection', () => {
     expect(decideCorrection(10.36, 10)).toEqual({ kind: 'seek', position: 10.36 })
   })
   it('零偏差不动作', () => expect(decideCorrection(10, 10)).toEqual({ kind: 'none' }))
+  it('往回校正需超过回跳阈值（防房主端自动回跳引发抖动）', () => {
+    expect(decideCorrection(9, 10)).toEqual({ kind: 'none' }) // 超前 1s < 2s 回跳阈值，忽略
+    expect(decideCorrection(8, 10)).toEqual({ kind: 'none' }) // 恰在回跳阈值内，忽略
+    expect(decideCorrection(7.99, 10)).toEqual({ kind: 'seek', position: 7.99 }) // 超前 2.01s > 阈值，跳回
+  })
 })
 
 describe('decidePlayback', () => {

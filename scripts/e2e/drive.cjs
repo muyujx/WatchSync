@@ -69,11 +69,11 @@ async function connect(wsUrl) {
 
 /** 取 UI 壳 target 的 CDP 连接（内置等待就绪）
  *  注意：必须精确匹配 UI 壳（localhost dev server / file://），
- *  排除 WebContentsView 打开的第三方视频页（否则 eval 落到视频页上） */
+ *  排除 toast 通知页与 WebContentsView 打开的第三方视频页（否则 eval 落到错误页面上） */
 async function attachMainPage(port) {
   const targets = await waitForCdp(port)
   const page = targets.find(
-    (t) => t.type === 'page' && (t.url.includes('localhost:5') || t.url.startsWith('file:'))
+    (t) => t.type === 'page' && !t.url.includes('toast.html') && (t.url.includes('localhost:5') || t.url.startsWith('file:'))
   )
   if (!page) throw new Error('main page target not found: ' + JSON.stringify(targets.map((t) => t.url)))
   return connect(page.webSocketDebuggerUrl)

@@ -6,6 +6,7 @@ describe('protocol encode/decode', () => {
     const msgs: SyncMsg[] = [
       { t: 'hello' },
       { t: 'state', url: 'https://a.com', position: 12.5, playing: true, at: 1000 },
+      { t: 'state', url: 'https://a.com', position: 12.5, playing: true, at: 1000, ready: false },
       { t: 'play', position: 1, at: 2000 },
       { t: 'pause', position: 3 },
       { t: 'seek', position: 9, playing: false, at: 3000 },
@@ -33,5 +34,10 @@ describe('protocol encode/decode', () => {
     expect(decodeMsg(JSON.stringify({ t: 'hostChange', host: false }))).toBeNull() // host 非字符串
     expect(decodeMsg(JSON.stringify({ t: 'syncTab' }))).toBeNull() // 缺 url
     expect(decodeMsg(JSON.stringify({ t: 'syncTab', url: 1 }))).toBeNull() // url 非字符串
+    expect(decodeMsg(JSON.stringify({ t: 'state', url: 'u', position: 1, playing: true, at: 1, ready: 'yes' }))).toBeNull() // ready 非布尔
+  })
+  it('旧版本 state 消息（无 ready 字段）仍可解码，向后兼容', () => {
+    const legacy = JSON.stringify({ t: 'state', url: 'https://a.com', position: 1, playing: true, at: 1 })
+    expect(decodeMsg(legacy)).toEqual({ t: 'state', url: 'https://a.com', position: 1, playing: true, at: 1 })
   })
 })

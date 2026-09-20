@@ -31,9 +31,20 @@ export const HARNESS_SCRIPT = `
     if (window.__p2pGuard) return
     q.push({ ev, position: video.currentTime, paused: video.paused })
   }
+  // 手动 seek 判定：记录最后用户交互（pointer 按下/抬起）时间，
+  // seeking 发生在交互后短窗口内才视为用户拖动进度条；其余（播放器缓冲恢复/自动回跳）不入队，
+  // 避免把非手动回跳当作 seek 指令广播给成员造成进度抖动
+  const MANUAL_SEEK_WINDOW_MS = 1000
+  let lastGestureAt = 0
+  const markGesture = () => { lastGestureAt = Date.now() }
+  document.addEventListener('pointerdown', markGesture, true)
+  document.addEventListener('pointerup', markGesture, true)
   const onPlay = () => push('play')
   const onPause = () => push('pause')
-  const onSeek = () => push('seek')
+  const onSeek = () => {
+    if (Date.now() - lastGestureAt > MANUAL_SEEK_WINDOW_MS) return
+    push('seek')
+  }
   video.addEventListener('play', onPlay)
   video.addEventListener('pause', onPause)
   // 监听 seeking 而非 seeked：拖动进度条即刻入队广播，无需等待缓冲到目标帧，降低 seek 同步延迟
@@ -62,6 +73,8 @@ export const HARNESS_SCRIPT = `
     video.removeEventListener('play', onPlay)
     video.removeEventListener('pause', onPause)
     video.removeEventListener('seeking', onSeek)
+    document.removeEventListener('pointerdown', markGesture, true)
+    document.removeEventListener('pointerup', markGesture, true)
     disableGuard()
   }
 

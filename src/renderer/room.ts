@@ -27,6 +27,9 @@ const SEEK_GRACE_MS = 2000
 /** 房主事件采样间隔（ms）：视频操作事件即时广播的轮询粒度，决定操作同步延迟上限 */
 const EVENT_POLL_MS = 80
 
+/** 房主未就绪确认拍数：连续 N 次心跳未就绪才暂停冻结成员（防 readyState 瞬时波动造成 pause/play 抖动） */
+const NOT_READY_CONFIRMATIONS = 2
+
 /** 房间控制器：UI 与 P2P/视频层之间的唯一中介 */
 export class RoomController {
   role: Role = 'host'
@@ -84,7 +87,7 @@ export class RoomController {
   private heartbeatTimer: number | null = null
   private followTimer: number | null = null
   private pollTimer: number | null = null
-  /** 房主事件采样定时器（200ms 即时广播视频操作） */
+  /** 房主事件采样定时器（80ms 即时广播视频操作） */
   private eventTimer: number | null = null
   /** 事件采样防重入标记（drainEvents 为异步 IPC，避免并发堆积） */
   private draining = false
@@ -96,6 +99,10 @@ export class RoomController {
   private applyingSnapshot = false
   /** 成员端最近一次下发 seek 的时间（0=从未；宽限期内不再重复 seek/rate） */
   private lastSeekAt = 0
+  /** 成员端冻结标记：房主未就绪（初始加载/中途缓冲）时为 true，暂停成员并跳过一切对齐动作 */
+  private hostNotReady = false
+  /** 成员端连续未就绪心跳计数（达到拍数才置 hostNotReady，防瞬时波动误判） */
+  private notReadyCount = 0
 
   /**
    * 创建房间（房主）。
@@ -129,6 +136,8 @@ export class RoomController {
     this.connected = false
     this.hostPeerId = ''
     this.bridgeReady = false
+    this.hostNotReady = false
+    this.notReadyCount = 0
     await this.attach()
     p2pLog('join start', { roomId, relays: this.relayUrls })
     // 立即请求全量状态（hello 广播全员，房主响应）
@@ -251,6 +260,8 @@ export class RoomController {
     this.lastSnapshot = null
     this.lastStateAt = 0
     this.connectionLost = false
+    this.hostNotReady = false
+    this.notReadyCount = 0
     this.startHeartbeat()
     // 房主可自由操作视频：解除同步页签跟随守卫（syncTabId 为空时调用无副作用）
     void window.p2pApi.setSyncTab(this.syncTabId, false)
@@ -274,6 +285,8 @@ export class RoomController {
     this.lastSnapshot = null
     this.lastStateAt = 0
     this.connectionLost = false
+    this.hostNotReady = false
+    this.notReadyCount = 0
     // 成员端禁止本地操作：把跟随守卫挂回当前同步页签（尚未建立同步时为 null，由后续 state/syncTab 流程建立）
     void window.p2pApi.setSyncTab(this.syncTabId, true)
     this.startFollowLoop()
@@ -368,18 +381,37 @@ export class RoomController {
       // 收到房主心跳即证明数据通道已打通
       this.markConnected()
       this.markAlive()
+      // 就绪门控：房主未就绪（初始加载/中途网络缓冲，readyState<2）时两拍确认后暂停冻结，
+      // 期间不采纳基准、不做对齐，恢复就绪时走既有逻辑一次性对齐，避免跟随零位置/停滞进度造成抖动
+      if (msg.ready === false) {
+        this.notReadyCount++
+        if (!this.hostNotReady && this.notReadyCount >= NOT_READY_CONFIRMATIONS) {
+          this.hostNotReady = true
+          p2pLog('host not ready, freeze follower')
+          // 边沿触发仅暂停一次；成员停在哪由冻结前的基准决定，偏差不再扩大
+          void window.p2pApi.videoCmd('pause')
+        }
+        // 未就绪心跳仍驱动页签地址同步（换视频/换剧集能跟上），但不采纳基准
+        void this.applySnapshot(null, msg.url)
+        return
+      }
+      this.hostNotReady = false
+      this.notReadyCount = 0
       this.applySnapshot({ position: msg.position, playing: msg.playing, at: msg.at }, msg.url)
     } else if (msg.t === 'play') {
+      if (this.hostNotReady) return
       // 关键：同步更新本地基准，避免 followTimer 用旧快照（playing=false）把刚起播又暂停
       this.lastSnapshot = { position: msg.position, playing: true, at: msg.at }
       this.markAlive()
       window.p2pApi.videoCmd('play')
     } else if (msg.t === 'pause') {
+      if (this.hostNotReady) return
       // pause 消息无 at：暂停时不做位置推算，基准位置即房主暂停点
       this.lastSnapshot = { position: msg.position, playing: false, at: Date.now() }
       this.markAlive()
       window.p2pApi.videoCmd('pause')
     } else if (msg.t === 'seek') {
+      if (this.hostNotReady) return
       // 先更新基准再下发，避免同轮 followTimer 按旧位置反向校正
       this.lastSnapshot = { position: msg.position, playing: msg.playing, at: msg.at }
       this.markAlive()
@@ -401,12 +433,13 @@ export class RoomController {
 
   /**
    * 成员端应用状态快照：按需建立/导航同步页签，并在桥就绪后对齐位置与播放状态。
-   * 参数：s 快照；url 房主当前视频页（空串表示房主尚未打开视频/已关闭同步页签）。
+   * 参数：s 快照（null 表示房主未就绪的心跳，仅同步页签地址、不采纳基准不做对齐）；
+   *       url 房主当前视频页（空串表示房主尚未打开视频/已关闭同步页签）。
    */
-  private async applySnapshot(s: StateSnapshot, url: string): Promise<void> {
+  private async applySnapshot(s: StateSnapshot | null, url: string): Promise<void> {
     // 等待桥就绪期间会有新心跳：直接更新快照（位置由跟随循环持续校正），避免并发重入
     if (this.applyingSnapshot) {
-      this.lastSnapshot = s
+      if (s) this.lastSnapshot = s
       return
     }
     this.applyingSnapshot = true
@@ -421,6 +454,8 @@ export class RoomController {
         this.bridgeReady = false
         await window.p2pApi.openVideo(url, this.syncTabId)
       }
+      // 房主未就绪：只保证页签地址同步，成员已暂停冻结，等就绪心跳再做一次性对齐
+      if (!s) return
       // 播放器异步创建：桥未就绪时轮询等待，就绪后立即对齐位置与播放状态（解决成员端不起播）
       if (url && !this.bridgeReady) {
         this.bridgeReady = await this.waitForBridge(BRIDGE_WAIT_MS)
@@ -461,12 +496,12 @@ export class RoomController {
     return false
   }
 
-  /** 房主：开启周期心跳（2s 全量对表兜底）+ 事件采样（200ms 即时广播视频操作） */
+  /** 房主：开启周期心跳（2s 全量对表兜底）+ 事件采样（80ms 即时广播视频操作） */
   private startHeartbeat(): void {
     this.stopPolling()
     // 状态心跳：全量快照兜底，负责地址同步、新成员对齐与存活判定
     this.pollTimer = window.setInterval(() => this.sendState(), 2000)
-    // 事件采样：play/pause/seek 发生后立即广播，操作同步延迟从 2s 降到 200ms 以内
+    // 事件采样：play/pause/seek 发生后立即广播，操作同步延迟从 2s 降到 80ms 粒度以内
     this.eventTimer = window.setInterval(() => void this.broadcastEvents(), EVENT_POLL_MS)
   }
 
@@ -497,7 +532,7 @@ export class RoomController {
   private sendState(): void {
     window.p2pApi.videoStatus().then((st) => {
       if (!this.room) return
-      // 地址优先取视频视图实时 pageUrl（含无视频/加载中的换页），退回 UI 地址栏输入值（空串让成员等待）
+      // 地址优先取视频页实时 pageUrl（含无视频/加载中的换页），退回 UI 地址栏输入值（空串让成员等待）
       const url = st?.pageUrl || this.videoUrl
       this.room.broadcast({
         t: 'state',
@@ -505,6 +540,9 @@ export class RoomController {
         position: st?.position ?? 0,
         // 无视频（尚未装桥）时视为未播放，避免成员误判
         playing: Boolean(st?.hasVideo && !st.paused),
+        // 就绪标记：有视频且缓冲充足（readyState>=2）。初始加载与中途网络缓冲时为 false，
+        // 成员收到后暂停冻结，避免跟随零位置/停滞进度造成进度抖动
+        ready: Boolean(st?.hasVideo && st.readyState >= 2),
         at: Date.now(),
       })
     })
@@ -521,6 +559,8 @@ export class RoomController {
         this.onConnectionLost?.()
       }
       if (!this.lastSnapshot) return
+      // 房主未就绪冻结期：成员保持暂停，不做播放对齐与位置校正，等就绪心跳一次性对齐
+      if (this.hostNotReady) return
       const st = await window.p2pApi.videoStatus()
       // 桥未就绪（播放器还在创建）时本轮不动作，由 applySnapshot 负责首次对齐
       if (!st || !st.hasVideo) return
@@ -590,6 +630,8 @@ export class RoomController {
     this.bridgeReady = false
     this.applyingSnapshot = false
     this.lastSeekAt = 0
+    this.hostNotReady = false
+    this.notReadyCount = 0
     this.peers.clear()
     this.peerNames.clear()
     this.onPeersChanged?.()
