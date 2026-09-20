@@ -1,28 +1,26 @@
 {
   "name": "watchsync",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "无服务器 P2P 网页视频同步观影",
-  "main": "out/main/index.js",
   "type": "module",
   "author": "WatchSync",
   "license": "MIT",
   "scripts": {
-    "dev": "electron-vite dev",
-    "build": "electron-vite build",
-    "build:win": "electron-vite build && electron-builder --win --x64",
-    "build:debug": "electron-vite build && electron-builder --win portable --x64 --publish never -c.compression=store -c.npmRebuild=false",
-    "build:dir": "electron-vite build && electron-builder --dir",
-    "start": "electron-vite preview",
+    "dev": "npm run tauri:frontend:dev",
+    "build": "npm run tauri:frontend:build",
     "test": "vitest run",
     "typecheck": "vue-tsc --noEmit",
-    "dev:two": "node scripts/dev/dev-two.cjs",
-    "dev:two:stop": "node scripts/dev/dev-two.cjs stop"
+    "tauri:gen-adapters": "node scripts/tauri/gen-adapters.mjs",
+    "tauri:frontend:dev": "npm run tauri:gen-adapters && vite --config vite.renderer.config.ts",
+    "tauri:frontend:build": "npm run tauri:gen-adapters && vite build --config vite.renderer.config.ts",
+    "tauri": "tauri",
+    "tauri:dev": "tauri dev",
+    "tauri:dev:a": "tauri dev -- --profile=A --cdp-port=9223",
+    "tauri:build": "tauri build"
   },
   "devDependencies": {
+    "@tauri-apps/cli": "^2.11.5",
     "@vitejs/plugin-vue": "^5.2.0",
-    "electron": "^33.0.0",
-    "electron-builder": "^26.15.3",
-    "electron-vite": "^2.3.0",
     "typescript": "^5.6.0",
     "vitest": "^2.1.0",
     "vue-tsc": "^2.1.0"
@@ -30,39 +28,6 @@
   "dependencies": {
     "@trystero-p2p/nostr": "^0.25.4",
     "vue": "^3.5.0"
-  },
-  "build": {
-    "appId": "com.watchsync.app",
-    "productName": "WatchSync",
-    "directories": {
-      "output": "dist",
-      "buildResources": "assets"
-    },
-    "electronDownload": {
-      "mirror": "https://npmmirror.com/mirrors/electron/"
-    },
-    "electronDist": "node_modules/electron/dist",
-    "files": [
-      "!**/.vscode/*",
-      "!docs/*",
-      "!scripts/*",
-      "!src/*",
-      "!test/*",
-      "!electron.vite.config.{js,ts,mjs,cjs}",
-      "!{.env,.env.*,.npmrc,package-lock.json}",
-      "!{tsconfig.json,tsconfig.node.json,tsconfig.web.json,AGENTS.md}"
-    ],
-    "win": {
-      "icon": "icon.ico",
-      "target": [
-        {
-          "target": "portable",
-          "arch": [
-            "x64"
-          ]
-        }
-      ],
-      "artifactName": "${productName}-${version}-portable.${ext}"
-    }
   }
 }
+

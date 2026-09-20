@@ -32,6 +32,8 @@ declare global {
       videoCmd(action: string, arg?: number): Promise<void>
       /** 写剪贴板 */
       copyText(text: string): Promise<void>
+      /** 打开微软商店产品页（缺失编解码器引导安装） */
+      openStore(productId: string): Promise<void>
       /** 解析 watchsync:// 链接（仅房间号），非法返回 null */
       parseLink(input: string): Promise<{ roomId: string } | null>
       /** 订阅系统唤起传来的 watchsync:// 链接事件 */

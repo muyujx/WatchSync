@@ -15,10 +15,13 @@ describe('decideCorrection', () => {
   it('大偏差触发 seek', () => {
     expect(decideCorrection(50, 10)).toEqual({ kind: 'seek', position: 50 })
   })
-  it('小偏差用速率微调，且限幅 0.95~1.05', () => {
-    expect(decideCorrection(10.3, 10)).toEqual({ kind: 'rate', rate: 1.05 }) // 落后 0.3s → 1.075 限幅到 1.05
-    expect(decideCorrection(9.8, 10)).toEqual({ kind: 'rate', rate: 0.95 })
-    expect(decideCorrection(10.1, 10)).toEqual({ kind: 'none' }) // 0.1s 忽略
+  it('小偏差不动作（已移除速率微调，永不调整视频速率）', () => {
+    expect(decideCorrection(10.3, 10)).toEqual({ kind: 'none' }) // 0.3s < seek 阈值，忽略
+    expect(decideCorrection(10.35, 10)).toEqual({ kind: 'none' }) // 恰在阈值内
+    expect(decideCorrection(9.8, 10)).toEqual({ kind: 'none' })
+  })
+  it('越过 seek 阈值即跳转', () => {
+    expect(decideCorrection(10.36, 10)).toEqual({ kind: 'seek', position: 10.36 })
   })
   it('零偏差不动作', () => expect(decideCorrection(10, 10)).toEqual({ kind: 'none' }))
 })

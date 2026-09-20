@@ -1,0 +1,24 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "WatchSync",
+  "version": "0.3.0",
+  "identifier": "com.watchsync.app",
+  "build": {
+    "beforeDevCommand": "npm run tauri:frontend:dev",
+    "devUrl": "http://localhost:5183",
+    "beforeBuildCommand": "npm run tauri:frontend:build",
+    "frontendDist": "../dist/renderer"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [],
+    "security": {
+      "csp": null,
+      "assetProtocol": { "enable": false, "scope": [] }
+    }
+  },
+  "bundle": {
+    "active": false,
+    "icon": ["icons/icon.ico"]
+  }
+}

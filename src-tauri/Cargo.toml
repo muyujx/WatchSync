@@ -1,0 +1,39 @@
+[build-dependencies]
+
+[build-dependencies.tauri-build]
+version = "2"
+features = []
+
+[dependencies]
+
+[dependencies.tauri]
+version = "2"
+# unstable: multiwebview（视频页签子 WebView / setBounds / set_visible）
+# devtools: 调试器（联调驱动 CDP 依赖 remote-debugging-port，devtools 便于排查）
+features = ["unstable", "devtools"]
+
+[dependencies.tauri-plugin-single-instance]
+version = "2"
+
+[dependencies.tauri-plugin-clipboard-manager]
+version = "2"
+
+[dependencies.serde]
+version = "1"
+features = ["derive"]
+
+[dependencies.serde_json]
+version = "1"
+
+[package]
+name = "watchsync"
+version = "0.3.0"
+edition = "2021"
+
+[profile.dev]
+incremental = true
+
+[profile.release]
+strip = true
+lto = true
+codegen-units = 1

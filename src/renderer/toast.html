@@ -1,0 +1,25 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <style>
+    /* Toast 小窗：透明背景 + 底部居中胶囊，显隐由 class 切换触发 CSS 过渡（与 Electron 版样式一致） */
+    html, body { margin: 0; height: 100%; background: transparent; overflow: hidden; font-family: 'Segoe UI', 'Microsoft YaHei', system-ui, sans-serif; }
+    #tip { position: fixed; left: 50%; bottom: 0; transform: translateX(-50%) translateY(8px); max-width: 96%; height: 32px; line-height: 32px; padding: 0 16px; border-radius: 16px; background: rgba(50, 54, 57, 0.92); color: #e8eaed; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; box-shadow: 0 2px 8px rgba(0, 0, 0, 0.28); opacity: 0; transition: opacity 0.22s, transform 0.22s; }
+    #tip.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+  </style>
+</head>
+<body>
+  <div id="tip"><span id="txt"></span></div>
+  <script>
+    // 经 withGlobalTauri 全局 API 监听 Rust 下发的显隐事件（tauri.conf app.withGlobalTauri=true）
+    const tip = document.getElementById('tip')
+    const txt = document.getElementById('txt')
+    window.__TAURI__.event.listen('toast-text', (e) => {
+      txt.textContent = e.payload
+      tip.classList.add('show')
+    })
+    window.__TAURI__.event.listen('toast-hide', () => tip.classList.remove('show'))
+  </script>
+</body>
+</html>

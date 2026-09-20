@@ -538,7 +538,7 @@ export class RoomController {
       if (c.kind === 'seek') {
         this.lastSeekAt = Date.now()
         await window.p2pApi.videoCmd('seek', c.position)
-      } else if (c.kind === 'rate') await window.p2pApi.videoCmd('rate', c.rate)
+      }
     }, 2000)
   }
 

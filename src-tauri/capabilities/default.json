@@ -1,0 +1,10 @@
+{
+  "$schema": "gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "UI 壳与 Toast 小窗的基础权限（事件监听/剪贴板）；视频页签为外部站点，不授予任何 Tauri API",
+  "windows": ["ui", "toast"],
+  "permissions": [
+    "core:default",
+    "clipboard-manager:allow-write-text"
+  ]
+}
