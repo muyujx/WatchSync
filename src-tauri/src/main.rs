@@ -1,3 +1,6 @@
+// release 构建设为 GUI 子系统：不附带控制台窗口；debug 保留 console 便于日志排查
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 //! WatchSync Tauri 版入口。
 //! 与 Electron 版（src/main/main.ts）的功能映射：
 //! - --profile=<name>：userData 后缀 + 允许多开（联调）；--cdp-port=N：CDP 调试端口（联调驱动）
@@ -112,6 +115,8 @@ fn main() {
                 .title("WatchSync")
                 .inner_size(1280.0, 800.0)
                 .decorations(false)
+                // 显式注册窗口图标：任务栏从 256x256 源缩放显示（不设则回退 exe 小尺寸层而发糊）
+                .icon(tauri::image::Image::from_bytes(include_bytes!("../icons/icon.ico"))?)?
                 .build()?;
 
             // ---- UI 壳 webview（全窗口，加载渲染层 Vue 应用）----

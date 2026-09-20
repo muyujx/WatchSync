@@ -10,7 +10,8 @@ features = []
 version = "2"
 # unstable: multiwebview（视频页签子 WebView / setBounds / set_visible）
 # devtools: 调试器（联调驱动 CDP 依赖 remote-debugging-port，devtools 便于排查）
-features = ["unstable", "devtools"]
+# image-ico: 解码 icons/icon.ico（主窗口图标，任务栏清晰显示）
+features = ["unstable", "devtools", "image-ico"]
 
 [dependencies.tauri-plugin-single-instance]
 version = "2"
