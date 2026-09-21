@@ -10,6 +10,8 @@ describe('protocol encode/decode', () => {
       { t: 'play', position: 1, at: 2000 },
       { t: 'pause', position: 3 },
       { t: 'seek', position: 9, playing: false, at: 3000 },
+      { t: 'seek', position: 9, playing: true, at: 3000, ready: false },
+      { t: 'seek', position: 9, playing: true, at: 3000, ready: true },
       { t: 'profile', name: '追番人-8f3k' },
       { t: 'profile', name: '房主', host: true },
       { t: 'dissolve' },
@@ -35,9 +37,12 @@ describe('protocol encode/decode', () => {
     expect(decodeMsg(JSON.stringify({ t: 'syncTab' }))).toBeNull() // 缺 url
     expect(decodeMsg(JSON.stringify({ t: 'syncTab', url: 1 }))).toBeNull() // url 非字符串
     expect(decodeMsg(JSON.stringify({ t: 'state', url: 'u', position: 1, playing: true, at: 1, ready: 'yes' }))).toBeNull() // ready 非布尔
+    expect(decodeMsg(JSON.stringify({ t: 'seek', position: 1, playing: true, at: 1, ready: 'no' }))).toBeNull() // seek.ready 非布尔
   })
-  it('旧版本 state 消息（无 ready 字段）仍可解码，向后兼容', () => {
-    const legacy = JSON.stringify({ t: 'state', url: 'https://a.com', position: 1, playing: true, at: 1 })
-    expect(decodeMsg(legacy)).toEqual({ t: 'state', url: 'https://a.com', position: 1, playing: true, at: 1 })
+  it('旧版本 state/seek 消息（无 ready 字段）仍可解码，向后兼容', () => {
+    const legacyState = JSON.stringify({ t: 'state', url: 'https://a.com', position: 1, playing: true, at: 1 })
+    expect(decodeMsg(legacyState)).toEqual({ t: 'state', url: 'https://a.com', position: 1, playing: true, at: 1 })
+    const legacySeek = JSON.stringify({ t: 'seek', position: 5, playing: false, at: 2 })
+    expect(decodeMsg(legacySeek)).toEqual({ t: 'seek', position: 5, playing: false, at: 2 })
   })
 })

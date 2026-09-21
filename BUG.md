@@ -55,3 +55,19 @@ B 站搜索提交链路为：回车/点击按钮 → form submit → B 站 JS pr
 4. 暂停指令后立即复查 status，未停住再补一发 pause。
 修改的文件：src/core/sites/bilibili.ts, src/core/sites/harness.ts, src/renderer/room.ts, src-tauri/src/tabs.rs, test/core/sites/registry.test.ts, src-tauri/resources/adapters.json
 
+### 房主拖进度加载时成员抢跑
+问题：房主调进度进入缓冲时，成员若先加载完会继续播，没有停住等房主就绪，进度也对不齐。
+期望：房主加载中成员暂停等待；房主就绪后成员先 seek 到房主进度再按 playing 起播。
+
+问题原因：
+1. `seek` 消息不带 ready，成员收到后若 playing 则立刻 play，无法判断房主是否仍在加载。
+2. `state.ready===false` 需连续 2 拍（最长约 4s）才冻结，拖进度后成员可长时间抢跑。
+3. 冻结恢复时 `applySnapshot` 只对齐 play/pause、不强制 seek，可能先播在旧位置。
+
+解决方案：
+1. 协议 `seek` 增加可选 `ready`；房主广播 seek 时按 `readyState>=2` 填入。
+2. 成员收 `seek.ready===false`：只 seek + 立即冻结暂停，不起播；就绪的 seek 才 play。
+3. 房主刚 seek 后 6s 内的 `ready=false` 心跳 1 拍即冻（原 2 拍）。
+4. 从冻结恢复时 `applySnapshot(..., resyncSeek=true)` 先 seek 再对齐播放。
+修改的文件：src/core/protocol.ts, src/renderer/room.ts, test/core/protocol.test.ts
+

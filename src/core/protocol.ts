@@ -11,8 +11,8 @@ export type SyncMsg =
   | { t: 'play'; position: number; at: number }
   /** 房主触发暂停 */
   | { t: 'pause'; position: number }
-  /** 房主拖动进度 */
-  | { t: 'seek'; position: number; playing: boolean; at: number }
+  /** 房主拖动进度；ready 可选：房主 seek 时刻是否已缓冲就绪（false=房主仍在加载，成员应暂停等待） */
+  | { t: 'seek'; position: number; playing: boolean; at: number; ready?: boolean }
   /** 自我介绍（昵称广播）：加入房间时与被介绍给新成员时发送；host 标记房主身份 */
   | { t: 'profile'; name: string; host?: boolean }
   /** 房主解散房间（房主→全员）：成员收到后自动退出 */
@@ -71,8 +71,9 @@ export function decodeMsg(raw: string): SyncMsg | null {
     // 切换同步页签消息：url 必须为字符串
     if (t === 'syncTab' && typeof o.url !== 'string') return null
     if ((t === 'state' || t === 'seek') && typeof o.playing !== 'boolean') return null
-    // state 就绪标记：可选；一旦出现必须是布尔（旧版本消息无此字段，视为未就绪由接收方兜底）
+    // state/seek 就绪标记：可选；一旦出现必须是布尔（旧版本消息无此字段，向后兼容）
     if (t === 'state' && o.ready !== undefined && typeof o.ready !== 'boolean') return null
+    if (t === 'seek' && o.ready !== undefined && typeof o.ready !== 'boolean') return null
     // 房主移交/变更：目标与新权威均为字符串 peerId
     if (t === 'transfer' && typeof o.to !== 'string') return null
     if (t === 'hostChange' && typeof o.host !== 'string') return null
