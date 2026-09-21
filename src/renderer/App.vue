@@ -15,9 +15,27 @@
 
   <!-- 工具栏 44px（Chrome 式）：导航 + 地址栏 + 房间操作；网页视频全屏时隐藏，让视频铺满整窗 -->
   <div v-show="!videoFullscreen" class="toolbar">
-  <button class="icon-btn" title="后退" :disabled="activeTabId == null" @click="nav('back')">←</button>
-  <button class="icon-btn" title="前进" :disabled="activeTabId == null" @click="nav('forward')">→</button>
-  <button class="icon-btn" title="刷新" :disabled="activeTabId == null" @click="nav('reload')">↻</button>
+  <!-- 后退：完整左箭头（带箭杆），对齐参考图的细线风格 -->
+  <button class="icon-btn" title="后退" :disabled="activeTabId == null" @click="nav('back')">
+    <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <path d="M19 12H5" />
+      <path d="M12 19l-7-7 7-7" />
+    </svg>
+  </button>
+  <!-- 前进：与后退镜像的完整右箭头 -->
+  <button class="icon-btn" title="前进" :disabled="activeTabId == null" @click="nav('forward')">
+    <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <path d="M5 12h14" />
+      <path d="M12 5l7 7-7 7" />
+    </svg>
+  </button>
+  <!-- 刷新：顶部开口圆环 + 箭头，对齐参考图 -->
+  <button class="icon-btn" title="刷新" :disabled="activeTabId == null" @click="nav('reload')">
+    <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <path d="M21 12a9 9 0 1 1-2.64-6.36" />
+      <path d="M21 3v6h-6" />
+    </svg>
+  </button>
 
     <input ref="omniboxEl" v-model="videoUrl" class="url omnibox" placeholder="输入或粘贴视频网页地址，回车打开" @keydown.enter="onOpen" />
 
