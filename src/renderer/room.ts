@@ -111,6 +111,46 @@ export class RoomController {
   private notReadyCount = 0
   /** 最近一次收到房主 seek 的时间（ms，0=无）：其后未就绪用更少确认拍数尽快冻结 */
   private lastHostSeekAt = 0
+  /** 成员端暂停同步标记：true 时不采纳房主指令、不校准本地视频（本地可自由操作） */
+  private syncPaused = false
+
+  /**
+   * 成员端是否处于暂停同步（供 UI 渲染黄点/按钮态）。
+   * 返回值：true=已暂停同步；false=正常跟随。
+   */
+  get isSyncPaused(): boolean {
+    return this.syncPaused
+  }
+
+  /**
+   * 成员端暂停同步：解除跟随守卫，停止采纳房主 play/pause/seek/state。
+   * 说明：不主动改本地播放状态；房主转让/断线/退出时会重置本标记（见相应路径）。
+   * 返回值：无。
+   */
+  pauseSync(): void {
+    if (this.role !== 'follower' || this.syncPaused) return
+    this.syncPaused = true
+    p2pLog('pause sync')
+    // 解除守卫：本地可自由控制；事件仍可能入队，但 handleMsg 短路后不会被应用到本地对齐
+    if (this.syncTabId != null) void window.p2pApi.setSyncTab(this.syncTabId, false)
+  }
+
+  /**
+   * 成员端恢复同步：挂回守卫，并用最近一次房主快照强制对齐（seek + 播放状态）。
+   * 说明：若尚无快照（刚加入/刚断线恢复），下一轮 state 心跳会走 applySnapshot 完成对齐。
+   * 返回值：无。
+   */
+  resumeSync(): void {
+    if (this.role !== 'follower' || !this.syncPaused) return
+    this.syncPaused = false
+    p2pLog('resume sync')
+    if (this.syncTabId != null) void window.p2pApi.setSyncTab(this.syncTabId, true)
+    const s = this.lastSnapshot
+    if (s && this.lastStateAt > 0) {
+      // 按当前房主状态强制对齐；标记 wasFrozen 让 applySnapshot 先 seek 再定播放
+      void this.applySnapshot(s, this.videoUrl, true)
+    }
+  }
 
   /**
    * 创建房间（房主）。
@@ -147,6 +187,7 @@ export class RoomController {
     this.hostNotReady = false
     this.notReadyCount = 0
     this.lastHostSeekAt = 0
+    this.syncPaused = false
     await this.attach()
     p2pLog('join start', { roomId, relays: this.relayUrls })
     // 立即请求全量状态（hello 广播全员，房主响应）
@@ -275,6 +316,8 @@ export class RoomController {
     this.hostNotReady = false
     this.notReadyCount = 0
     this.lastHostSeekAt = 0
+    // 接管为房主：取消暂停同步（房主无此概念）
+    this.syncPaused = false
     this.startHeartbeat()
     // 房主可自由操作视频：解除同步页签跟随守卫（syncTabId 为空时调用无副作用）
     void window.p2pApi.setSyncTab(this.syncTabId, false)
@@ -301,6 +344,8 @@ export class RoomController {
     this.hostNotReady = false
     this.notReadyCount = 0
     this.lastHostSeekAt = 0
+    // 转让后成为成员：默认恢复跟随（不继承旧的暂停同步状态）
+    this.syncPaused = false
     // 成员端禁止本地操作：把跟随守卫挂回当前同步页签（尚未建立同步时为 null，由后续 state/syncTab 流程建立）
     void window.p2pApi.setSyncTab(this.syncTabId, true)
     this.startFollowLoop()
@@ -365,6 +410,8 @@ export class RoomController {
         this.hostPeerId = msg.host
         this.lastStateAt = 0
         this.connectionLost = false
+        // 新房主后恢复跟随（暂停同步是本地临时状态，换权威后重置）
+        if (this.syncPaused) this.syncPaused = false
         // 房主换了：刷新成员面板徽标
         this.onPeersChanged?.()
       }
@@ -393,6 +440,23 @@ export class RoomController {
     if (this.hostPeerId && peerId !== this.hostPeerId) {
       p2pLog('drop non-host sync msg', msg.t, 'from', peerId)
       return
+    }
+    // 暂停同步：仍更新存活时间戳（防误报断线），但不采纳任何播放指令
+    if (this.syncPaused) {
+      if (msg.t === 'state' || msg.t === 'play' || msg.t === 'pause' || msg.t === 'seek') {
+        this.markAlive()
+        // 最新快照仍更新，便于 resumeSync 时对齐；但不调用 applySnapshot / 不下发 videoCmd
+        if (msg.t === 'state' && msg.ready !== false) {
+          this.lastSnapshot = { position: msg.position, playing: msg.playing, at: msg.at }
+        } else if (msg.t === 'play') {
+          this.lastSnapshot = { position: msg.position, playing: true, at: msg.at }
+        } else if (msg.t === 'pause') {
+          this.lastSnapshot = { position: msg.position, playing: false, at: Date.now() }
+        } else if (msg.t === 'seek') {
+          this.lastSnapshot = { position: msg.position, playing: msg.playing, at: msg.at }
+        }
+        return
+      }
     }
     if (msg.t === 'state') {
       // 收到房主心跳即证明数据通道已打通
@@ -484,6 +548,7 @@ export class RoomController {
     this.hostNotReady = false
     this.notReadyCount = 0
     this.lastHostSeekAt = 0
+    this.syncPaused = false
     if (this.syncTabId != null) void window.p2pApi.setSyncTab(this.syncTabId, false)
     void window.p2pApi.videoCmd('pause')
   }
@@ -647,6 +712,8 @@ export class RoomController {
       if (!this.lastSnapshot) return
       // 房主未就绪冻结期：成员保持暂停，不做播放对齐与位置校正，等就绪心跳一次性对齐
       if (this.hostNotReady) return
+      // 暂停同步：不做校准与状态对齐（本地自由控制）
+      if (this.syncPaused) return
       const st = await window.p2pApi.videoStatus()
       // 桥未就绪（播放器还在创建）时本轮不动作，由 applySnapshot 负责首次对齐
       if (!st || !st.hasVideo) return
@@ -724,6 +791,7 @@ export class RoomController {
     this.hostNotReady = false
     this.notReadyCount = 0
     this.lastHostSeekAt = 0
+    this.syncPaused = false
     this.peers.clear()
     this.peerNames.clear()
     this.onPeersChanged?.()

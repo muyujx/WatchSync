@@ -5,6 +5,7 @@
     :active-id="activeTabId"
     :sync-id="syncTabId"
     :role="tabRole"
+    :sync-paused="syncPaused"
     :is-max="isMax"
     @activate="activateTab"
     @set-sync="setSyncTab"
@@ -47,6 +48,15 @@
     <template v-else>
       <button class="m-btn" @click="onCopyLink">复制邀请</button>
       <button class="m-btn" @click="openMembers">房间 ({{ memberList.length }})</button>
+      <!-- 成员端：暂停/恢复同步（房主不显示；转让后角色变化由 isHost 驱动显隐） -->
+      <button
+        v-if="!isHost"
+        class="m-btn"
+        :title="syncPaused ? '恢复跟随房主同步' : '暂停跟随（本地可自由播放，不同步房主）'"
+        @click="toggleSyncPause"
+      >
+        {{ syncPaused ? '恢复同步' : '暂停同步' }}
+      </button>
       <span v-if="connectionLost" class="chip danger" title="与房主连接已断开，可点「退出房间」后重新加入">连接已断开</span>
       <button class="m-btn" @click="exitRoom">{{ isHost ? '解散房间' : '退出房间' }}</button>
     </template>
@@ -407,6 +417,8 @@ const isHost = ref(true)
 const busy = ref<'' | 'hosting' | 'joining'>('')
 /** 成员端与房主连接是否已断开（仅用于提示，不自动退出房间） */
 const connectionLost = ref(false)
+/** 成员端暂停同步状态（与 RoomController.syncPaused 双向同步，驱动按钮与页签黄点） */
+const syncPaused = ref(false)
 const controller = new RoomController()
 
 /** ===== 用户设置 ===== */
@@ -458,6 +470,8 @@ controller.onPeersChanged = () => peerTick.value++
 controller.onRoleChanged = (nowHost) => {
   isHost.value = nowHost
   connectionLost.value = false
+  // 角色切换后同步暂停标记（房主无此概念；新成员默认跟随）
+  syncPaused.value = controller.isSyncPaused
   syncDebug()
 }
 // 成员端断线：仅提示，房间状态与后续操作交给用户自己决定
@@ -574,6 +588,24 @@ function onTransferHost(id: string): void {
   controller.transferHost(id)
   notify(`已把房主转让给 ${name}`)
   void closeMembers()
+}
+
+/**
+ * 成员端切换暂停/恢复同步（工具栏按钮）。
+ * 无参数；无返回值。
+ * 说明：本地状态变化后回写 syncPaused ref，供按钮与页签黄点渲染。
+ */
+function toggleSyncPause(): void {
+  if (isHost.value) return
+  if (controller.isSyncPaused) {
+    controller.resumeSync()
+    syncPaused.value = controller.isSyncPaused
+    notify('已恢复同步')
+  } else {
+    controller.pauseSync()
+    syncPaused.value = controller.isSyncPaused
+    notify('已暂停同步，可本地自由播放')
+  }
 }
 
 /** 调试状态暴露（drive.cjs 联调用）：实时 getter，页签/房间状态变化无需手动刷新 */
@@ -695,6 +727,7 @@ function resetRoomState(): void {
   // 同步目标解除：跟随守卫清空，页签全部解锁为普通页签（成员端同步页签恢复可关闭）
   syncTabId.value = null
   controller.syncTabId = null
+  syncPaused.value = false
   void window.p2pApi.setSyncTab(null, false)
   syncDebug()
 }

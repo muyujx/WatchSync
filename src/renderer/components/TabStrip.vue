@@ -5,7 +5,7 @@
       v-for="t in tabs"
       :key="t.id"
       class="tab"
-      :class="{ active: t.id === activeId, syncing: t.id === syncId }"
+      :class="{ active: t.id === activeId, syncing: t.id === syncId, 'sync-paused': syncPaused && t.id === syncId }"
       :title="t.url"
       @click="emit('activate', t.id)"
     >
@@ -25,8 +25,13 @@
           <circle v-if="t.id === syncId" cx="6" cy="6" r="2" fill="currentColor" />
         </svg>
       </button>
-      <!-- 成员：同步页签显示只读绿点（与房主端同步按钮同款圆环+圆点，不可点击） -->
-      <span v-else-if="role === 'follower' && t.id === syncId" class="tab-sync-dot" title="房主正在同步此页签">
+      <!-- 成员：同步页签显示只读点（暂停同步时变黄，与房主端同步按钮同款圆环+圆点，不可点击） -->
+      <span
+        v-else-if="role === 'follower' && t.id === syncId"
+        class="tab-sync-dot"
+        :class="{ paused: syncPaused }"
+        :title="syncPaused ? '已暂停同步（点击工具栏恢复）' : '房主正在同步此页签'"
+      >
         <svg viewBox="0 0 12 12" width="10" height="10">
           <circle cx="6" cy="6" r="4" fill="none" stroke="currentColor" stroke-width="1.6" />
           <circle cx="6" cy="6" r="2" fill="currentColor" />
@@ -88,8 +93,16 @@ export interface TabInfo {
 /** 页签角色语义：host=可切换同步目标；follower=只读同步绿点；none=普通页签 */
 export type TabRole = 'host' | 'follower' | 'none'
 
-/** 组件属性：tabs 页签列表；activeId 当前显示页签；syncId 同步页签；role 角色语义；isMax 窗口最大化 */
-defineProps<{ tabs: TabInfo[]; activeId: number | null; syncId: number | null; role: TabRole; isMax: boolean }>()
+/** 组件属性：tabs 页签列表；activeId 当前显示页签；syncId 同步页签；role 角色语义；isMax 窗口最大化；syncPaused 成员是否暂停同步 */
+defineProps<{
+  tabs: TabInfo[]
+  activeId: number | null
+  syncId: number | null
+  role: TabRole
+  /** 成员端暂停同步：同步点变黄（房主端忽略） */
+  syncPaused?: boolean
+  isMax: boolean
+}>()
 /** 组件事件：activate 切换查看；setSync 切换同步（房主）；close 关闭页签；home 回主页；win 窗口控制 */
 const emit = defineEmits<{ activate: [id: number]; setSync: [id: number]; close: [id: number]; home: []; win: [action: string] }>()
 
