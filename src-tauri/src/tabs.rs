@@ -20,10 +20,12 @@ pub const TOOLBAR_HEIGHT: f64 = 44.0;
 /// 网页内容区顶部偏移 = 标签行 + 工具栏
 pub const CHROME_TOP: f64 = TAB_HEIGHT + TOOLBAR_HEIGHT;
 
-/// 跟随守卫开启脚本：设置后桥安装/重装时自动带守卫（与 Electron 版一致）
-pub const GUARD_ON: &str = "window.__p2pGuard = true; \"ok\"";
-/// 跟随守卫关闭脚本：转让成房主时显式复位（与 Electron 版一致）
-pub const GUARD_OFF: &str = "window.__p2pGuard = false; \"ok\"";
+/// 跟随守卫开启脚本：写全局标记，并同步已安装桥的 setFollow（否则只改 flag 不会开关采集）
+pub const GUARD_ON: &str =
+    "window.__p2pGuard = true; if (window.__p2pBridge && window.__p2pBridge.setFollow) window.__p2pBridge.setFollow(true); \"ok\"";
+/// 跟随守卫关闭脚本：转让成房主/交还控制权时显式复位
+pub const GUARD_OFF: &str =
+    "window.__p2pGuard = false; if (window.__p2pBridge && window.__p2pBridge.setFollow) window.__p2pBridge.setFollow(false); \"ok\"";
 
 /// 注入脚本模板（占位符替换，避免 format! 花括号转义地狱）：
 /// __GUARD__ 守卫布尔 / __ADAPTER__ 适配器 id JSON / __TAB__ 页签 id / __SCRIPT__ 站点脚本+harness

@@ -206,8 +206,11 @@ export class RoomController {
       this.peers.delete(id)
       this.peerNames.delete(id)
       this.rtt.removePeer(id)
-      // 离开的是房主：清除房主标记，成员列表不再标注
-      if (this.hostPeerId === id) this.hostPeerId = ''
+      // 离开的是房主：清除房主标记，并交还本地控制权（否则旧快照+守卫会让人无法暂停）
+      if (this.hostPeerId === id) {
+        this.hostPeerId = ''
+        if (this.role === 'follower') this.releaseLocalControl('host left')
+      }
       this.onPeerLeft?.(id, name)
       this.onPeersChanged?.()
     })
@@ -361,9 +364,12 @@ export class RoomController {
       if (this.role === 'follower') void this.onSyncTab?.(msg.url)
       return
     }
-    // 房主解散指令：成员端通知 UI 自动退出（房主自身无需处理）
+    // 房主解散指令：成员端先交还控制权再通知 UI 退出（否则守卫/旧快照会让本地暂停失效）
     if (msg.t === 'dissolve') {
-      if (this.role === 'follower') this.onDissolved?.()
+      if (this.role === 'follower') {
+        this.releaseLocalControl('dissolve')
+        this.onDissolved?.()
+      }
       return
     }
     if (this.role === 'host') {
@@ -422,13 +428,32 @@ export class RoomController {
     }
   }
 
-  /** 成员端收到房主心跳：刷新存活时间戳；若此前处于断线态则触发恢复回调 */
+  /** 成员端收到房主心跳：刷新存活时间戳；若此前处于断线态则恢复跟随并触发恢复回调 */
   private markAlive(): void {
     this.lastStateAt = Date.now()
     if (this.connectionLost) {
       this.connectionLost = false
+      // 断线期间已解除守卫：重连后重新挂上，避免成员本地操作与同步指令互抢
+      if (this.role === 'follower' && this.syncTabId != null) {
+        void window.p2pApi.setSyncTab(this.syncTabId, true)
+      }
       this.onConnectionRestored?.()
     }
+  }
+
+  /**
+   * 房主消失（退出/断线/peer leave）时交还成员本地控制权。
+   * 参数：reason 日志原因（仅诊断用）。
+   * 说明：清空跟随基准防止 follow 循环按旧 playing 快照反复起播；
+   * 解除跟随守卫使本地暂停可点；并下发一次 pause 冻结在当前位置。
+   */
+  private releaseLocalControl(reason: string): void {
+    p2pLog('release local control', reason)
+    this.lastSnapshot = null
+    this.hostNotReady = false
+    this.notReadyCount = 0
+    if (this.syncTabId != null) void window.p2pApi.setSyncTab(this.syncTabId, false)
+    void window.p2pApi.videoCmd('pause')
   }
 
   /**
@@ -474,7 +499,14 @@ export class RoomController {
         const st = await window.p2pApi.videoStatus()
         if (st?.hasVideo) {
           const pb = decidePlayback(s.playing, st.paused)
-          if (pb !== 'none') await window.p2pApi.videoCmd(pb)
+          if (pb !== 'none') {
+            await window.p2pApi.videoCmd(pb)
+            // 暂停兜底：与 follow 循环一致，未停住立即再试一次
+            if (pb === 'pause') {
+              const st2 = await window.p2pApi.videoStatus()
+              if (st2?.hasVideo && !st2.paused) await window.p2pApi.videoCmd('pause')
+            }
+          }
         }
       }
     } finally {
@@ -559,11 +591,13 @@ export class RoomController {
   private startFollowLoop(): void {
     if (this.followTimer) return
     this.followTimer = window.setInterval(async () => {
-      // 断线看门狗：曾与房主建立同步后长时间无心跳 → 判定连接断开（仅提示，不自动退出）
+      // 断线看门狗：曾与房主建立同步后长时间无心跳 → 判定连接断开并交还本地控制权
       if (!this.connectionLost && isConnectionLost(this.lastStateAt, Date.now(), STATE_TIMEOUT_MS)) {
         this.connectionLost = true
         p2pLog('connection lost (heartbeat timeout)')
+        this.releaseLocalControl('heartbeat timeout')
         this.onConnectionLost?.()
+        return
       }
       if (!this.lastSnapshot) return
       // 房主未就绪冻结期：成员保持暂停，不做播放对齐与位置校正，等就绪心跳一次性对齐
@@ -575,6 +609,11 @@ export class RoomController {
       const pb = decidePlayback(this.lastSnapshot.playing, st.paused)
       if (pb !== 'none') {
         await window.p2pApi.videoCmd(pb)
+        // 暂停兜底：立即复查；player API 空转/按钮未跟上时再补一发（仍播才点）
+        if (pb === 'pause') {
+          const st2 = await window.p2pApi.videoStatus()
+          if (st2?.hasVideo && !st2.paused) await window.p2pApi.videoCmd('pause')
+        }
         return
       }
       // seek 宽限期/缓冲中不做位置校正：此时 position 尚未到位或数据未缓冲，

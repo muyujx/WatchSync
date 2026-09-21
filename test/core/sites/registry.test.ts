@@ -25,4 +25,16 @@ describe('适配器注入脚本', () => {
     expect(cycani.injectScript).toContain('findVideo')
     expect(cycani.injectScript).toContain('querySelector')
   })
+  it('B站适配序列化了 play/pause/seek（优先播放器实例）', () => {
+    const bili = selectAdapter('https://www.bilibili.com/video/BV1xx')
+    expect(bili.injectScript).toContain('play:')
+    expect(bili.injectScript).toContain('pause:')
+    expect(bili.injectScript).toContain('seek:')
+    expect(bili.injectScript).toContain('.player')
+    expect(bili.injectScript).toContain('bpx-player-ctrl-play')
+  })
+  it('harness 不再 stopImmediatePropagation 拦 play/pause（防 UI 脱节）', () => {
+    const bili = selectAdapter('https://www.bilibili.com/video/BV1xx')
+    expect(bili.injectScript).not.toContain('stopImmediatePropagation')
+  })
 })

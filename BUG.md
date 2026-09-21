@@ -37,4 +37,21 @@ B 站搜索提交链路为：回车/点击按钮 → form submit → B 站 JS pr
 
 实测：B 站首页真实键盘输入 + 回车，当前页签内导航到 search.bilibili.com 结果页（42 个结果卡片）；
 点击搜索按钮与回车走同一 submit 链路，同样修复。
+修改的文件：src-tauri/src/tabs.rs
+
+### 成员同步 B 站：控制条显示暂停但画面仍在播；房主退出后成员无法暂停
+问题：成员跟随 B 站时出现「有播放/暂停按钮但视频仍在播」的 UI 脱节；房主退出后成员端点暂停无效。
+期望：控制条与真实播放状态一致；房主消失后成员可自由暂停。
+
+问题原因：
+1. B 站适配只做了 findVideo，pause/play/seek 直接打原生 video，bpx 播放器状态机与控制条不感知。
+2. 跟随守卫对 play/pause 拦截事件传播，播放器收不到状态事件，UI 卡在旧状态。
+3. 房主退出（peer leave / 心跳超时 / dissolve）时未清 lastSnapshot、未解除守卫：follow 循环按旧 playing 快照反复起播，且本地暂停被守卫路径干扰。
+
+解决方案：
+1. bilibili.ts 增加 play/pause/seek：优先 window.player，pause 未停住再原生 pause + 点 .bpx-player-ctrl-play 兜底。
+2. harness 守卫只关事件采集，不拦 play/pause 传播；站点自动 pause/play 由 follow 循环下一拍纠偏。
+3. room.ts 增加 releaseLocalControl：房主离开/断线/解散时清快照、解除守卫并下发一次 pause；重连时重新挂守卫。
+4. 暂停指令后立即复查 status，未停住再补一发 pause。
+修改的文件：src/core/sites/bilibili.ts, src/core/sites/harness.ts, src/renderer/room.ts, src-tauri/src/tabs.rs, test/core/sites/registry.test.ts, src-tauri/resources/adapters.json
 
