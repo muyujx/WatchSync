@@ -199,14 +199,27 @@ pub fn set_active(app: &tauri::AppHandle, tab_id: Option<i64>) {
             return;
         }
     }
-    // 切换前若处于 HTML 全屏，先复位（全屏属于上一个激活页签的显示状态）
+    // 切换前若处于 HTML 全屏，先复位（全屏属于上一个激活页签的显示状态）：
+    // 状态、OS 全屏窗口、UI 顶栏三者必须同步恢复，否则窗口仍覆盖任务栏而顶栏已显示
     if *st.html_fullscreen.lock().unwrap() {
         *st.html_fullscreen.lock().unwrap() = false;
+        let _ = main_window(app).set_fullscreen(false);
         let _ = app.emit_to("ui", "video-fullscreen", false);
     }
     let prev = st.active_id.lock().unwrap().clone();
+    // 预取被切走页签的 webview label（drop st 前读取，避免锁冲突）
+    let prev_label = prev
+        .filter(|p| Some(*p) != tab_id)
+        .and_then(|p| st.tabs.lock().unwrap().get(&p).map(|t| t.label.clone()));
     *st.active_id.lock().unwrap() = tab_id;
     drop(st);
+    if let Some(label) = prev_label {
+        if let Some(wv) = app.get_webview(&label) {
+            // 与浏览器切页签行为一致：切走时让页面退出 HTML 全屏，
+            // 否则全屏元素残留在后台页签，切回时出现"顶栏在但页面仍全屏"的怪状态
+            let _ = wv.eval("document.exitFullscreen && document.exitFullscreen().catch(function(){});");
+        }
+    }
     if let Some(p) = prev {
         if Some(p) != tab_id {
             set_tab_visible(app, p, false);
@@ -272,8 +285,10 @@ pub fn close(app: &tauri::AppHandle, tab_id: i64) {
         let mut active = st.active_id.lock().unwrap();
         if *active == Some(tab_id) {
             *active = None;
+            // 关闭的是激活页签且处于 HTML 全屏：同步退出 OS 全屏（状态/窗口/UI 三者一致）
             if *st.html_fullscreen.lock().unwrap() {
                 *st.html_fullscreen.lock().unwrap() = false;
+                let _ = main_window(app).set_fullscreen(false);
                 let _ = app.emit_to("ui", "video-fullscreen", false);
             }
         }
