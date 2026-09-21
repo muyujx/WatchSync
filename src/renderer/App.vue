@@ -484,9 +484,10 @@ controller.onConnectionRestored = () => {
   connectionLost.value = false
   notify('已重连房主')
 }
-// 真正连上房主（收到房主心跳/资料）：结束加入 loading（成功不弹提示）
+// 真正连上房主（收到房主心跳/资料）：结束加入 loading，并在此刻才进入房间 UI（成功不弹提示）
 controller.onHostConnected = () => {
   busy.value = ''
+  roomId.value = controller.roomId
 }
 // 加入失败（中继建连失败或超时没连上房主）：报错并退出房间回初始态，便于重试
 controller.onJoinFailed = (reason) => {
@@ -681,9 +682,9 @@ async function onJoinLink(): Promise<void> {
     return
   }
   // 进入连接中状态：由 onHostConnected / onJoinFailed 回调解除（最长等待看门狗 15s）
+  // 此处不写 roomId，保持加入按钮 loading；连上房主后由 onHostConnected 切入房间 UI
   busy.value = 'joining'
   isHost.value = false
-  roomId.value = parsed.roomId
   controller.myName = myName.value
   try {
     await controller.join(parsed.roomId)
