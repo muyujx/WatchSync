@@ -416,7 +416,7 @@ const myName = ref('')
 /** 地址栏元素引用（聚焦时不被视频页 URL 覆盖） */
 const omniboxEl = ref<HTMLInputElement | null>(null)
 
-/** 打开设置对话框（先隐藏视频画面，避免原生视图遮挡对话框） */
+/** 打开设置对话框（先隐藏视频画面，避免原生视图遮挡对话框；下层为默认白底） */
 async function openSettings(): Promise<void> {
   await window.p2pApi.setVideoVisible(false)
   settingsOpen.value = true
