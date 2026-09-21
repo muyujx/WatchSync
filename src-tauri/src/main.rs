@@ -111,13 +111,17 @@ fn main() {
         ])
         .setup(move |app| {
             // ---- 主窗口（无边框；UI 自绘标题栏）----
+            // 先隐藏创建，再居中后显示：避免在系统默认位置闪现后跳到居中
             let win = tauri::WindowBuilder::new(app, "main")
                 .title("WatchSync")
                 .inner_size(1280.0, 800.0)
                 .decorations(false)
+                .visible(false)
                 // 显式注册窗口图标：任务栏从 256x256 源缩放显示（不设则回退 exe 小尺寸层而发糊）
                 .icon(tauri::image::Image::from_bytes(include_bytes!("../icons/icon.ico"))?)?
                 .build()?;
+            let _ = win.center();
+            let _ = win.show();
 
             // ---- UI 壳 webview（全窗口，加载渲染层 Vue 应用）----
             let scale = win.scale_factor().unwrap_or(1.0);
