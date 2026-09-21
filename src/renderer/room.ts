@@ -465,6 +465,9 @@ export class RoomController {
           this.lastSeekAt = Date.now()
           await window.p2pApi.videoCmd('seek', s.position)
           await window.p2pApi.videoCmd(s.playing ? 'play' : 'pause')
+        } else {
+          // 超时未就绪：保留 bridgeReady=false，下一轮心跳重试（页面过慢/桥未装上时兜底）
+          p2pLog('bridge wait timeout', { url, position: s.position, playing: s.playing })
         }
       } else if (url && this.bridgeReady) {
         // 桥已就绪：每次心跳立即对齐播放状态，不再只依赖 2s 周期的 followTimer 兜底
@@ -482,15 +485,19 @@ export class RoomController {
 
   /**
    * 轮询等待视频页桥就绪（播放器创建 video 并完成注入）。
-   * 额外要求 readyState >= 1（已有 metadata）：过早 seek 会打在空视频上不可靠，且易触发重复校正。
+   * 就绪判定只要求 hasVideo（桥已装、video 元素存在），不要求 readyState：
+   * preload=none 或尚未起播的站点 readyState 恒为 0，若等 metadata 才对齐会形成死锁——
+   * 成员等视频加载完才下发 play，站点等 play 指令才开始加载（视频永不加载/播放）。
+   * 就绪后立即 seek+play：readyState=0 时 seek 由浏览器挂起（default playback start position），
+   * play 触发站点加载并自动跳到挂起位置，同时解决"不自动加载"与"不自动播放"。
    * 参数：timeoutMs 最长等待时长（ms）。
-   * 返回值：true 桥已就绪且视频可 seek；false 超时仍未就绪。
+   * 返回值：true 桥已就绪（video 元素存在）；false 超时仍未就绪。
    */
   private async waitForBridge(timeoutMs: number): Promise<boolean> {
     const deadline = Date.now() + timeoutMs
     while (Date.now() < deadline) {
       const st = await window.p2pApi.videoStatus()
-      if (st?.hasVideo && st.readyState >= 1) return true
+      if (st?.hasVideo) return true
       await new Promise((r) => setTimeout(r, 300))
     }
     return false

@@ -61,10 +61,32 @@ __SCRIPT__
   document.addEventListener('fullscreenchange', () => {
     send({ kind: 'fullscreen', fullscreen: !!document.fullscreenElement })
   })
-  // 拦截 window.open / target=_blank：改为当前页签内导航，保证桥与同步不逃逸
+  // 拦截 window.open / target=_blank：改为当前页签内导航，保证桥与同步不逃逸。
+  // 必须返回 stub 假窗口对象：B 站搜索等站点采用「window.open() 拿窗口引用 →
+  // 再向 win.location.href 写目标地址」的模式，返回 null 会让后续写属性抛 TypeError
+  // 导致点击搜索按钮/回车全部静默失效；stub 的 location setter 兜住该写法并在当前页签导航
   window.open = function (u) {
-    try { if (/^https?:/.test(String(u))) location.href = String(u) } catch (e) {}
-    return null
+    // 协议判断须含协议相对形式（//host/...）：B 站搜索构造的正是 //search.bilibili.com/...，
+    // 仅匹配 https?: 会导致回车/点击搜索静默失效
+    const nav = function (t) { try { const s = String(t || ''); if (/^(https?:)?\/\//i.test(s)) location.href = s } catch (e) {} }
+    nav(u)
+    let cur = String(u || '')
+    const stub = {
+      closed: false,
+      close: function () {},
+      focus: function () {},
+      blur: function () {},
+      print: function () {},
+      postMessage: function () {},
+      opener: window,
+    }
+    Object.defineProperty(stub, 'location', {
+      get: function () { return { href: cur, assign: nav, replace: nav, toString: function () { return cur } } },
+      set: function (v) { cur = String(v || ''); nav(v) },
+      configurable: true,
+    })
+    Object.defineProperty(stub, 'document', { get: function () { return null }, configurable: true })
+    return stub
   }
   document.addEventListener('click', (e) => {
     const t = e.target
