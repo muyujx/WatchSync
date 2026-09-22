@@ -34,6 +34,9 @@ cache/
 # local test credentials (not committed)
 *.local.json
 
+# 本地 bug 记录本（记录发现的 bug：原因/方案/改动文件，只留本地）
+BUG.md
+
 # brainstorm visual companion session
 .superpowers/
 
