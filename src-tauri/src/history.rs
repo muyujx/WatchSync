@@ -1,6 +1,6 @@
 //! 播放历史持久化：userData/history.json（记录带进度，上限 100 条）。
 //! 数据来源：桥 tick（所有页签，每 300ms）→ bridge.rs 调 on_tick。
-//! 规则见 docs/superpowers/specs/2026-09-22-play-history-design.md 第 3/4 节。
+//! 仅真实播放中的页签才新建记录（纯网页访问不留痕）。
 
 use std::collections::HashSet;
 
@@ -29,7 +29,7 @@ pub struct HistoryRecord {
     pub site: String,
     /// 最近观看时间（ms epoch）
     pub watched_at: i64,
-    /// 已看秒数；无进度为 null（仅记录）
+    /// 已看秒数；新记录必写（仅真实播放才建记录）；null 仅见于历史遗留数据
     pub position: Option<f64>,
     pub duration: Option<f64>,
     /// 封面（og:image / video poster）；无则 null
@@ -71,6 +71,8 @@ impl HistoryState {
     /// 参数：title 页面标题（空则不新建也不改旧标题）；url 页面地址（须为 http(s)，
     /// 由调用方保证）；site 适配器 id；status 桥状态（无视频为 None）；
     /// cover 封面地址（None/空保持旧值）；now 当前时间（ms）。
+    /// 新建门槛：仅**真实播放中**（status 存在、未暂停、duration>0）才新建记录，
+    /// 纯网页访问不留痕；已存在的记录元数据照常更新。
     /// 返回值：true = 发生暂停定格，需要立即落盘。
     pub fn apply(
         &mut self,
@@ -88,8 +90,13 @@ impl HistoryState {
         let idx = match self.records.iter().position(|r| r.url == url) {
             Some(i) => i,
             None => {
-                // 新建要求标题非空：页面首帧常见空标题，等下个 tick
-                if title.is_empty() {
+                // 仅真实播放才新建：无桥状态（纯网页/后台页签）、暂停态、无视频
+                //（duration≤0）、空标题（页面首帧常见）都不建，等后续 tick；
+                // 命中即带当前进度，避免"打开过网页"混进播放记录
+                let Some(st) = status else {
+                    return false;
+                };
+                if st.paused || st.duration <= 0.0 || title.is_empty() {
                     return false;
                 }
                 self.records.push(HistoryRecord {
@@ -97,10 +104,11 @@ impl HistoryState {
                     title: title.to_string(),
                     site: site.to_string(),
                     watched_at: now,
-                    position: None,
-                    duration: None,
+                    position: Some(st.position),
+                    duration: Some(st.duration),
                     cover: cover.filter(|c| !c.is_empty()).map(String::from),
                 });
+                self.played.insert(url.to_string());
                 self.touch();
                 self.trim();
                 // 时钟回拨等极端情况下新记录可能被自身淘汰（watched_at 严格最小）：
@@ -375,27 +383,36 @@ mod tests {
     }
 
     #[test]
-    fn new_record_requires_title() {
+    fn new_record_requires_playing_video() {
         let mut s = HistoryState::default();
-        // 空标题不新建
-        assert!(!s.apply("", "https://a.com/v", "generic", None, None, 1000));
+        // 无桥状态（纯网页访问）：不新建
+        assert!(!s.apply("标题", "https://a.com/v", "generic", None, None, 1000));
         assert!(s.records.is_empty());
-        // 有标题才新建
-        s.apply("标题", "https://a.com/v", "generic", None, None, 1001);
+        // 暂停态：不新建
+        assert!(!s.apply("标题", "https://a.com/v", "generic", Some(&paused(0.0, 600.0)), None, 1001));
+        assert!(s.records.is_empty());
+        // 无视频（duration=0）：不新建
+        assert!(!s.apply("标题", "https://a.com/v", "generic", Some(&playing(0.0, 0.0)), None, 1002));
+        assert!(s.records.is_empty());
+        // 空标题：即便播放中也不新建（等下个 tick）
+        assert!(!s.apply("", "https://a.com/v", "generic", Some(&playing(1.0, 600.0)), None, 1003));
+        assert!(s.records.is_empty());
+        // 播放中 + 有标题：新建且自带进度
+        s.apply("标题", "https://a.com/v", "generic", Some(&playing(5.0, 600.0)), None, 1004);
         assert_eq!(s.records.len(), 1);
         assert_eq!(s.records[0].title, "标题");
-        assert_eq!(s.records[0].watched_at, 1001);
-        assert_eq!(s.records[0].position, None);
+        assert_eq!(s.records[0].position, Some(5.0));
+        assert_eq!(s.records[0].duration, Some(600.0));
+        assert_eq!(s.records[0].watched_at, 1004);
     }
 
     #[test]
-    fn position_only_written_after_play() {
+    fn progress_write_rules() {
         let mut s = HistoryState::default();
-        s.apply("T", "https://a.com/v", "generic", None, None, 1);
-        // 从未播放：仅暂停态也不写进度（= 仅记录）
+        // 从未播放：仅暂停态不建记录，更不写进度
         s.apply("T", "https://a.com/v", "generic", Some(&paused(50.0, 600.0)), None, 2);
-        assert_eq!(s.records[0].position, None);
-        // 播放中：写进度 + 刷新 watchedAt
+        assert!(s.records.is_empty());
+        // 播放中：新建并写进度 + watchedAt
         s.apply("T", "https://a.com/v", "generic", Some(&playing(60.0, 600.0)), None, 3);
         assert_eq!(s.records[0].position, Some(60.0));
         assert_eq!(s.records[0].duration, Some(600.0));
@@ -414,7 +431,7 @@ mod tests {
     #[test]
     fn idle_tick_does_not_bump_watched_at() {
         let mut s = HistoryState::default();
-        s.apply("T", "https://a.com/v", "generic", None, None, 100);
+        s.apply("T", "https://a.com/v", "generic", Some(&playing(1.0, 600.0)), None, 100);
         // 无 status 的空转 tick（后台页签 300ms 心跳）不改 watchedAt
         s.apply("T", "https://a.com/v", "generic", None, None, 200);
         assert_eq!(s.records[0].watched_at, 100);
@@ -429,7 +446,8 @@ mod tests {
     #[test]
     fn dedupe_same_url_updates_in_place() {
         let mut s = HistoryState::default();
-        s.apply("旧标题", "https://a.com/v", "generic", None, None, 1);
+        s.apply("旧标题", "https://a.com/v", "generic", Some(&playing(1.0, 600.0)), None, 1);
+        // 同 url：无 status 的 tick 也更新元数据（标题），不新建
         s.apply("新标题", "https://a.com/v", "generic", None, None, 2);
         assert_eq!(s.records.len(), 1);
         assert_eq!(s.records[0].title, "新标题");
@@ -443,7 +461,7 @@ mod tests {
                 &format!("t{i}"),
                 &format!("https://a.com/{i}"),
                 "generic",
-                None,
+                Some(&playing(0.0, 600.0)),
                 None,
                 i as i64,
             );
@@ -457,8 +475,8 @@ mod tests {
     #[test]
     fn remove_and_clear() {
         let mut s = HistoryState::default();
-        s.apply("A", "https://a.com/1", "generic", None, None, 1);
-        s.apply("B", "https://a.com/2", "generic", None, None, 2);
+        s.apply("A", "https://a.com/1", "generic", Some(&playing(0.0, 600.0)), None, 1);
+        s.apply("B", "https://a.com/2", "generic", Some(&playing(0.0, 600.0)), None, 2);
         assert!(s.remove("https://a.com/1"));
         assert!(!s.remove("https://a.com/1"));
         assert_eq!(s.records.len(), 1);
@@ -470,9 +488,9 @@ mod tests {
     #[test]
     fn list_sorted_desc() {
         let mut s = HistoryState::default();
-        s.apply("A", "https://a.com/1", "generic", None, None, 1);
-        s.apply("B", "https://a.com/2", "generic", None, None, 5);
-        s.apply("C", "https://a.com/3", "generic", None, None, 3);
+        s.apply("A", "https://a.com/1", "generic", Some(&playing(0.0, 600.0)), None, 1);
+        s.apply("B", "https://a.com/2", "generic", Some(&playing(0.0, 600.0)), None, 5);
+        s.apply("C", "https://a.com/3", "generic", Some(&playing(0.0, 600.0)), None, 3);
         let list = s.list();
         let times: Vec<i64> = list.iter().map(|r| r.watched_at).collect();
         assert_eq!(times, vec![5, 3, 1]);
@@ -520,13 +538,13 @@ mod tests {
                 &format!("t{i}"),
                 &format!("https://a.com/{i}"),
                 "generic",
-                None,
+                Some(&playing(0.0, 600.0)),
                 None,
                 2000,
             );
         }
         let before: Vec<String> = s.records.iter().map(|r| r.title.clone()).collect();
-        assert!(!s.apply("NEW", "https://a.com/new", "generic", None, None, 1000));
+        assert!(!s.apply("NEW", "https://a.com/new", "generic", Some(&playing(0.0, 600.0)), None, 1000));
         assert_eq!(s.records.len(), MAX_RECORDS);
         // 无任何无关记录被串写
         let after: Vec<String> = s.records.iter().map(|r| r.title.clone()).collect();
@@ -538,17 +556,17 @@ mod tests {
     fn tombstone_after_remove_and_clear() {
         // F4：删除/清空 → 本运行期同 url 不再新建；新 url 不受影响
         let mut s = HistoryState::default();
-        s.apply("A", "https://a.com/1", "generic", None, None, 1);
-        s.apply("B", "https://a.com/2", "generic", None, None, 2);
+        s.apply("A", "https://a.com/1", "generic", Some(&playing(0.0, 600.0)), None, 1);
+        s.apply("B", "https://a.com/2", "generic", Some(&playing(0.0, 600.0)), None, 2);
         assert!(s.remove("https://a.com/1"));
-        assert!(!s.apply("A2", "https://a.com/1", "generic", None, None, 3));
+        // 墓碑：即便播放中也不重建
+        assert!(!s.apply("A2", "https://a.com/1", "generic", Some(&playing(0.0, 600.0)), None, 3));
         assert_eq!(s.records.len(), 1);
         s.clear();
-        assert!(!s.apply("B2", "https://a.com/2", "generic", None, None, 4));
+        assert!(!s.apply("B2", "https://a.com/2", "generic", Some(&playing(0.0, 600.0)), None, 4));
         assert!(s.records.is_empty());
-        // 清空后的新访问仍记录
-        //（注意 apply 返回值是「暂停定格」语义，status=None 恒为 false；是否记录看下方断言）
-        s.apply("C", "https://a.com/3", "generic", None, None, 5);
+        // 清空后的新播放仍记录
+        s.apply("C", "https://a.com/3", "generic", Some(&playing(0.0, 600.0)), None, 5);
         assert_eq!(s.records.len(), 1);
         assert_eq!(s.records[0].url, "https://a.com/3");
     }
@@ -558,7 +576,7 @@ mod tests {
         // F3/F6：不脏→None；节流内→None；到期/force→Some；陈旧 finish 不清 dirty；时钟回拨不永久节流
         let mut s = HistoryState::default();
         assert!(s.begin_flush(true, 100).is_none()); // 不脏
-        s.apply("A", "https://a.com/1", "generic", None, None, 1); // touch → dirty, gen=1, last_flush=0
+        s.apply("A", "https://a.com/1", "generic", Some(&playing(0.0, 600.0)), None, 1); // touch → dirty, gen=1, last_flush=0
         assert!(s.begin_flush(false, 500).is_none()); // 距 last_flush(0) < 10s，节流
         let (snap, gen) = s.begin_flush(false, FLUSH_INTERVAL_MS + 1).expect("到期应可写");
         assert_eq!(gen, 1);
@@ -582,7 +600,7 @@ mod tests {
         // Fix A：尝试即打点——写失败（模拟为不调 finish_flush）后 10s 内不再重试，
         // 防止持续失败 → 每 tick 全量序列化+写的写风暴；dirty 保留到下次成功提交
         let mut s = HistoryState::default();
-        s.apply("A", "https://a.com/1", "generic", None, None, 1);
+        s.apply("A", "https://a.com/1", "generic", Some(&playing(0.0, 600.0)), None, 1);
         let (snap, _gen) = s.begin_flush(true, 5000).expect("force 可写");
         assert_eq!(snap.len(), 1);
         assert_eq!(s.last_flush, 5000); // 尝试时刻已刷新

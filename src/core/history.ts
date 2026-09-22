@@ -14,7 +14,7 @@ export interface HistoryRecord {
   site: string
   /** 最近观看时间（ms epoch） */
   watchedAt: number
-  /** 已看秒数；无进度为 null（仅记录） */
+  /** 已看秒数；新记录必写，null 仅见于历史遗留数据 */
   position: number | null
   /** 视频总时长（秒）；无进度为 null */
   duration: number | null
