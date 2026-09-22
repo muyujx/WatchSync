@@ -75,6 +75,8 @@ pub struct AppState {
     pub toast_seq: AtomicU64,
     /// 播放历史内存态（见 history.rs；启动时由 main.rs setup 调 history::load 填充）
     pub history: Mutex<crate::history::HistoryState>,
+    /// 每页签视频状态缓存（桥 tick 维护；续播轮询 tabStatus 用，无桥/无视频即移除）
+    pub tab_status: Mutex<HashMap<i64, BridgeStatus>>,
 }
 
 impl AppState {
@@ -89,6 +91,7 @@ impl AppState {
             html_fullscreen: Mutex::new(false),
             toast_seq: AtomicU64::new(0),
             history: Mutex::new(crate::history::HistoryState::default()),
+            tab_status: Mutex::new(HashMap::new()),
         }
     }
 }

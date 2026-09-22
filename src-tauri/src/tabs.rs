@@ -57,8 +57,17 @@ __SCRIPT__
   window.__p2pReport = send
   window.__p2pReporter = setInterval(() => {
     const b = window.__p2pBridge
-    if (!b) { send({ kind: 'tick', events: [], status: null, title: document.title, url: location.href }); return }
-    send({ kind: 'tick', events: b.drain(), status: b.status(), title: document.title, url: location.href })
+    // 封面：og:image 优先，退 video.poster；由 Rust 侧归一化/过滤（见 history.rs）
+    const cover = () => {
+      try {
+        const m = document.querySelector('meta[property="og:image"]')
+        if (m && m.content) return m.content
+        if (b && b.video && b.video.poster) return b.video.poster
+      } catch (e) {}
+      return ''
+    }
+    if (!b) { send({ kind: 'tick', events: [], status: null, title: document.title, url: location.href, cover: cover() }); return }
+    send({ kind: 'tick', events: b.drain(), status: b.status(), title: document.title, url: location.href, cover: cover() })
   }, 300)
   document.addEventListener('fullscreenchange', () => {
     send({ kind: 'fullscreen', fullscreen: !!document.fullscreenElement })
@@ -295,6 +304,7 @@ pub fn set_sync_tab(app: &tauri::AppHandle, tab_id: Option<i64>, guard: bool) {
 pub fn close(app: &tauri::AppHandle, tab_id: i64) {
     let st = state(app);
     let label = st.tabs.lock().unwrap().remove(&tab_id).map(|t| t.label);
+    st.tab_status.lock().unwrap().remove(&tab_id);
     {
         let mut sync = st.sync_id.lock().unwrap();
         if *sync == Some(tab_id) {
@@ -316,6 +326,8 @@ pub fn close(app: &tauri::AppHandle, tab_id: i64) {
         }
     }
     drop(st);
+    // 关页签即落盘：页签存活期间的播放进度立即持久化（不等 10s 节流）
+    crate::history::flush(app, true);
     if let Some(label) = label {
         if let Some(wv) = app.get_webview(&label) {
             // close：从窗口移除并销毁 webview
@@ -391,6 +403,19 @@ pub fn video_cmd(app: &tauri::AppHandle, action: &str, arg: Option<f64>) {
         arg.map(|a| a.to_string()).unwrap_or_else(|| "null".into())
     );
     let _ = wv.eval(&script);
+}
+
+/// 向指定页签下发 seek（历史续播用；区别于 video_cmd 的同步页签限定）。
+/// 无桥/页签不存在时静默（页面侧 cmd 自带存在性判断）。
+pub fn seek_tab(app: &tauri::AppHandle, tab_id: i64, position: f64) {
+    let st = state(app);
+    let label = st.tabs.lock().unwrap().get(&tab_id).map(|t| t.label.clone());
+    let Some(label) = label else { return };
+    let Some(wv) = app.get_webview(&label) else { return };
+    let _ = wv.eval(&format!(
+        "window.__p2pBridge && window.__p2pBridge.cmd(\"seek\", {})",
+        position
+    ));
 }
 
 /// 工具栏导航：back | forward | reload，作用于激活页签。

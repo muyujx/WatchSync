@@ -110,8 +110,17 @@ fn main() {
             commands::win_control,
             commands::copy_text,
             commands::open_store,
+            commands::history_list,
+            commands::history_remove,
+            commands::history_clear,
+            commands::tab_status,
+            commands::seek_tab,
         ])
         .setup(move |app| {
+            // 播放历史启动加载（损坏/缺失按空恢复，见 history.rs）；
+            // .manage 已在 Builder 链上先于 setup 执行，AppState 必已就绪
+            *app.state::<crate::state::AppState>().history.lock().unwrap() =
+                crate::history::load(app.handle());
             // ---- 主窗口（无边框；UI 自绘标题栏）----
             // 先隐藏创建，再居中后显示：避免在系统默认位置闪现后跳到居中
             let win = tauri::WindowBuilder::new(app, "main")
@@ -183,7 +192,8 @@ fn main() {
                     toast::reposition(&handle);
                 }
                 tauri::WindowEvent::Destroyed => {
-                    // 主窗口关闭 → 退出应用（对齐 window-all-closed）
+                    // 主窗口关闭 → 退出应用（对齐 window-all-closed）；先落盘播放历史
+                    crate::history::flush(&handle, true);
                     handle.exit(0);
                 }
                 _ => {}

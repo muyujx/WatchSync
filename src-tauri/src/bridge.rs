@@ -24,11 +24,38 @@ pub fn handle_report(
         let tab = v.get("tab").and_then(|x| x.as_i64()).unwrap_or(-1);
         let kind = v.get("kind").and_then(|x| x.as_str()).unwrap_or("");
         match kind {
-            // 心跳：事件入队（仅同步页签）+ 状态缓存
+            // 心跳：事件入队（仅同步页签）+ 状态缓存（所有页签）+ 历史记录
             "tick" => {
                 let st = state(app);
                 let sync = st.sync_id.lock().unwrap().clone();
+                let has_status_key = v.get("status").is_some();
+                // status 解析（所有页签；对象 = 有桥有视频，null = 无桥/无视频/无 metadata）
+                let status = v.get("status").and_then(|s| {
+                    if !s.is_object() {
+                        return None;
+                    }
+                    Some(crate::state::BridgeStatus {
+                        position: s.get("position").and_then(|x| x.as_f64()).unwrap_or(0.0),
+                        paused: s.get("paused").and_then(|x| x.as_bool()).unwrap_or(true),
+                        rate: s.get("rate").and_then(|x| x.as_f64()).unwrap_or(1.0),
+                        duration: s.get("duration").and_then(|x| x.as_f64()).unwrap_or(0.0),
+                        ready_state: s.get("readyState").and_then(|x| x.as_f64()).unwrap_or(0.0),
+                    })
+                });
+                if has_status_key {
+                    // 每页签状态缓存（续播轮询 tabStatus 用）
+                    let mut ts = st.tab_status.lock().unwrap();
+                    match &status {
+                        Some(s) => {
+                            ts.insert(tab, s.clone());
+                        }
+                        None => {
+                            ts.remove(&tab);
+                        }
+                    }
+                }
                 if sync == Some(tab) {
+                    // 同步页签：事件入队（保持原语义）
                     if let Some(evs) = v.get("events").and_then(|x| x.as_array()) {
                         let mut q = st.events.lock().unwrap();
                         for e in evs {
@@ -43,27 +70,25 @@ pub fn handle_report(
                             });
                         }
                     }
-                    if let Some(s) = v.get("status") {
-                        if s.is_object() {
-                            *st.last_status.lock().unwrap() = Some(crate::state::BridgeStatus {
-                                position: s.get("position").and_then(|x| x.as_f64()).unwrap_or(0.0),
-                                paused: s.get("paused").and_then(|x| x.as_bool()).unwrap_or(true),
-                                rate: s.get("rate").and_then(|x| x.as_f64()).unwrap_or(1.0),
-                                duration: s.get("duration").and_then(|x| x.as_f64()).unwrap_or(0.0),
-                                ready_state: s.get("readyState").and_then(|x| x.as_f64()).unwrap_or(0.0),
-                            });
-                        } else {
-                            // 无桥/无视频：置 None（hasVideo=false，pageUrl 仍持续同步）
-                            *st.last_status.lock().unwrap() = None;
-                        }
+                    // 同步页签状态缓存（保持原语义：status 键存在才覆盖；
+                    // 无桥/无视频置 None，hasVideo=false 且 pageUrl 仍持续同步）
+                    if has_status_key {
+                        *st.last_status.lock().unwrap() = status.clone();
                     }
                 }
-                // 标题/地址更新（所有页签，供页签标题与 pageUrl 同步）
+                // 标题/地址/封面（所有页签）
                 let title = v.get("title").and_then(|x| x.as_str()).unwrap_or("");
                 let url = v.get("url").and_then(|x| x.as_str()).unwrap_or("");
-                if !title.is_empty() || !url.is_empty() {
-                    drop(st);
+                let cover = v
+                    .get("cover")
+                    .and_then(|x| x.as_str())
+                    .and_then(crate::history::normalize_cover);
+                let has_tick_data = !title.is_empty() || !url.is_empty();
+                drop(st);
+                if has_tick_data {
                     crate::tabs::on_tab_tick(app, tab, title, url);
+                    // 播放历史：所有页签入账（仅播放写进度见 history.rs）
+                    crate::history::on_tick(app, title, url, status.as_ref(), cover.as_deref());
                 }
             }
             // HTML 全屏状态变化（仅激活页签可能触发）：调整布局并通知 UI

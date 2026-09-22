@@ -6,6 +6,7 @@
 
 use tauri::AppHandle;
 
+use crate::history;
 use crate::settings::{self, Settings};
 use crate::state::state;
 use crate::{tabs, toast};
@@ -150,4 +151,37 @@ pub async fn open_store(product_id: String) {
     // explorer 打开商店协议链接（ms-windows-store 由系统处理，webview 内导航会被拦截故走外部）
     let url = format!("ms-windows-store://pdp/?productid={}", product_id);
     let _ = std::process::Command::new("explorer.exe").arg(&url).spawn();
+}
+
+/// 读取播放历史（watchedAt 降序）
+#[tauri::command]
+pub async fn history_list(app: AppHandle) -> Vec<history::HistoryRecord> {
+    state(&app).history.lock().unwrap().list()
+}
+
+/// 删除单条播放历史（按 url；立即落盘）
+#[tauri::command]
+pub async fn history_remove(app: AppHandle, url: String) {
+    state(&app).history.lock().unwrap().remove(&url);
+    history::flush(&app, true);
+}
+
+/// 清空播放历史（立即落盘）
+#[tauri::command]
+pub async fn history_clear(app: AppHandle) {
+    state(&app).history.lock().unwrap().clear();
+    history::flush(&app, true);
+}
+
+/// 查询指定页签的视频状态缓存（null = 无桥/无视频；续播轮询用）
+/// 注意 video_status 只作用于同步页签，不能复用。
+#[tauri::command]
+pub async fn tab_status(app: AppHandle, tab_id: i64) -> Option<crate::state::BridgeStatus> {
+    state(&app).tab_status.lock().unwrap().get(&tab_id).cloned()
+}
+
+/// 向指定页签下发续播 seek（桥 cmd；video_cmd 只作用于同步页签，不能复用）
+#[tauri::command]
+pub async fn seek_tab(app: AppHandle, tab_id: i64, position: f64) {
+    tabs::seek_tab(&app, tab_id, position);
 }
