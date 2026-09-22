@@ -75,15 +75,20 @@ fn simple_rand_suffix() -> String {
     (0..4).map(|_| CHARS[rand_limit(CHARS.len() as u64)] as char).collect()
 }
 
-/// 设置文件路径：{app_data_dir}[-{profile}]/settings.json
-pub fn settings_path(app: &tauri::AppHandle) -> std::path::PathBuf {
+/// 用户数据目录：{app_data_dir}[-{profile}]（settings.json / history.json 同目录）
+pub fn profile_dir(app: &tauri::AppHandle) -> std::path::PathBuf {
     let mut dir = app.path().app_data_dir().expect("app_data_dir 不可用");
     if let Some(profile) = crate::profile_name() {
         let name = dir.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
         dir.set_file_name(format!("{name}-{profile}"));
     }
     let _ = std::fs::create_dir_all(&dir);
-    dir.join("settings.json")
+    dir
+}
+
+/// 设置文件路径：{profile 目录}/settings.json
+pub fn settings_path(app: &tauri::AppHandle) -> std::path::PathBuf {
+    profile_dir(app).join("settings.json")
 }
 
 /// 读取设置；文件缺失/损坏时生成默认并落盘（与 Electron 版行为一致）。

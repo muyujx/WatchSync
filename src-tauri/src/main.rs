@@ -10,6 +10,7 @@
 
 mod bridge;
 mod commands;
+mod history;
 mod settings;
 mod state;
 mod tabs;

@@ -73,6 +73,8 @@ pub struct AppState {
     pub html_fullscreen: Mutex<bool>,
     /// toast 显示序号（防旧定时器隐藏新提示）
     pub toast_seq: AtomicU64,
+    /// 播放历史内存态（见 history.rs；启动时由 main.rs setup 调 history::load 填充）
+    pub history: Mutex<crate::history::HistoryState>,
 }
 
 impl AppState {
@@ -86,6 +88,7 @@ impl AppState {
             last_status: Mutex::new(None),
             html_fullscreen: Mutex::new(false),
             toast_seq: AtomicU64::new(0),
+            history: Mutex::new(crate::history::HistoryState::default()),
         }
     }
 }
