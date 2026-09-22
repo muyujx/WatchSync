@@ -94,6 +94,25 @@ pub async fn set_settings(app: AppHandle, patch: serde_json::Value) -> Settings 
     settings::save_patch(&app, &patch)
 }
 
+/// 主题联动：原生窗口/壳 webview 底色 + 全部 webview（含视频页签）的
+/// prefers-color-scheme 跟随指定主题（WebView2 PreferredColorScheme，
+/// 经窗口 ThemeChanged 下发；后续新建页签继承窗口当前主题）
+#[tauri::command]
+pub async fn set_ui_theme(app: AppHandle, theme: String) {
+    use tauri::Manager;
+    use tauri::utils::Theme;
+
+    let bg = settings::bg_rgb(&theme);
+    if let Some(win) = app.get_window("main") {
+        let t = if theme == "dark" { Theme::Dark } else { Theme::Light };
+        let _ = win.set_theme(Some(t));
+        let _ = win.set_background_color(Some(bg.into()));
+    }
+    if let Some(ui) = app.get_webview("ui") {
+        let _ = ui.set_background_color(Some(bg.into()));
+    }
+}
+
 /// 自定义标题栏窗口控制：action = minimize | toggleMaximize | close
 #[tauri::command]
 pub async fn win_control(app: AppHandle, action: String) {

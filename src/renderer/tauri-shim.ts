@@ -67,6 +67,8 @@ import { parseShareUrl } from '../core/shareLink'
     getSettings: () => invoke('get_settings'),
     /** 保存用户设置（增量合并） */
     setSettings: (patch: Record<string, unknown>) => invoke('set_settings', { patch }),
+    /** 主题联动：原生底色 + 视频页签 prefers-color-scheme 跟随指定主题 */
+    setUiTheme: (theme: string) => invoke('set_ui_theme', { theme }),
   }
   // 就绪标记（调试用）
   g.__p2pShimReady = true

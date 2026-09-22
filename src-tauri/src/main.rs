@@ -105,6 +105,7 @@ fn main() {
             commands::notify,
             commands::get_settings,
             commands::set_settings,
+            commands::set_ui_theme,
             commands::win_control,
             commands::copy_text,
             commands::open_store,
@@ -120,6 +121,17 @@ fn main() {
                 // 显式注册窗口图标：任务栏从 256x256 源缩放显示（不设则回退 exe 小尺寸层而发糊）
                 .icon(tauri::image::Image::from_bytes(include_bytes!("../icons/icon.ico"))?)?
                 .build()?;
+            // 主题底色：HTML 加载完成前露出的原生背景按设置主题取色（深色启动不闪白）
+            let theme0 = settings::load(app.handle()).theme;
+            let bg = settings::bg_rgb(&theme0);
+            win.set_background_color(Some(bg.into()))?;
+            // 站点配色联动：窗口 PreferredColorScheme 跟随应用主题（须在子 webview
+            // 创建前设置，UI 壳/视频页签创建时继承窗口主题，已有页签经 ThemeChanged 同步）
+            win.set_theme(Some(if theme0 == "dark" {
+                tauri::utils::Theme::Dark
+            } else {
+                tauri::utils::Theme::Light
+            }))?;
             let _ = win.center();
             let _ = win.show();
 
@@ -129,13 +141,15 @@ fn main() {
             let (w, h) = (sz.width as f64 / scale, sz.height as f64 / scale);
             let args = browser_args_for(app.handle());
             let data_dir = webview_data_dir(app.handle());
-            win.add_child(
+            let ui = win.add_child(
                 WebviewBuilder::new("ui", WebviewUrl::App("index.html".into()))
                     .additional_browser_args(&args)
                     .data_directory(data_dir),
                 tauri::LogicalPosition::new(0.0, 0.0),
                 tauri::LogicalSize::new(w, h),
             )?;
+            // 壳 webview 默认背景为白，按主题同色覆盖（首屏加载期间与窗口底色一致）
+            ui.set_background_color(Some(bg.into()))?;
 
             // ---- 窗口事件：缩放/移动 → 视频页签重排 + Toast 跟随；最大化状态 → UI ----
             let handle = app.handle().clone();

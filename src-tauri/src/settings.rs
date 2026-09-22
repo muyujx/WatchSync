@@ -16,6 +16,8 @@ pub struct CustomSite {
 #[serde(rename_all = "camelCase", default)]
 pub struct Settings {
     pub nickname: String,
+    /// 界面主题："light" | "dark"（手改文件兜底：非法值按浅色处理）
+    pub theme: String,
     pub custom_relays: Vec<String>,
     pub reachable_relays: Vec<String>,
     pub relay_checked_at: i64,
@@ -32,11 +34,21 @@ impl Default for Settings {
                 NICK_PREFIX[rand_limit(NICK_PREFIX.len() as u64)],
                 simple_rand_suffix()
             ),
+            theme: "light".to_string(),
             custom_relays: Vec::new(),
             reachable_relays: Vec::new(),
             relay_checked_at: 0,
             custom_sites: Vec::new(),
         }
+    }
+}
+
+/// 主题对应的原生底色（窗口/壳 webview）：深色 --ws-bg #121212，浅色 --ws-bg #f8f9fb
+pub fn bg_rgb(theme: &str) -> (u8, u8, u8) {
+    if theme == "dark" {
+        (18, 18, 18)
+    } else {
+        (248, 249, 250)
     }
 }
 
@@ -94,6 +106,11 @@ pub fn save_patch(app: &tauri::AppHandle, patch: &Value) -> Settings {
     let mut s = load(app);
     if let Some(v) = patch.get("nickname").and_then(|x| x.as_str()) {
         s.nickname = v.to_string();
+    }
+    if let Some(v) = patch.get("theme").and_then(|x| x.as_str()) {
+        if v == "light" || v == "dark" {
+            s.theme = v.to_string();
+        }
     }
     if let Some(v) = patch.get("customRelays").and_then(|x| x.as_array()) {
         s.custom_relays = strings(v);

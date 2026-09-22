@@ -1,5 +1,5 @@
 /* ===== 全局基础 + 通用控件 ===== */
-/* 品牌主题色：取自应用图标（青绿主色 + 天蓝辅助色），统一在此调整 */
+/* 品牌主题色：取自应用图标（青绿主色 + 天蓝辅助色），统一在此调整（明暗两主题共用） */
 :root {
   --ws-primary: #34d399;
   --ws-primary-dark: #10b981;
@@ -7,18 +7,96 @@
   --ws-accent-dark: #0284c7;
   --ws-accent-soft: #e0f2fe;
   --ws-accent-soft-hover: #bae6fd;
+
+  /* 语义色板（浅色默认值）：界面颜色一律用这里的变量，
+     深色主题只在下方 html.dark 覆盖同名变量，不新增任何规则 */
+  --ws-bg: #f8f9fb; /* 页面底 */
+  --ws-surface: #fff; /* 抬升面：工具栏 / 对话框 / 卡片 / 激活页签 */
+  --ws-tabstrip: #dee1e6; /* 标签条底 */
+  --ws-tab: #e9ebef; /* 未激活页签 */
+  --ws-fill: #f1f3f4; /* 控件填充：默认按钮 / 地址栏 / hover 底 */
+  --ws-fill-strong: #e8eaed; /* 控件按下 / 强 hover 底 */
+  --ws-text: #202124; /* 主文字 */
+  --ws-text-strong: #3c4043; /* 深图标字：设置按钮 / 窗口按钮 */
+  --ws-text-2: #5f6368; /* 次级文字 / 图标 */
+  --ws-text-3: #80868b; /* 弱化文字 / 提示 */
+  --ws-icon: #9aa0a6; /* 图标默认色 */
+  --ws-border: #dadce0; /* 输入框描边 */
+  --ws-divider: #f1f3f4; /* 列表分隔线 */
+  --ws-tint: #f8fbff; /* 强调浅底（大面 hover，如加号卡片） */
+  --ws-ok-fg: #137333; /* 正常状态 */
+  --ws-ok-bg: #e6f4ea;
+  --ws-danger-fg: #c5221f; /* 危险状态 */
+  --ws-danger-bg: #fce8e6;
+  --ws-warn-fg: #b06000; /* 警示状态 */
+  --ws-warn-bg: #fef7e0;
+  --ws-sync-bg: #e0f2f1; /* 同步中页签底 */
+  --ws-overlay: rgba(255, 255, 255, 0.96); /* 卡片确认层 */
+  --ws-floatbtn-bg: rgba(0, 0, 0, 0.06); /* 悬浮小圆按钮底 */
+  --ws-homebtn-hover: rgba(255, 255, 255, 0.65); /* 主页按钮 hover（标签条上） */
+  --ws-winbtn-hover: #c7cbd1; /* 窗口按钮 hover 底 */
+  --ws-scrollbar: rgba(0, 0, 0, 0.28); /* 细滚动条滑块 */
+  --ws-scrollbar-hover: rgba(0, 0, 0, 0.4);
+  --ws-focus-shadow: rgba(32, 33, 36, 0.28); /* 地址栏聚焦投影 */
+  /* filled 主按钮（创建房间/保存）：深色下品牌薄荷绿过亮，单独降档 */
+  --ws-filled-bg: #34d399;
+  --ws-filled-hover: #10b981;
+  --ws-filled-shadow: rgba(52, 211, 153, 0.4);
+  color-scheme: light; /* 让原生控件（输入框/滚动条/选区）跟随主题 */
 }
+
+/* ===== 深色主题（中性深灰 #121212 方向）：仅覆盖变量，规则复用浅色 ===== */
+html.dark {
+  --ws-bg: #121212;
+  --ws-surface: #1e1f20;
+  --ws-tabstrip: #292a2d;
+  --ws-tab: #242528;
+  --ws-fill: #2a2b2e;
+  --ws-fill-strong: #35363a;
+  --ws-text: #e8eaed;
+  --ws-text-strong: #bdc1c6;
+  --ws-text-2: #9aa0a6;
+  --ws-text-3: #9aa0a6;
+  --ws-icon: #9aa0a6;
+  --ws-border: #3c4043;
+  --ws-divider: #2a2b2e;
+  --ws-tint: #17222c;
+  /* 强调色系在深色底上换亮一档：文字用亮蓝，浅底加深 */
+  --ws-accent-dark: #8ab4f8;
+  --ws-accent-soft: #1c2f40;
+  --ws-accent-soft-hover: #23394d;
+  --ws-ok-fg: #81c995;
+  --ws-ok-bg: #1e3527;
+  --ws-danger-fg: #f28b82;
+  --ws-danger-bg: #3a1f1e;
+  --ws-warn-fg: #fdd663;
+  --ws-warn-bg: #3a3220;
+  --ws-sync-bg: #1b3430;
+  --ws-overlay: rgba(30, 31, 32, 0.96);
+  --ws-floatbtn-bg: rgba(255, 255, 255, 0.1);
+  --ws-homebtn-hover: rgba(255, 255, 255, 0.12);
+  --ws-winbtn-hover: #3c4043;
+  --ws-scrollbar: rgba(255, 255, 255, 0.28);
+  --ws-scrollbar-hover: rgba(255, 255, 255, 0.4);
+  --ws-focus-shadow: rgba(0, 0, 0, 0.5);
+  /* filled 主按钮：沉稳绿（降饱和降亮，深底上不发光） */
+  --ws-filled-bg: #1a9c6e;
+  --ws-filled-hover: #158761;
+  --ws-filled-shadow: rgba(0, 0, 0, 0.35);
+  color-scheme: dark;
+}
+
 * { margin: 0; box-sizing: border-box; }
-body { font-family: 'Segoe UI', 'Microsoft YaHei', system-ui, sans-serif; background: #f8f9fb; }
+body { font-family: 'Segoe UI', 'Microsoft YaHei', system-ui, sans-serif; background: var(--ws-bg); color: var(--ws-text); }
 
 /* Material 圆角按钮：filled（青绿主色）/tonal（天蓝浅底）/默认（灰底） */
 .m-btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; height: 32px; padding: 0 16px; border: none; border-radius: 16px; font-size: 13px; cursor: pointer; white-space: nowrap; }
 .m-btn:disabled { opacity: 0.45; cursor: not-allowed; }
-.m-btn.filled { background: var(--ws-primary); color: #fff; }
-.m-btn.filled:hover:not(:disabled) { background: var(--ws-primary-dark); box-shadow: 0 1px 3px rgba(52, 211, 153, 0.4); }
+.m-btn.filled { background: var(--ws-filled-bg); color: #fff; }
+.m-btn.filled:hover:not(:disabled) { background: var(--ws-filled-hover); box-shadow: 0 1px 3px var(--ws-filled-shadow); }
 .m-btn.tonal { background: var(--ws-accent-soft); color: var(--ws-accent-dark); }
 .m-btn.tonal:hover:not(:disabled) { background: var(--ws-accent-soft-hover); }
-.m-btn:not(.filled):not(.tonal):not(.danger-fill) { background: #f1f3f4; color: #202124; }
+.m-btn:not(.filled):not(.tonal):not(.danger-fill) { background: var(--ws-fill); color: var(--ws-text); }
 
 /* 按钮内等待指示：旋转圆环（filled 用白环，tonal/默认用品牌天蓝环） */
 .spinner { width: 14px; height: 14px; flex: none; border: 2px solid rgba(255, 255, 255, 0.45); border-top-color: #fff; border-radius: 50%; animation: ws-spin 0.7s linear infinite; }
@@ -26,7 +104,7 @@ body { font-family: 'Segoe UI', 'Microsoft YaHei', system-ui, sans-serif; backgr
 @keyframes ws-spin { to { transform: rotate(360deg); } }
 
 /* 状态徽标 chip（绿色正常/红色危险） */
-.chip { height: 28px; display: inline-flex; align-items: center; padding: 0 12px; border-radius: 14px; background: #e6f4ea; color: #137333; font-size: 12px; white-space: nowrap; }
-.chip.danger { background: #fce8e6; color: #c5221f; }
+.chip { height: 28px; display: inline-flex; align-items: center; padding: 0 12px; border-radius: 14px; background: var(--ws-ok-bg); color: var(--ws-ok-fg); font-size: 12px; white-space: nowrap; }
+.chip.danger { background: var(--ws-danger-bg); color: var(--ws-danger-fg); }
 
 .flex-spacer { flex: 1; }

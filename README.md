@@ -53,7 +53,7 @@ npm install
 ### 开发运行
 
 ```bash
-# 终端 1：前端 dev server（Vite，端口 5183，含站点适配器生成）
+# 终端 1：前端 dev server（Vite，端口 4555，含站点适配器生成）
 npm run tauri:frontend:dev
 
 # 终端 2：Rust 编译 + 启动应用（HMR 生效）

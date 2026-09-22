@@ -57,6 +57,8 @@ declare global {
       /** 读取用户设置（首次调用生成默认昵称） */
       getSettings(): Promise<{
         nickname: string
+        /** 界面主题 */
+        theme: 'light' | 'dark'
         /** 用户自定义信令中继 */
         customRelays: string[]
         /** 最近一次探测到的可达中继 */
@@ -69,17 +71,21 @@ declare global {
       /** 保存用户设置（增量合并），返回保存后的完整设置 */
       setSettings(patch: {
         nickname?: string
+        theme?: 'light' | 'dark'
         customRelays?: string[]
         reachableRelays?: string[]
         relayCheckedAt?: number
         customSites?: { name: string; url: string }[]
       }): Promise<{
         nickname: string
+        theme: 'light' | 'dark'
         customRelays: string[]
         reachableRelays: string[]
         relayCheckedAt: number
         customSites: { name: string; url: string }[]
       }>
+      /** 主题联动：原生底色 + 视频页签 prefers-color-scheme 跟随指定主题 */
+      setUiTheme(theme: 'light' | 'dark'): Promise<void>
     }
   }
 }

@@ -116,7 +116,14 @@
   </div>
 
   <MembersDialog :open="membersOpen" :members="memberList" :i-am-host="isHost" @close="closeMembers" @transfer="onTransferHost" />
-  <SettingsDialog :open="settingsOpen" :nickname="myName" @close="closeSettings" @save="saveSettings" />
+  <SettingsDialog
+    :open="settingsOpen"
+    :nickname="myName"
+    :theme="theme"
+    @close="closeSettings"
+    @save="saveSettings"
+    @preview-theme="applyTheme"
+  />
   <SiteDialog :open="siteDialogOpen" :site="siteEditing" @close="siteDialogOpen = false" @save="saveSite" />
 </template>
 
@@ -425,33 +432,59 @@ const controller = new RoomController()
 const settingsOpen = ref(false)
 /** 我的昵称（进入应用时从设置读取） */
 const myName = ref('')
+/** 界面主题（'light' | 'dark'；含设置里未保存的预览值） */
+type Theme = 'light' | 'dark'
+const theme = ref<Theme>('light')
+/** 已持久化主题：打开设置时快照，取消/关闭时回退到它 */
+const persistedTheme = ref<Theme>('light')
 /** 地址栏元素引用（聚焦时不被视频页 URL 覆盖） */
 const omniboxEl = ref<HTMLInputElement | null>(null)
 
-/** 打开设置对话框（先隐藏视频画面，避免原生视图遮挡对话框；下层为默认白底） */
+/**
+ * 应用主题：切换 <html class="dark"> 并同步 localStorage 缓存
+ * （缓存供下次启动 index.html 首帧前预置，避免闪浅色；settings.json 才是权威来源）。
+ * 参数：t 目标主题。
+ */
+function applyTheme(t: Theme): void {
+  theme.value = t
+  document.documentElement.classList.toggle('dark', t === 'dark')
+  try {
+    localStorage.setItem('ws-theme', t)
+  } catch {
+    /* 存储不可用（隐私模式等）时静默降级为仅内存 */
+  }
+  // 联动：原生底色 + 视频页签 prefers-color-scheme 跟随（预览/取消回退同样生效，失败静默）
+  void window.p2pApi.setUiTheme(t).catch(() => {})
+}
+
+/** 打开设置对话框（先隐藏视频画面，避免原生视图遮挡对话框；下层为主题底色） */
 async function openSettings(): Promise<void> {
+  persistedTheme.value = theme.value // 取消回退基准（保存时前移）
   await window.p2pApi.setVideoVisible(false)
   settingsOpen.value = true
 }
 
-/** 关闭设置对话框并恢复视频画面 */
+/** 关闭设置对话框：回退未保存的主题预览并恢复视频画面 */
 async function closeSettings(): Promise<void> {
+  applyTheme(persistedTheme.value)
   settingsOpen.value = false
   await window.p2pApi.setVideoVisible(true)
 }
 
 /**
- * 保存昵称（SettingsDialog save 事件）：持久化 + 更新 UI + 房间内重新广播。
- * 参数：name 裁剪后的昵称。
+ * 保存设置（SettingsDialog save 事件）：昵称持久化 + 更新 UI + 房间内重新广播；主题持久化并落定。
+ * 参数：payload 裁剪后的昵称与选定主题。
  */
-async function saveSettings(name: string): Promise<void> {
+async function saveSettings(payload: { name: string; theme: Theme }): Promise<void> {
+  const { name, theme: nextTheme } = payload
   if (!name) return
-  const saved = await window.p2pApi.setSettings({ nickname: name })
+  const saved = await window.p2pApi.setSettings({ nickname: name, theme: nextTheme })
   myName.value = saved.nickname
   controller.myName = saved.nickname
   controller.announceProfile()
-  await closeSettings()
-  notify('用户名已保存')
+  persistedTheme.value = saved.theme
+  await closeSettings() // applyTheme(persistedTheme) 再执行为幂等，无副作用
+  notify('设置已保存')
 }
 
 /** ===== 信令中继探测（useRelays 单例） ===== */
@@ -747,6 +780,9 @@ onMounted(() => {
   ;(window as unknown as { __p2pDiag: () => Promise<unknown> }).__p2pDiag = diagSnapshot
   // 读取用户设置（首次启动生成默认昵称）；装载自定义中继并后台重新探测；回填自定义站点书签
   window.p2pApi.getSettings().then((s) => {
+    // settings.json 为权威主题来源（覆盖启动时的 localStorage 预置值）
+    applyTheme(s.theme)
+    persistedTheme.value = s.theme
     myName.value = s.nickname
     controller.myName = s.nickname
     initCustom(s.customRelays)

@@ -1,5 +1,9 @@
 <!DOCTYPE html>
 <html lang="zh">
-<head><meta charset="UTF-8" /><title>WatchSync</title></head>
+<head><meta charset="UTF-8" /><title>WatchSync</title>
+<!-- 主题预置：首帧渲染前按 localStorage 缓存设置 <html class="dark">，避免启动先闪浅色；
+     App 启动后以 settings.json（权威来源）为准刷新缓存与主题 -->
+<script>try{if(localStorage.getItem('ws-theme')==='dark')document.documentElement.classList.add('dark')}catch(e){}</script>
+</head>
 <body><div id="app"></div><script type="module" src="./main.ts"></script></body>
 </html>

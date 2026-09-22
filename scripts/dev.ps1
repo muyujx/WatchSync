@@ -11,11 +11,11 @@ $root = Split-Path -Parent $PSScriptRoot
 $exe = Join-Path $root "src-tauri\target\debug\watchsync.exe"
 $logDir = Join-Path $root "logs"
 $viteLog = Join-Path $logDir "dev-frontend.log"
-$viteUrl = "http://127.0.0.1:5183"
+$viteUrl = "http://127.0.0.1:4555"
 
 # 端口探测：vite 可能仅绑定 IPv4(127.0.0.1) 或 IPv6([::1])，任一响应即视为就绪
 function Test-ViteReady {
-  foreach ($url in @("http://127.0.0.1:5183", "http://[::1]:5183")) {
+  foreach ($url in @("http://127.0.0.1:4555", "http://[::1]:4555")) {
     try {
       Invoke-WebRequest -Uri $url -UseBasicParsing -TimeoutSec 1 | Out-Null
       return $true
@@ -43,7 +43,7 @@ if (-not (Test-ViteReady)) {
   Write-Host "vite dev server 已在运行，跳过启动"
 }
 
-# 轮询等待 5183 就绪，最多约 15 秒
+# 轮询等待 4555 就绪，最多约 15 秒
 $ready = $false
 for ($i = 0; $i -lt 30; $i++) {
   if (Test-ViteReady) { $ready = $true; break }

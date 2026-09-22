@@ -5,7 +5,7 @@
   "identifier": "com.watchsync.app",
   "build": {
     "beforeDevCommand": "npm run tauri:frontend:dev",
-    "devUrl": "http://localhost:5183",
+    "devUrl": "http://localhost:4555",
     "beforeBuildCommand": "npm run build:frontend",
     "frontendDist": "../dist/renderer"
   },

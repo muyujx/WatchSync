@@ -9,6 +9,20 @@
         <span class="field-hint">房间内其他成员将看到此用户名</span>
       </label>
 
+      <!-- 主题：浅色/深色分段选择，点选即预览，随「保存」持久化；图标为主题色迷你窗格 -->
+      <div class="field theme-field">
+        <span class="field-label">主题</span>
+        <div class="theme-seg" role="radiogroup" aria-label="界面主题">
+          <button type="button" class="theme-opt" :class="{ on: themeSel === 'light' }" @click="pickTheme('light')">
+            <span class="theme-swatch theme-swatch-light" aria-hidden="true"></span>浅色
+          </button>
+          <button type="button" class="theme-opt" :class="{ on: themeSel === 'dark' }" @click="pickTheme('dark')">
+            <span class="theme-swatch theme-swatch-dark" aria-hidden="true"></span>深色
+          </button>
+        </div>
+        <span class="field-hint">选择后立即预览，点「保存」后持久生效</span>
+      </div>
+
       <!-- 双列区：左信令中继 / 右视频解码（各自独立滚动，高度对齐） -->
       <div class="settings-grid">
         <!-- 信令中继：可达性探测结果 + 自定义增删（双方需有共同可达中继才能连上） -->
@@ -72,10 +86,16 @@ import { ref, watch, computed } from 'vue'
 import { hostOf } from '../format'
 import { useRelays } from '../composables/useRelays'
 
-/** 组件属性：open 对话框显隐；nickname 当前昵称（打开时回填输入框） */
-const props = defineProps<{ open: boolean; nickname: string }>()
-/** 组件事件：close 关闭对话框；save 提交昵称（参数为裁剪后的昵称） */
-const emit = defineEmits<{ close: []; save: [name: string] }>()
+/** 组件属性：open 对话框显隐；nickname 当前昵称（打开时回填输入框）；theme 当前主题（打开时回填分段选择） */
+const props = defineProps<{ open: boolean; nickname: string; theme: 'light' | 'dark' }>()
+/**
+ * 组件事件：close 关闭对话框；save 提交昵称+主题；previewTheme 主题即时预览（仅切 DOM，不落盘）
+ */
+const emit = defineEmits<{
+  close: []
+  save: [payload: { name: string; theme: 'light' | 'dark' }]
+  previewTheme: [theme: 'light' | 'dark']
+}>()
 
 const { relayProbes, customRelays, probing, reachableCount, refreshRelays, addRelay, removeRelay } = useRelays()
 
@@ -83,12 +103,17 @@ const { relayProbes, customRelays, probing, reachableCount, refreshRelays, addRe
 const nickInput = ref('')
 /** 新中继输入框内容 */
 const newRelay = ref('')
+/** 主题分段选择的临时值（打开时回填，保存前的改动仅影响预览） */
+const themeSel = ref<'light' | 'dark'>('light')
 
-// 打开对话框时回填当前昵称
+// 打开对话框时回填当前昵称与主题
 watch(
   () => props.open,
   (v) => {
-    if (v) nickInput.value = props.nickname
+    if (v) {
+      nickInput.value = props.nickname
+      themeSel.value = props.theme
+    }
   },
 )
 
@@ -167,11 +192,18 @@ watch(
   },
 )
 
-/** 提交昵称：裁剪后上报父级 */
+/** 主题分段点选：更新临时值并通知父级即时预览（持久化在 save 时） */
+function pickTheme(t: 'light' | 'dark'): void {
+  if (themeSel.value === t) return
+  themeSel.value = t
+  emit('previewTheme', t)
+}
+
+/** 提交昵称+主题：昵称裁剪后上报父级 */
 function save(): void {
   const name = nickInput.value.trim().slice(0, 20)
   if (!name) return
-  emit('save', name)
+  emit('save', { name, theme: themeSel.value })
 }
 
 /** 提交新中继：无效地址忽略，成功后清空输入框 */
