@@ -67,6 +67,12 @@
     </button>
 
     <div class="flex-spacer"></div>
+    <button class="icon-btn history-btn" :class="{ on: historyOpen }" title="播放记录" @click="toggleHistory">
+      <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <circle cx="12" cy="12" r="9" />
+        <path d="M12 7v5l3 2" />
+      </svg>
+    </button>
     <button class="icon-btn settings-btn" title="设置" @click="openSettings">
       <svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
         <circle cx="12" cy="12" r="3" />
@@ -124,6 +130,11 @@
     @save="saveSettings"
     @preview-theme="applyTheme"
   />
+  <HistoryPanel
+    :open="historyOpen && !videoFullscreen"
+    @close="closeHistory"
+    @open="openHistoryItem"
+  />
   <SiteDialog :open="siteDialogOpen" :site="siteEditing" @close="siteDialogOpen = false" @save="saveSite" />
 </template>
 
@@ -142,6 +153,8 @@ import TabStrip, { type TabInfo, type TabRole } from './components/TabStrip.vue'
 import MembersDialog, { type MemberItem } from './components/MembersDialog.vue'
 import SettingsDialog from './components/SettingsDialog.vue'
 import SiteDialog from './components/SiteDialog.vue'
+import HistoryPanel from './components/HistoryPanel.vue'
+import type { HistoryRecord } from '../core/history'
 import { RTT_STALE_MS } from './rtt'
 
 /** 全部页签（与主进程 VideoViewController 的 tabId 对应；成员端同步页签恒在第一位） */
@@ -295,6 +308,7 @@ async function nav(action: string): Promise<void> {
  * 参数：id 目标页签 ID。
  */
 async function activateTab(id: number): Promise<void> {
+  if (historyOpen.value) await closeHistory()
   activeTabId.value = id
   await window.p2pApi.setActiveTab(id)
   const t = tabs.value.find((x) => x.id === id)
@@ -303,6 +317,7 @@ async function activateTab(id: number): Promise<void> {
 
 /** 回主页：隐藏所有页签显示站点卡片（页签保留在后台，点页签即可切回），并清空地址栏避免残留上一页签地址 */
 async function goHome(): Promise<void> {
+  if (historyOpen.value) await closeHistory()
   activeTabId.value = null
   videoUrl.value = ''
   await window.p2pApi.setActiveTab(null)
@@ -430,6 +445,10 @@ const controller = new RoomController()
 
 /** ===== 用户设置 ===== */
 const settingsOpen = ref(false)
+/** ===== 播放记录面板 ===== */
+const historyOpen = ref(false)
+/** 续播轮询代际令牌（新一次续播即作废旧轮询） */
+let resumeToken = 0
 /** 我的昵称（进入应用时从设置读取） */
 const myName = ref('')
 /** 界面主题（'light' | 'dark'；含设置里未保存的预览值） */
@@ -459,6 +478,7 @@ function applyTheme(t: Theme): void {
 
 /** 打开设置对话框（先隐藏视频画面，避免原生视图遮挡对话框；下层为主题底色） */
 async function openSettings(): Promise<void> {
+  historyOpen.value = false
   persistedTheme.value = theme.value // 取消回退基准（保存时前移）
   await window.p2pApi.setVideoVisible(false)
   settingsOpen.value = true
@@ -469,6 +489,55 @@ async function closeSettings(): Promise<void> {
   applyTheme(persistedTheme.value)
   settingsOpen.value = false
   await window.p2pApi.setVideoVisible(true)
+}
+
+/** ===== 播放记录 ===== */
+/** 打开播放记录：先隐藏视频画面（原生视图会遮挡面板），顶栏与面板保持可见 */
+async function openHistory(): Promise<void> {
+  await window.p2pApi.setVideoVisible(false)
+  historyOpen.value = true
+}
+
+/** 关闭播放记录并恢复视频画面 */
+async function closeHistory(): Promise<void> {
+  historyOpen.value = false
+  await window.p2pApi.setVideoVisible(true)
+}
+
+/** 工具栏时钟按钮：切换播放记录面板 */
+function toggleHistory(): void {
+  void (historyOpen.value ? closeHistory() : openHistory())
+}
+
+/**
+ * 点开一条播放记录：spec §5 要求落在**新开页签**（openVideo 不带 tabId；
+ * 原地导航当前页签会残留 ≤300ms 在途 tick 把旧页 duration 插回，导致续播轮询
+ * 提前下发 seek 打进未就绪的新文档而静默失败），地址栏/房内联动与常规导航一致；
+ * 有进度则轮询该页签状态，桥就绪后 seek 一次续播（不调速、失败静默、不重试）。
+ * 参数：r 被点击的记录。
+ */
+async function openHistoryItem(r: HistoryRecord): Promise<void> {
+  const token = ++resumeToken
+  historyOpen.value = false
+  await window.p2pApi.setVideoVisible(true)
+  videoUrl.value = r.url
+  // 新开页签（等价 openInTab 的主页分支：ensureTab → activateTab → afterTabNavigated）
+  const tabId = await window.p2pApi.openVideo(r.url)
+  ensureTab(tabId, r.url)
+  await activateTab(tabId)
+  await afterTabNavigated(tabId, r.url)
+  if (r.position == null) return
+  // 每 500ms 轮询，最长 30s；被新续播取代 / 切走页签即放弃；tabStatus 为 null 属正常等待；
+  // 就绪（非 null 且 duration>0）下发一次 seek 后立即结束
+  for (let i = 0; i < 60; i++) {
+    await new Promise((res) => setTimeout(res, 500))
+    if (token !== resumeToken || activeTabId.value !== tabId) return
+    const s = await window.p2pApi.tabStatus(tabId)
+    if (s && s.duration > 0) {
+      await window.p2pApi.seekTab(tabId, r.position)
+      return
+    }
+  }
 }
 
 /**
@@ -603,6 +672,7 @@ const memberList = computed<MemberItem[]>(() => {
 
 /** 打开成员面板：先隐藏视频画面，避免原生视图遮挡界面 */
 async function openMembers(): Promise<void> {
+  historyOpen.value = false
   await window.p2pApi.setVideoVisible(false)
   membersOpen.value = true
 }
