@@ -68,7 +68,7 @@
 
     <div class="flex-spacer"></div>
     <button class="icon-btn history-btn" :class="{ on: historyOpen }" title="播放记录" @click="toggleHistory">
-      <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
         <circle cx="12" cy="12" r="9" />
         <path d="M12 7v5l3 2" />
       </svg>
@@ -300,6 +300,10 @@ function win(action: string): void {
 
 /** 工具栏导航按钮（作用于激活页签） */
 async function nav(action: string): Promise<void> {
+  // 用户主动导航：作废进行中的历史续播轮询（防 seek 把旧记录进度打进原地导航后的新文档）
+  resumeToken++
+  // 导航类入口统一先关面板恢复画面（对齐 activateTab/goHome 钩子）
+  if (historyOpen.value) void closeHistory()
   await window.p2pApi.videoNav(action)
 }
 
@@ -330,6 +334,8 @@ async function goHome(): Promise<void> {
  * 参数：raw 地址栏原始输入。
  */
 async function openInTab(raw: string): Promise<void> {
+  // 用户主动导航：作废进行中的历史续播轮询（防 seek 把旧记录进度打进原地导航后的新文档）
+  resumeToken++
   raw = raw.trim()
   if (!raw) return
   const url = /^[a-z][a-z0-9+.-]*:\/\//i.test(raw) ? raw : 'https://' + raw
@@ -479,6 +485,7 @@ function applyTheme(t: Theme): void {
 /** 打开设置对话框（先隐藏视频画面，避免原生视图遮挡对话框；下层为主题底色） */
 async function openSettings(): Promise<void> {
   historyOpen.value = false
+  // 只关面板不恢复视频：紧接着本函数会 setVideoVisible(false)，调 closeHistory 反而闪烁
   persistedTheme.value = theme.value // 取消回退基准（保存时前移）
   await window.p2pApi.setVideoVisible(false)
   settingsOpen.value = true
@@ -533,6 +540,8 @@ async function openHistoryItem(r: HistoryRecord): Promise<void> {
     await new Promise((res) => setTimeout(res, 500))
     if (token !== resumeToken || activeTabId.value !== tabId) return
     const s = await window.p2pApi.tabStatus(tabId)
+    // seek 前复核：IPC 在途期间可能被新续播覆盖/切走页签
+    if (token !== resumeToken || activeTabId.value !== tabId) return
     if (s && s.duration > 0) {
       await window.p2pApi.seekTab(tabId, r.position)
       return
@@ -673,6 +682,7 @@ const memberList = computed<MemberItem[]>(() => {
 /** 打开成员面板：先隐藏视频画面，避免原生视图遮挡界面 */
 async function openMembers(): Promise<void> {
   historyOpen.value = false
+  // 只关面板不恢复视频：紧接着本函数会 setVideoVisible(false)，调 closeHistory 反而闪烁
   await window.p2pApi.setVideoVisible(false)
   membersOpen.value = true
 }
