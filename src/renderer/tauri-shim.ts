@@ -69,6 +69,16 @@ import { parseShareUrl } from '../core/shareLink'
     setSettings: (patch: Record<string, unknown>) => invoke('set_settings', { patch }),
     /** 主题联动：原生底色 + 视频页签 prefers-color-scheme 跟随指定主题 */
     setUiTheme: (theme: string) => invoke('set_ui_theme', { theme }),
+    /** 读取播放历史（watchedAt 降序） */
+    historyList: () => invoke('history_list'),
+    /** 删除单条播放历史（按 url） */
+    historyRemove: (url: string) => invoke('history_remove', { url }),
+    /** 清空播放历史 */
+    historyClear: () => invoke('history_clear'),
+    /** 查询指定页签视频状态缓存（null = 无桥/无视频；续播轮询用） */
+    tabStatus: (tabId: number) => invoke('tab_status', { tabId }),
+    /** 向指定页签下发续播 seek（秒） */
+    seekTab: (tabId: number, position: number) => invoke('seek_tab', { tabId, position }),
   }
   // 就绪标记（调试用）
   g.__p2pShimReady = true

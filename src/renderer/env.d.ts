@@ -86,6 +86,22 @@ declare global {
       }>
       /** 主题联动：原生底色 + 视频页签 prefers-color-scheme 跟随指定主题 */
       setUiTheme(theme: 'light' | 'dark'): Promise<void>
+      /** 读取播放历史（watchedAt 降序） */
+      historyList(): Promise<import('../core/history').HistoryRecord[]>
+      /** 删除单条播放历史（按 url） */
+      historyRemove(url: string): Promise<void>
+      /** 清空播放历史 */
+      historyClear(): Promise<void>
+      /** 查询指定页签视频状态缓存（null = 无桥/无视频；续播轮询用） */
+      tabStatus(tabId: number): Promise<{
+        position: number
+        paused: boolean
+        rate: number
+        duration: number
+        readyState: number
+      } | null>
+      /** 向指定页签下发续播 seek（秒） */
+      seekTab(tabId: number, position: number): Promise<void>
     }
   }
 }
