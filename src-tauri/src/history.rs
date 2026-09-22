@@ -448,6 +448,8 @@ mod tests {
             normalize_cover(" //cdn/x.jpg ").as_deref(),
             Some("https://cdn/x.jpg")
         );
+        // 单斜杠是根相对路径、无 base URL，明确丢弃（spec：其余丢弃）
+        assert_eq!(normalize_cover("/cdn/x.jpg"), None);
         assert_eq!(normalize_cover(""), None);
         assert_eq!(normalize_cover("data:image/png;base64,xx"), None);
         assert_eq!(normalize_cover("//"), None);
