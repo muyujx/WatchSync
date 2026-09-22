@@ -2,7 +2,7 @@
 /* 字号对齐全应用惯例（11-14px），强调色统一用品牌青绿 primary */
 /* top 80 = 标签条 36 + 工具栏 44 */
 .hist-mask { position: fixed; top: 80px; right: 0; bottom: 0; left: 0; z-index: 4; background: transparent; }
-.hist-panel { position: fixed; top: 80px; right: 0; bottom: 0; z-index: 5; width: min(408px, 100vw); display: flex; flex-direction: column; overflow: hidden; background: var(--ws-surface); border: 1px solid var(--ws-border); border-right: none; border-radius: 14px 0 0 14px; box-shadow: -8px 0 30px rgba(0, 0, 0, 0.22); }
+.hist-panel { position: fixed; top: 80px; right: 0; bottom: 0; z-index: 5; width: min(408px, 100vw); display: flex; flex-direction: column; overflow: hidden; background: var(--ws-surface); border: 1px solid var(--ws-border); border-right: none; border-radius: 14px 0 0 14px; }
 
 .hist-head { display: flex; align-items: center; justify-content: space-between; padding: 10px 14px; font-size: 14px; font-weight: 600; color: var(--ws-text); border-bottom: 1px solid var(--ws-divider); }
 .hist-clear { font-size: 12px; font-weight: 400; color: var(--ws-primary-dark); cursor: pointer; user-select: none; }
