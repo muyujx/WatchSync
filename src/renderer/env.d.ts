@@ -5,6 +5,19 @@
 export {}
 
 declare global {
+  /**
+   * 与 src-tauri/src/state.rs 的 BridgeStatus 字段保持同步（serde camelCase）；
+   * 两端改字段需同时改
+   */
+  interface VideoSnapshot {
+    position: number
+    paused: boolean
+    rate: number
+    duration: number
+    /** 就绪程度（0 无数据 ~ 4；<1 无 metadata，<2 正在缓冲） */
+    readyState: number
+  }
+
   interface Window {
     p2pApi: {
       /** 打开视频页：tabId 缺省新建页签（自动激活），指定则在该页签内导航；返回页签 ID */
@@ -18,16 +31,7 @@ declare global {
       /** 取走视频事件队列 */
       drainEvents(): Promise<Array<{ ev: string; position: number; paused: boolean }>>
       /** 查询视频状态（pageUrl 为视频视图实时地址，hasVideo 表示页面是否已装桥，readyState 为视频就绪程度） */
-      videoStatus(): Promise<{
-        position: number
-        paused: boolean
-        rate: number
-        duration: number
-        /** 就绪程度（0 无数据 ~ 4；<1 无 metadata，<2 正在缓冲） */
-        readyState: number
-        pageUrl: string
-        hasVideo: boolean
-      } | null>
+      videoStatus(): Promise<(VideoSnapshot & { pageUrl: string; hasVideo: boolean }) | null>
       /** 下发视频指令：action = play|pause|seek|rate */
       videoCmd(action: string, arg?: number): Promise<void>
       /** 写剪贴板 */
@@ -93,14 +97,8 @@ declare global {
       /** 清空播放历史 */
       historyClear(): Promise<void>
       /** 查询指定页签视频状态缓存（null = 无桥/无视频；续播轮询用） */
-      tabStatus(tabId: number): Promise<{
-        position: number
-        paused: boolean
-        rate: number
-        duration: number
-        readyState: number
-      } | null>
-      /** 向指定页签下发续播 seek（秒） */
+      tabStatus(tabId: number): Promise<VideoSnapshot | null>
+      /** 向指定页签下发续播 seek（秒）；页签不存在/无桥时静默忽略（需先 tabStatus 确认就绪再下发） */
       seekTab(tabId: number, position: number): Promise<void>
     }
   }

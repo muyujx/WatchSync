@@ -77,7 +77,7 @@ import { parseShareUrl } from '../core/shareLink'
     historyClear: () => invoke('history_clear'),
     /** 查询指定页签视频状态缓存（null = 无桥/无视频；续播轮询用） */
     tabStatus: (tabId: number) => invoke('tab_status', { tabId }),
-    /** 向指定页签下发续播 seek（秒） */
+    /** 向指定页签下发续播 seek（秒）；页签不存在/无桥时静默忽略（需先 tabStatus 确认就绪再下发） */
     seekTab: (tabId: number, position: number) => invoke('seek_tab', { tabId, position }),
   }
   // 就绪标记（调试用）
