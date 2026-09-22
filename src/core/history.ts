@@ -61,11 +61,12 @@ export function groupOf(ts: number, now: number = Date.now()): HistoryGroup {
 
 /**
  * 行右侧时间标签：今天/昨天显示 HH:MM，更早显示 M-D。
- * 参数：ts 记录时间（ms）。返回值：显示文本。
+ * 参数：ts 记录时间（ms）；now 当前时间（ms，测试可注入，与 groupOf 一致）。
+ * 返回值：显示文本。
  */
-export function timeLabel(ts: number): string {
+export function timeLabel(ts: number, now: number = Date.now()): string {
   const d = new Date(ts)
-  if (groupOf(ts) !== '更早') {
+  if (groupOf(ts, now) !== '更早') {
     return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
   }
   return `${d.getMonth() + 1}-${d.getDate()}`

@@ -34,12 +34,12 @@ describe('groupOf', () => {
 
 describe('timeLabel', () => {
   it('今天/昨天显示 HH:MM', () => {
-    expect(timeLabel(new Date(2026, 8, 22, 9, 5).getTime())).toBe('09:05')
-    expect(timeLabel(new Date(2026, 8, 21, 21, 4).getTime())).toBe('21:04')
+    expect(timeLabel(new Date(2026, 8, 22, 9, 5).getTime(), NOW)).toBe('09:05')
+    expect(timeLabel(new Date(2026, 8, 21, 21, 4).getTime(), NOW)).toBe('21:04')
   })
   it('更早显示 M-D', () => {
-    expect(timeLabel(new Date(2026, 8, 19, 22, 10).getTime())).toBe('9-19')
-    expect(timeLabel(new Date(2026, 0, 3).getTime())).toBe('1-3')
+    expect(timeLabel(new Date(2026, 8, 19, 22, 10).getTime(), NOW)).toBe('9-19')
+    expect(timeLabel(new Date(2026, 0, 3).getTime(), NOW)).toBe('1-3')
   })
 })
 
