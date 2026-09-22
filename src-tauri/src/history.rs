@@ -13,6 +13,12 @@ pub const MAX_RECORDS: usize = 100;
 /// 落盘节流：距上次成功写盘 ≥ 该毫秒数且有脏数据才写
 const FLUSH_INTERVAL_MS: i64 = 10_000;
 
+/// 落盘互斥闸：串行化 flush 的「快照→写盘→提交标记」临界区，
+/// 防止并发 flush 用陈旧快照覆盖新数据（丢写 / 已删记录复活）。
+/// 锁序全项目统一为 **闸 → history**，不得反向；
+/// 调用方仍**不得持有 history 锁**再调 flush。
+static FLUSH_GATE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// 单条播放记录（serde 字段名 = history.json / history_list 前端字段）
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -37,13 +43,15 @@ struct HistoryFile {
     records: Vec<HistoryRecord>,
 }
 
-/// 历史内存态（挂 AppState.history；played/last_flush 不落盘）
+/// 历史内存态（挂 AppState.history；played/removed/last_flush 不落盘）
 #[derive(Debug, Default)]
 pub struct HistoryState {
-    /// 记录列表（读取时按 watchedAt 降序返回）
-    pub records: Vec<HistoryRecord>,
+    /// 记录列表（内部存储；外部读取走 list()，按 watchedAt 降序）
+    records: Vec<HistoryRecord>,
     /// 本运行期内播放过的 url（position 写入门槛；重启清零）
     played: HashSet<String>,
+    /// 会话级墓碑：删除/清空产生的 url，本运行期内不再新建记录；不落盘、重启即忘
+    removed: HashSet<String>,
     /// 有未落盘变更
     dirty: bool,
     /// 变更代际：flush 快照后若代际又前进，不清 dirty（防丢写）
@@ -73,6 +81,10 @@ impl HistoryState {
         cover: Option<&str>,
         now: i64,
     ) -> bool {
+        // 会话级墓碑（最前，任何读写之前）：本运行期被删除/清空过的 url 不再新建/更新
+        if self.removed.contains(url) {
+            return false;
+        }
         let idx = match self.records.iter().position(|r| r.url == url) {
             Some(i) => i,
             None => {
@@ -91,14 +103,17 @@ impl HistoryState {
                 });
                 self.touch();
                 self.trim();
-                // 新记录随后立即参与 status 处理（首 tick 即在播放）
-                self.records.len() - 1
+                // 时钟回拨等极端情况下新记录可能被自身淘汰（watched_at 严格最小）：
+                // trim 后按 url 重查，查不到则不建、更不得把字段写进无关记录（防串档）
+                let Some(i) = self.records.iter().position(|r| r.url == url) else {
+                    return false;
+                };
+                i
             }
         };
 
         let mut changed = false;
         let mut frozen = false;
-        let url_owned;
         {
             let r = &mut self.records[idx];
             if r.site != site {
@@ -125,8 +140,8 @@ impl HistoryState {
                             r.watched_at = now;
                             changed = true;
                         }
-                        url_owned = url.to_string();
-                        self.played.insert(url_owned);
+                        // 字段不相交借用（records/played 分离），无需 url_owned 绕法
+                        self.played.insert(url.to_string());
                     } else if self.played.contains(url) {
                         // 暂停定格：播放过的页面写续播点；仅变化时落盘一次
                         //（暂停态 300ms 空转不重复触发写盘）
@@ -149,6 +164,8 @@ impl HistoryState {
 
     /// 按 url 删除一条；返回是否真删了。
     pub fn remove(&mut self, url: &str) -> bool {
+        // 会话级墓碑：无条件记下（即使本就不存在），防 on_tick 下一拍重建
+        self.removed.insert(url.to_string());
         let before = self.records.len();
         self.records.retain(|r| r.url != url);
         if self.records.len() == before {
@@ -163,6 +180,10 @@ impl HistoryState {
     pub fn clear(&mut self) {
         if self.records.is_empty() {
             return;
+        }
+        // 会话级墓碑：清空前给现有全部 url 记档，本运行期内不再重建
+        for r in &self.records {
+            self.removed.insert(r.url.clone());
         }
         self.records.clear();
         self.played.clear();
@@ -192,6 +213,29 @@ impl HistoryState {
             self.touch();
         }
     }
+
+    /// flush 决策（纯逻辑，无 IO，供单测）。返回 None = 不写（不脏 / 未到节流点）；
+    /// Some((快照, gen)) = 应写盘，写盘成功后必须调 finish_flush 提交。
+    fn begin_flush(&mut self, force: bool, now: i64) -> Option<(Vec<HistoryRecord>, u64)> {
+        if !self.dirty {
+            return None;
+        }
+        // 时钟回拨（now < last_flush）视为到期，避免脏数据被永久节流；
+        // now 正常前进则按 FLUSH_INTERVAL_MS 节流
+        if !force && now >= self.last_flush && now - self.last_flush < FLUSH_INTERVAL_MS {
+            return None;
+        }
+        Some((self.records.clone(), self.gen))
+    }
+
+    /// flush 提交（写盘成功后调用，纯逻辑供单测）：gen 未再前进才清 dirty（防丢写）；
+    /// 刷新节流时钟。
+    fn finish_flush(&mut self, gen: u64, now: i64) {
+        if self.gen == gen {
+            self.dirty = false;
+        }
+        self.last_flush = now;
+    }
 }
 
 /// 当前时间（ms epoch）
@@ -212,11 +256,20 @@ pub fn load(app: &tauri::AppHandle) -> HistoryState {
     let records = std::fs::read_to_string(history_path(app))
         .map(|raw| parse(&raw))
         .unwrap_or_default();
-    HistoryState {
+    hydrate(records)
+}
+
+/// 由文件记录构造内存态：超限即裁（手改超上限文件启动即归 100）、初始化节流时钟
+/// （纯逻辑，可单测）。trim 超限时 touch → dirty=true → 首个节流点把裁剪后的
+/// 文件写回（期望行为）；≤100 不标脏，避免把干净文件无谓重写。
+fn hydrate(records: Vec<HistoryRecord>) -> HistoryState {
+    let mut st = HistoryState {
         records,
         last_flush: now_ms(),
         ..HistoryState::default()
-    }
+    };
+    st.trim();
+    st
 }
 
 /// 解析 history.json 内容（损坏/空串 → 空列表；纯函数，单测用）。
@@ -253,43 +306,43 @@ pub fn on_tick(
     }
     let site = crate::state::select_adapter(url).id.clone();
     let now = now_ms();
+    // 自归一化 cover（幂等）：闭合「调用方须先归一化」契约，防 data:/根相对串入库
+    let cover = cover.and_then(normalize_cover);
     let frozen = {
         let st = crate::state::state(app);
         let mut h = st.history.lock().unwrap();
-        h.apply(title, url, &site, status, cover, now)
+        h.apply(title, url, &site, status, cover.as_deref(), now)
     };
     flush(app, frozen);
 }
 
 /// 落盘（写失败保留脏标记，下一节流点重试）。
 /// 参数：force 忽略节流立即写（暂停定格/删除/清空/关页签/退出）。
+/// 约束：**调用方不得持有 history 锁**（内部会重新加锁）；
+/// 本函数自带互斥闸（FLUSH_GATE，锁序 闸 → history）串行化并发 flush。
 pub fn flush(app: &tauri::AppHandle, force: bool) {
+    let _gate = FLUSH_GATE.lock().unwrap();
     let snapshot = {
         let st = crate::state::state(app);
-        let h = st.history.lock().unwrap();
-        if !h.dirty {
-            return;
-        }
-        if !force && now_ms() - h.last_flush < FLUSH_INTERVAL_MS {
-            return;
-        }
-        (h.records.clone(), h.gen)
+        let out = st.history.lock().unwrap().begin_flush(force, now_ms());
+        out
     };
-    let file = HistoryFile {
-        records: snapshot.0,
-    };
-    let Ok(json) = serde_json::to_string_pretty(&file) else {
+    let Some((records, gen)) = snapshot else { return };
+    let Ok(json) = serde_json::to_string_pretty(&HistoryFile { records }) else {
         return;
     };
-    if std::fs::write(history_path(app), json).is_ok() {
-        let st = crate::state::state(app);
-        let mut h = st.history.lock().unwrap();
-        // 写盘期间若又有变更（gen 前进），保留脏标记
-        if h.gen == snapshot.1 {
-            h.dirty = false;
-        }
-        h.last_flush = now_ms();
+    // 原子写：先写临时文件再替换，避免崩溃/并发留下截断的 history.json
+    let path = history_path(app);
+    let tmp = path.with_extension("json.tmp");
+    if std::fs::write(&tmp, &json).is_err() {
+        return;
     }
+    if std::fs::rename(&tmp, &path).is_err() {
+        let _ = std::fs::remove_file(&tmp);
+        return;
+    }
+    let st = crate::state::state(app);
+    st.history.lock().unwrap().finish_flush(gen, now_ms());
 }
 
 #[cfg(test)]
@@ -453,5 +506,93 @@ mod tests {
         assert_eq!(normalize_cover(""), None);
         assert_eq!(normalize_cover("data:image/png;base64,xx"), None);
         assert_eq!(normalize_cover("//"), None);
+    }
+
+    #[test]
+    fn clock_back_full_no_corruption() {
+        // F1 回归：满 100 条 watched_at=2000，新 url now=1000（严格最小）会被自身淘汰
+        let mut s = HistoryState::default();
+        for i in 0..MAX_RECORDS {
+            s.apply(
+                &format!("t{i}"),
+                &format!("https://a.com/{i}"),
+                "generic",
+                None,
+                None,
+                2000,
+            );
+        }
+        let before: Vec<String> = s.records.iter().map(|r| r.title.clone()).collect();
+        assert!(!s.apply("NEW", "https://a.com/new", "generic", None, None, 1000));
+        assert_eq!(s.records.len(), MAX_RECORDS);
+        // 无任何无关记录被串写
+        let after: Vec<String> = s.records.iter().map(|r| r.title.clone()).collect();
+        assert_eq!(before, after);
+        assert!(!s.records.iter().any(|r| r.url == "https://a.com/new"));
+    }
+
+    #[test]
+    fn tombstone_after_remove_and_clear() {
+        // F4：删除/清空 → 本运行期同 url 不再新建；新 url 不受影响
+        let mut s = HistoryState::default();
+        s.apply("A", "https://a.com/1", "generic", None, None, 1);
+        s.apply("B", "https://a.com/2", "generic", None, None, 2);
+        assert!(s.remove("https://a.com/1"));
+        assert!(!s.apply("A2", "https://a.com/1", "generic", None, None, 3));
+        assert_eq!(s.records.len(), 1);
+        s.clear();
+        assert!(!s.apply("B2", "https://a.com/2", "generic", None, None, 4));
+        assert!(s.records.is_empty());
+        // 清空后的新访问仍记录
+        //（注意 apply 返回值是「暂停定格」语义，status=None 恒为 false；是否记录看下方断言）
+        s.apply("C", "https://a.com/3", "generic", None, None, 5);
+        assert_eq!(s.records.len(), 1);
+        assert_eq!(s.records[0].url, "https://a.com/3");
+    }
+
+    #[test]
+    fn begin_finish_flush_decisions() {
+        // F3/F6：不脏→None；节流内→None；到期/force→Some；陈旧 finish 不清 dirty；时钟回拨不永久节流
+        let mut s = HistoryState::default();
+        assert!(s.begin_flush(true, 100).is_none()); // 不脏
+        s.apply("A", "https://a.com/1", "generic", None, None, 1); // touch → dirty, gen=1, last_flush=0
+        assert!(s.begin_flush(false, 500).is_none()); // 距 last_flush(0) < 10s，节流
+        let (snap, gen) = s.begin_flush(false, FLUSH_INTERVAL_MS + 1).expect("到期应可写");
+        assert_eq!(gen, 1);
+        assert_eq!(snap.len(), 1);
+        // 陈旧提交：快照后又有变更（标题变化 → gen 前进到 2）→ finish 不得清 dirty
+        s.apply("A2", "https://a.com/1", "generic", None, None, 2);
+        s.finish_flush(gen, 12345); // 携带旧 gen=1 提交
+        assert!(s.dirty);
+        // 当前 gen 提交才清 dirty，并刷新节流时钟
+        let (_, g2) = s.begin_flush(true, 20000).expect("force 可写");
+        s.finish_flush(g2, 99999);
+        assert!(!s.dirty);
+        assert_eq!(s.last_flush, 99999);
+        // F6 时钟回拨：now < last_flush(99999) → 条件假 → 允许写盘（不被永久节流）
+        s.dirty = true;
+        assert!(s.begin_flush(false, 5_000).is_some());
+    }
+
+    #[test]
+    fn hydrate_trims_over_limit() {
+        // F7：手改超上限文件启动即裁到 100；干净文件不标脏
+        let mk = |i: i64| HistoryRecord {
+            url: format!("https://a.com/{i}"),
+            title: format!("t{i}"),
+            site: "generic".into(),
+            watched_at: i,
+            position: None,
+            duration: None,
+            cover: None,
+        };
+        let over: Vec<HistoryRecord> = (0..(MAX_RECORDS as i64 + 5)).map(mk).collect();
+        let st = hydrate(over);
+        assert_eq!(st.records.len(), MAX_RECORDS);
+        assert!(!st.records.iter().any(|r| r.watched_at == 0)); // 最旧被裁
+        assert!(st.dirty); // 裁剪需在节流点写回
+        let ok = hydrate((0..10).map(mk).collect());
+        assert_eq!(ok.records.len(), 10);
+        assert!(!ok.dirty); // 未超限不无谓重写
     }
 }
