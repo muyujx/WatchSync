@@ -61,7 +61,8 @@ html.dark {
   --ws-border: #3c4043;
   --ws-divider: #2a2b2e;
   --ws-tint: #17222c;
-  /* 强调色系在深色底上换亮一档：文字用亮蓝，浅底加深 */
+  /* 强调色系在深色底上换亮一档：文字用亮色，浅底加深 */
+  --ws-primary-dark: #34d399; /* 主色文字深色下换亮一档（同 accent-dark 模式） */
   --ws-accent-dark: #8ab4f8;
   --ws-accent-soft: #1c2f40;
   --ws-accent-soft-hover: #23394d;

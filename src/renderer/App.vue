@@ -100,7 +100,7 @@
           <button class="card-btn" title="编辑站点" @click.stop="editSite(s)">✎</button>
           <button class="card-btn danger" title="删除站点" @click.stop="removeSite(s)">✕</button>
         </span>
-        <img v-if="!s.iconFailed" class="site-icon" :src="s.icon" :alt="s.name" @error="s.iconFailed = true" />
+        <img v-if="!s.iconFailed" class="site-icon" :src="s.icon" :alt="s.name" referrerpolicy="no-referrer" @error="s.iconFailed = true" />
         <span v-else class="site-icon fallback">{{ s.name[0] }}</span>
         <span class="site-name">{{ s.name }}</span>
         <span class="site-host">{{ hostOf(s.url) }}</span>

@@ -9,7 +9,7 @@
       :title="t.url"
       @click="emit('activate', t.id)"
     >
-      <img v-if="!iconFailed[t.id]" class="tab-icon" :src="t.favicon" alt="" @error="iconFailed[t.id] = true" />
+      <img v-if="!iconFailed[t.id]" class="tab-icon" :src="t.favicon" alt="" referrerpolicy="no-referrer" @error="iconFailed[t.id] = true" />
       <span v-else class="tab-icon fb">{{ letterOf(t) }}</span>
       <span class="tab-title">{{ t.title || hostOf(t.url) }}</span>
       <!-- 房主：每页签带同步按钮（当前同步页签为激活态），点按钮切换同步目标 -->
