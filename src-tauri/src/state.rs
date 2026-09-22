@@ -45,7 +45,6 @@ pub struct VideoStatusFull {
 /// 单个视频页签元数据（webview 句柄按 label 动态获取，不长期持有）
 #[derive(Debug, Clone)]
 pub struct TabEntry {
-    pub id: i64,
     /// webview label = video-{id}
     pub label: String,
     /// 当前已注入适配器 id（站点变化时强制重装）
@@ -54,8 +53,6 @@ pub struct TabEntry {
     pub guard: bool,
     /// 页面实时地址（桥 tick 上报，SPA 路由同步）
     pub page_url: String,
-    /// 页面最近标题（桥 tick 上报）
-    pub title: String,
 }
 
 /// 全局状态（tauri manage）
@@ -94,14 +91,10 @@ impl AppState {
 }
 
 /// 站点适配器（来自构建期生成的 resources/adapters.json）
+/// Rust 侧只消费 id（URL 选器）与注入脚本；JSON 里的展示字段（name/homeUrl/iconUrl）忽略
 #[derive(Debug, Clone, Deserialize)]
 pub struct Adapter {
     pub id: String,
-    pub name: String,
-    #[serde(rename = "homeUrl")]
-    pub home_url: Option<String>,
-    #[serde(rename = "iconUrl")]
-    pub icon_url: Option<String>,
     #[serde(rename = "injectScript")]
     pub inject_script: String,
 }
@@ -123,7 +116,7 @@ pub fn select_adapter(url: &str) -> &'static Adapter {
         .and_then(|u| u.host_str().map(|s| s.to_string()))
         .unwrap_or_default();
     let all = adapters();
-    // 顺序匹配：generic（无 homeUrl 语义，兜底）放最后
+    // 顺序匹配：generic 兜底（无域名匹配规则）放最后
     for a in all {
         match a.id.as_str() {
             "cycani" => {

@@ -201,12 +201,10 @@ pub fn open(app: &tauri::AppHandle, url: &str, tab_id: Option<i64>, args: &str) 
     st.tabs.lock().unwrap().insert(
         id,
         TabEntry {
-            id,
             label: label.clone(),
             adapter_id: String::new(),
             guard: false,
             page_url: url.to_string(),
-            title: String::new(),
         },
     );
     drop(st);
