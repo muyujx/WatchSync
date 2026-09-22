@@ -42,7 +42,9 @@ pub fn handle_report(
                         ready_state: s.get("readyState").and_then(|x| x.as_f64()).unwrap_or(0.0),
                     })
                 });
-                if has_status_key {
+                // close 与在途 tick 的竞态防御：页签已销毁就不再插回死条目（否则永久残留）
+                let tab_alive = st.tabs.lock().unwrap().contains_key(&tab);
+                if tab_alive && has_status_key {
                     // 每页签状态缓存（续播轮询 tabStatus 用）
                     let mut ts = st.tab_status.lock().unwrap();
                     match &status {

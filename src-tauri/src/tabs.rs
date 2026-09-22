@@ -188,6 +188,9 @@ pub fn open(app: &tauri::AppHandle, url: &str, tab_id: Option<i64>, args: &str) 
                 if let Some(wv) = app.get_webview(&label) {
                     let js = format!("location.href = {}", serde_json::to_string(url).unwrap());
                     let _ = wv.eval(&js);
+                    // 原地导航：清掉旧页状态缓存，防止新文档未就绪期间被调用方当成就绪（续播提前 seek 会静默失败）；
+                    // 残余 ≤300ms 的在途 tick 无法根除，但窗口已最小——续播方仍须新开页签（见 spec §5）
+                    st.tab_status.lock().unwrap().remove(&id);
                 }
             }
             drop(st);

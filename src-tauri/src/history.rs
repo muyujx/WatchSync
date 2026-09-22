@@ -10,7 +10,7 @@ use crate::state::BridgeStatus;
 
 /// 上限：超限淘汰 watchedAt 最旧的一条
 pub const MAX_RECORDS: usize = 100;
-/// 落盘节流：距上次成功写盘 ≥ 该毫秒数且有脏数据才写
+/// 落盘节流：距上次写盘尝试 ≥ 该毫秒数且有脏数据才写
 const FLUSH_INTERVAL_MS: i64 = 10_000;
 
 /// 落盘互斥闸：串行化 flush 的「快照→写盘→提交标记」临界区，
@@ -56,7 +56,7 @@ pub struct HistoryState {
     dirty: bool,
     /// 变更代际：flush 快照后若代际又前进，不清 dirty（防丢写）
     gen: u64,
-    /// 上次成功落盘时间（ms）
+    /// 上次落盘尝试时刻（ms）：尝试即打点，写失败也退避到下一节流点
     last_flush: i64,
 }
 
@@ -225,6 +225,9 @@ impl HistoryState {
         if !force && now >= self.last_flush && now - self.last_flush < FLUSH_INTERVAL_MS {
             return None;
         }
+        // 尝试即打点：即使后续序列化/写盘失败也按「下一节流点（10s）重试」退避，
+        // 否则持续写失败时 dirty 恒真 + 时钟不走 → 每页签每 300ms 全量序列化+写尝试（写风暴）
+        self.last_flush = now;
         Some((self.records.clone(), self.gen))
     }
 
@@ -572,6 +575,25 @@ mod tests {
         // F6 时钟回拨：now < last_flush(99999) → 条件假 → 允许写盘（不被永久节流）
         s.dirty = true;
         assert!(s.begin_flush(false, 5_000).is_some());
+    }
+
+    #[test]
+    fn flush_backoff_after_failed_attempt() {
+        // Fix A：尝试即打点——写失败（模拟为不调 finish_flush）后 10s 内不再重试，
+        // 防止持续失败 → 每 tick 全量序列化+写的写风暴；dirty 保留到下次成功提交
+        let mut s = HistoryState::default();
+        s.apply("A", "https://a.com/1", "generic", None, None, 1);
+        let (snap, _gen) = s.begin_flush(true, 5000).expect("force 可写");
+        assert_eq!(snap.len(), 1);
+        assert_eq!(s.last_flush, 5000); // 尝试时刻已刷新
+        assert!(s.dirty); // 未 finish → 仍脏
+        assert!(s.begin_flush(false, 5001).is_none()); // 1s 后：节流，不重试
+        assert!(s.begin_flush(false, 14_999).is_none()); // 距打点 9.999s：仍节流
+        let (snap2, _g2) = s
+            .begin_flush(false, 5000 + FLUSH_INTERVAL_MS)
+            .expect("到期重试");
+        assert_eq!(snap2.len(), 1); // 到期：重试且快照仍在
+        assert!(s.dirty); // 重试未提交仍脏
     }
 
     #[test]
