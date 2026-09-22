@@ -37,4 +37,7 @@ cache/
 # brainstorm visual companion session
 .superpowers/
 
+# superpowers 规划/设计文档（本地工作稿，不入库）
+docs/superpowers/
+
 account.md
