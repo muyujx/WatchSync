@@ -1,0 +1,55 @@
+/* ===== 播放记录面板（原型 v4：408px 贴右、贯穿到底、左圆角 14）===== */
+/* top 80 = 标签条 36 + 工具栏 44 */
+.hist-mask { position: fixed; top: 80px; right: 0; bottom: 0; left: 0; z-index: 4; background: transparent; }
+.hist-panel { position: fixed; top: 80px; right: 0; bottom: 0; z-index: 5; width: 408px; display: flex; flex-direction: column; overflow: hidden; background: var(--ws-surface); border: 1px solid var(--ws-border); border-right: none; border-radius: 14px 0 0 14px; box-shadow: -8px 0 30px rgba(0, 0, 0, 0.22); }
+
+.hist-head { display: flex; align-items: center; justify-content: space-between; padding: 8px 12px; font-size: 10px; font-weight: 600; color: var(--ws-text); border-bottom: 1px solid var(--ws-divider); }
+.hist-clear { font-weight: 400; color: var(--ws-accent-dark); cursor: pointer; user-select: none; }
+.hist-clear.confirm { color: var(--ws-danger-fg); font-weight: 600; }
+
+/* 站点过滤 chips */
+.hist-chips { display: flex; flex-wrap: wrap; gap: 6px; padding: 7px 12px; border-bottom: 1px solid var(--ws-divider); }
+.hist-chip { display: inline-flex; align-items: center; gap: 4px; padding: 3px 9px; border-radius: 11px; background: var(--ws-fill); color: var(--ws-text-2); font-size: 9px; cursor: pointer; user-select: none; }
+.hist-chip:hover { background: var(--ws-fill-strong); }
+.hist-chip.on { background: var(--ws-accent); color: #fff; }
+.hist-chip.on:hover { background: var(--ws-accent-dark); }
+.hist-chip em { font-style: normal; font-size: 8px; opacity: 0.75; }
+.hist-dot { width: 8px; height: 8px; flex: none; border-radius: 50%; }
+
+/* 分组列表 */
+.hist-list { flex: 1; min-height: 0; overflow-y: auto; }
+.hist-group { position: sticky; top: 0; padding: 7px 12px 3px; font-size: 9px; font-weight: 600; color: var(--ws-accent-dark); background: var(--ws-surface); }
+.hist-row { display: flex; align-items: center; gap: 8px; padding: 6px 12px; cursor: pointer; }
+.hist-row:hover { background: var(--ws-fill); }
+
+/* 封面 56×32：cover → favicon → 字母块三级降级 */
+.hist-thumb { position: relative; width: 56px; height: 32px; flex: none; overflow: hidden; border-radius: 6px; display: flex; align-items: center; justify-content: center; }
+.hist-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.hist-fallback { width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; color: #fff; font-size: 15px; font-weight: 600; }
+.hist-play { position: absolute; width: 16px; height: 16px; border-radius: 50%; background: rgba(0, 0, 0, 0.55); color: #fff; font-size: 7px; display: flex; align-items: center; justify-content: center; pointer-events: none; }
+.hist-du { position: absolute; top: 2px; right: 2px; padding: 0 3px; border-radius: 2px; background: rgba(0, 0, 0, 0.7); color: #fff; font-size: 7px; font-variant-numeric: tabular-nums; }
+.hist-thumb-bar { position: absolute; right: 0; bottom: 0; left: 0; height: 3px; background: rgba(255, 255, 255, 0.32); }
+.hist-thumb-bar i { display: block; height: 100%; background: var(--ws-primary); transition: width 0.4s linear; }
+
+/* 行文字与进度 */
+.hist-main { flex: 1; min-width: 0; }
+.hist-title { display: block; overflow: hidden; font-size: 9px; font-weight: 400; color: var(--ws-text); white-space: nowrap; text-overflow: ellipsis; }
+.hist-meta { display: block; color: var(--ws-text-3); font-size: 8px; }
+.hist-badge-rec { display: inline-block; margin-left: 3px; padding: 0 5px; border: 1px solid var(--ws-warn-fg); border-radius: 3px; color: var(--ws-warn-fg); background: var(--ws-warn-bg); font-size: 7.5px; font-style: normal; }
+.hist-pr { display: block; height: 3px; margin-top: 3px; overflow: hidden; border-radius: 2px; background: var(--ws-fill-strong); }
+.hist-pr i { display: block; height: 100%; background: var(--ws-primary); transition: width 0.4s linear; }
+
+/* 行右侧：时间 + 悬停删除 */
+.hist-side { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; flex: none; }
+.hist-time { color: var(--ws-text-3); font-size: 8px; font-variant-numeric: tabular-nums; }
+.hist-del { padding: 0 2px; font-size: 10px; color: var(--ws-text-2); opacity: 0; cursor: pointer; }
+.hist-row:hover .hist-del { opacity: 1; }
+.hist-del:hover { color: var(--ws-danger-fg); }
+
+.hist-empty { padding: 40px 0; color: var(--ws-icon); font-size: 10px; text-align: center; }
+.hist-foot { display: flex; align-items: center; justify-content: space-between; padding: 7px 12px; background: var(--ws-surface); border-top: 1px solid var(--ws-divider); font-size: 9px; color: var(--ws-text-3); }
+
+/* 工具栏时钟按钮：面板打开时天蓝高亮 + 圆环（原型态） */
+.history-btn { position: relative; color: var(--ws-accent-dark); }
+.history-btn.on { background: var(--ws-accent-soft); }
+.history-btn.on::after { content: ''; position: absolute; inset: -1px; border: 2px solid var(--ws-accent); border-radius: 50%; }
