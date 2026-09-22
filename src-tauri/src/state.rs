@@ -17,6 +17,7 @@ pub struct VideoEvent {
 }
 
 /// 桥上报的视频状态（页面内 video 元素快照）
+/// 字段变更需与 `src/renderer/env.d.ts` 的 `VideoSnapshot` 同步（serde camelCase，readyState 为 rename）
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BridgeStatus {
     pub position: f64,
