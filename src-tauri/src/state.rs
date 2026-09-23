@@ -72,6 +72,8 @@ pub struct AppState {
     pub last_status: Mutex<Option<BridgeStatus>>,
     /// 激活页签的 HTML 全屏状态
     pub html_fullscreen: Mutex<bool>,
+    /// 进入 OS 全屏前窗口是否最大化（退出时恢复，见 tabs::apply_window_fullscreen）
+    pub was_maximized_before_fs: Mutex<bool>,
     /// toast 显示序号（防旧定时器隐藏新提示）
     pub toast_seq: AtomicU64,
     /// 播放历史内存态（见 history.rs；启动时由 main.rs setup 调 history::load 填充）
@@ -90,6 +92,7 @@ impl AppState {
             events: Mutex::new(Vec::new()),
             last_status: Mutex::new(None),
             html_fullscreen: Mutex::new(false),
+            was_maximized_before_fs: Mutex::new(false),
             toast_seq: AtomicU64::new(0),
             history: Mutex::new(crate::history::HistoryState::default()),
             tab_status: Mutex::new(HashMap::new()),

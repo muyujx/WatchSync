@@ -122,14 +122,65 @@ fn build_inject_script(tab_id: i64, adapter_id: &str, inject_script: &str, guard
 }
 
 /// 激活页签的布局（逻辑坐标）：HTML 全屏铺满整窗，否则顶部预留 UI 区
+/// 参数：app 句柄。
+/// 返回值：(位置, 尺寸)，均为逻辑坐标；全屏时 top=0 且高度为整窗高。
 fn active_bounds(app: &tauri::AppHandle) -> (LogicalPosition<f64>, LogicalSize<f64>) {
     let fullscreen = state(app).html_fullscreen.lock().unwrap().clone();
     let win = main_window(app);
     let scale = win.scale_factor().unwrap_or(1.0);
     let sz = win.inner_size().unwrap_or_default();
-    let (w, h) = (sz.width as f64 / scale, sz.height as f64 / scale);
+    let (mut w, mut h) = (sz.width as f64 / scale, sz.height as f64 / scale);
+    // 全屏时与显示器逻辑尺寸取较大：最大化→全屏过渡中 inner_size 可能仍是工作区旧值
+    if fullscreen {
+        if let Ok(Some(mon)) = win.current_monitor() {
+            let ms = mon.size();
+            w = w.max(ms.width as f64 / scale);
+            h = h.max(ms.height as f64 / scale);
+        }
+    }
     let top = if fullscreen { 0.0 } else { CHROME_TOP };
     (LogicalPosition::new(0.0, top), LogicalSize::new(w, h - top))
+}
+
+/// 将主窗口切入/切出 OS 级全屏，并强制铺满当前显示器。
+/// 参数：app 句柄；fs true=进入全屏，false=退出全屏（退出时恢复进入前的最大化状态）。
+/// 返回值：无。
+pub fn apply_window_fullscreen(app: &tauri::AppHandle, fs: bool) {
+    let win = main_window(app);
+    let st = state(app);
+    if fs {
+        // 记录进入前最大化状态；Windows 上 maximize 与 set_fullscreen 争抢尺寸，
+        // 须先还原再全屏，否则 inner_size 停在工作区、底部露出约任务栏高度空白
+        let was_max = win.is_maximized().unwrap_or(false);
+        *st.was_maximized_before_fs.lock().unwrap() = was_max;
+        if was_max {
+            let _ = win.unmaximize();
+        }
+        let _ = win.set_fullscreen(true);
+        // set_fullscreen 异步生效：立即按显示器物理边界对齐，避免依赖随后的 Resized
+        if let Ok(Some(mon)) = win.current_monitor() {
+            let _ = win.set_position(*mon.position());
+            let _ = win.set_size(*mon.size());
+        }
+    } else {
+        let _ = win.set_fullscreen(false);
+        // 退出后恢复进入前的最大化（unmaximize 过则系统不会自动还原）
+        if *st.was_maximized_before_fs.lock().unwrap() {
+            *st.was_maximized_before_fs.lock().unwrap() = false;
+            let _ = win.maximize();
+        }
+    }
+}
+
+/// 延时重排激活页签（兜底）：set_fullscreen/set_size 异步生效，立即读尺寸可能是旧值。
+/// 参数：app 句柄。
+/// 返回值：无。
+pub fn schedule_resize(app: &tauri::AppHandle) {
+    let handle = app.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(80));
+        resize_active(&handle);
+    });
 }
 
 /// 设置指定页签 webview 的可见性（隐藏后 JS/媒体照常运行，与 Electron setVisible 语义一致）
@@ -237,7 +288,8 @@ pub fn set_active(app: &tauri::AppHandle, tab_id: Option<i64>) {
     // 状态、OS 全屏窗口、UI 顶栏三者必须同步恢复，否则窗口仍覆盖任务栏而顶栏已显示
     if *st.html_fullscreen.lock().unwrap() {
         *st.html_fullscreen.lock().unwrap() = false;
-        let _ = main_window(app).set_fullscreen(false);
+        apply_window_fullscreen(app, false);
+        schedule_resize(app);
         let _ = app.emit_to("ui", "video-fullscreen", false);
     }
     let prev = st.active_id.lock().unwrap().clone();
@@ -323,7 +375,8 @@ pub fn close(app: &tauri::AppHandle, tab_id: i64) {
             // 关闭的是激活页签且处于 HTML 全屏：同步退出 OS 全屏（状态/窗口/UI 三者一致）
             if *st.html_fullscreen.lock().unwrap() {
                 *st.html_fullscreen.lock().unwrap() = false;
-                let _ = main_window(app).set_fullscreen(false);
+                apply_window_fullscreen(app, false);
+                schedule_resize(app);
                 let _ = app.emit_to("ui", "video-fullscreen", false);
             }
         }

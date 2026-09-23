@@ -31,6 +31,9 @@ Thumbs.db
 *.tmp
 cache/
 
+# git worktree 本地目录（并列检出，不入库）
+worktree/
+
 # local test credentials (not committed)
 *.local.json
 

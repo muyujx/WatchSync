@@ -103,11 +103,11 @@ pub fn handle_report(
                     if *cur != fs {
                         *cur = fs;
                         drop(cur);
-                        // 主窗口进入/退出 OS 级全屏：仅隐藏顶栏不够（任务栏仍占底部一条），
-                        // 必须覆盖任务栏才算"全屏"；退出时 Windows 自动恢复原窗口状态（最大化/还原）
-                        let _ = crate::tabs::main_window(app).set_fullscreen(fs);
-                        // 重排视频页签 bounds（窗口尺寸已变；Resized 事件另有兜底）
+                        // OS 级全屏：铺满显示器（盖住任务栏）；最大化场景须先还原再全屏
+                        crate::tabs::apply_window_fullscreen(app, fs);
+                        // 立刻排一次 + 延时兜底（set_fullscreen 异步，最大化→全屏时尺寸增量小）
                         crate::tabs::resize_active(app);
+                        crate::tabs::schedule_resize(app);
                         let _ = app.emit_to("ui", "video-fullscreen", fs);
                     }
                 }
