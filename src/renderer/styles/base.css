@@ -98,6 +98,8 @@ body { font-family: 'Segoe UI', 'Microsoft YaHei', system-ui, sans-serif; backgr
 .m-btn.tonal { background: var(--ws-accent-soft); color: var(--ws-accent-dark); }
 .m-btn.tonal:hover:not(:disabled) { background: var(--ws-accent-soft-hover); }
 .m-btn:not(.filled):not(.tonal):not(.danger-fill) { background: var(--ws-fill); color: var(--ws-text); }
+/* 方式类按钮的选中态（如顶部「直接推流 / 同步进度」） */
+.m-btn.on:not(.filled):not(.tonal) { background: var(--ws-accent-soft); color: var(--ws-accent-dark); }
 
 /* 按钮内等待指示：旋转圆环（filled 用白环，tonal/默认用品牌天蓝环） */
 .spinner { width: 14px; height: 14px; flex: none; border: 2px solid rgba(255, 255, 255, 0.45); border-top-color: #fff; border-radius: 50%; animation: ws-spin 0.7s linear infinite; }
@@ -109,3 +111,4 @@ body { font-family: 'Segoe UI', 'Microsoft YaHei', system-ui, sans-serif; backgr
 .chip.danger { background: var(--ws-danger-bg); color: var(--ws-danger-fg); }
 
 .flex-spacer { flex: 1; }
+

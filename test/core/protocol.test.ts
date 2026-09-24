@@ -7,6 +7,7 @@ describe('protocol encode/decode', () => {
       { t: 'hello' },
       { t: 'state', url: 'https://a.com', position: 12.5, playing: true, at: 1000 },
       { t: 'state', url: 'https://a.com', position: 12.5, playing: true, at: 1000, ready: false },
+      { t: 'state', url: 'file:///x.mp4', position: 0, playing: false, at: 1, mode: 'file', fileId: 'f1' },
       { t: 'play', position: 1, at: 2000 },
       { t: 'pause', position: 3 },
       { t: 'seek', position: 9, playing: false, at: 3000 },
@@ -18,6 +19,15 @@ describe('protocol encode/decode', () => {
       { t: 'transfer', to: 'peer-1' },
       { t: 'hostChange', host: 'peer-1' },
       { t: 'syncTab', url: 'https://a.com/v2' },
+      { t: 'syncTab', url: 'file:///a.mp4', mode: 'file', fileId: 'f2', name: 'a.mp4' },
+      { t: 'syncEnd' },
+      { t: 'fileOffer', fileId: 'f1', name: 'a.mp4', size: 100, mime: 'video/mp4' },
+      { t: 'fileOffer', fileId: 'f2', name: 'b.mp4', size: 200, mime: 'video/mp4', asSource: true },
+      { t: 'fileDone', fileId: 'f1' },
+      { t: 'fileNeed', fileId: 'f1' },
+      { t: 'fileNeed', fileId: 'f1', ranges: [[0, 65536], [131072, 262144]] },
+      { t: 'mready', ready: true },
+      { t: 'mready', ready: false },
     ]
     for (const m of msgs) expect(decodeMsg(encodeMsg(m))).toEqual(m)
   })
@@ -38,6 +48,8 @@ describe('protocol encode/decode', () => {
     expect(decodeMsg(JSON.stringify({ t: 'syncTab', url: 1 }))).toBeNull() // url 非字符串
     expect(decodeMsg(JSON.stringify({ t: 'state', url: 'u', position: 1, playing: true, at: 1, ready: 'yes' }))).toBeNull() // ready 非布尔
     expect(decodeMsg(JSON.stringify({ t: 'seek', position: 1, playing: true, at: 1, ready: 'no' }))).toBeNull() // seek.ready 非布尔
+    expect(decodeMsg(JSON.stringify({ t: 'mready' }))).toBeNull() // 缺 ready
+    expect(decodeMsg(JSON.stringify({ t: 'mready', ready: 'yes' }))).toBeNull() // ready 非布尔
   })
   it('旧版本 state/seek 消息（无 ready 字段）仍可解码，向后兼容', () => {
     const legacyState = JSON.stringify({ t: 'state', url: 'https://a.com', position: 1, playing: true, at: 1 })

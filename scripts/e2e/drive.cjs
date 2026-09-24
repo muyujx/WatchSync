@@ -72,9 +72,15 @@ async function connect(wsUrl) {
  *  排除 toast 通知页与 WebContentsView 打开的第三方视频页（否则 eval 落到错误页面上） */
 async function attachMainPage(port) {
   const targets = await waitForCdp(port)
-  const page = targets.find(
-    (t) => t.type === 'page' && !t.url.includes('toast.html') && (t.url.includes('localhost:5') || t.url.startsWith('file:'))
-  )
+  const page =
+    targets.find((t) => t.type === 'page' && !t.url.includes('toast.html') && t.url.includes('localhost:4555')) ||
+    targets.find(
+      (t) =>
+        t.type === 'page' &&
+        !t.url.includes('toast.html') &&
+        t.url.startsWith('file:') &&
+        !/\.(mp4|webm|mkv|avi|mov|m4v|flv|ogg|ogv)(\?|#|$)/i.test(t.url),
+    )
   if (!page) throw new Error('main page target not found: ' + JSON.stringify(targets.map((t) => t.url)))
   return connect(page.webSocketDebuggerUrl)
 }
@@ -313,7 +319,7 @@ async function main() {
     // 用法：perf <port>
     const port = Number(process.argv[3])
     const targets = await listTargets(port)
-    const v = targets.find((t) => t.type === 'page' && !t.url.startsWith('devtools') && !t.url.includes('localhost:5'))
+    const v = targets.find((t) => t.type === 'page' && !t.url.startsWith('devtools') && !t.url.includes('localhost:4555'))
     if (!v) throw new Error('no video target on ' + port + ': ' + JSON.stringify(targets.map((t) => t.url)))
     const c = await connect(v.webSocketDebuggerUrl)
     const r = await c.eval(`new Promise(async (resolve) => {

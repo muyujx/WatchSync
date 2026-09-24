@@ -4,8 +4,12 @@
  */
 import { computeTargetPosition, decideCorrection, decidePlayback, isConnectionLost, type StateSnapshot } from '../core/syncEngine'
 import { buildShareUrl, generateRoomId } from '../core/shareLink'
-import { createRoom, openRealRoom, type RoomHandle } from '../core/room'
-import type { SyncMsg } from '../core/protocol'
+import { createRoom, openRealRoom, type FileChunkMeta, type RoomHandle } from '../core/room'
+import type { ShareMode, SyncMsg } from '../core/protocol'
+import { MediaStreamReceiver } from './mediaStream'
+import { probeRemoteMedia, readRemoteChunk, streamRemoteRange } from './remoteMedia'
+import { RELAY_PREFETCH_BYTES, isLoopbackMediaUrl, splitRangeByReady, unreadyRanges } from '../core/mediaSource'
+import { newFileId, sendFileChunks, FILE_CHUNK_SIZE } from '../core/fileShare'
 import { p2pLog } from '../core/log'
 import { RttProbe } from './rtt'
 
@@ -35,6 +39,28 @@ const SEEK_NOT_READY_CONFIRMATIONS = 1
 
 /** 房主 seek 后多少 ms 内的未就绪心跳用更快确认（覆盖 state 心跳间隔） */
 const HOST_SEEK_FAST_WINDOW_MS = 6000
+
+/** 房主播放停滞自愈阈值（ms）：位置无进展且未就绪持续该时长 → 原地重 seek 重建媒体栈请求 */
+const HOST_STALL_RESEEK_MS = 8000
+
+/** 房主等待成员预加载的超时（ms）：超时后不再等，直接继续（成员端自愈路径兜底） */
+const MEMBER_WAIT_TIMEOUT_MS = 30000
+
+/** 成员就绪上报保鲜窗（ms）：超过该时长未刷新的上报视为过期（按未就绪处理） */
+const MEMBER_READY_FRESH_MS = 8000
+
+/** 成员就绪态周期重报间隔（ms）：无变化也重发，维持房主侧新鲜度 */
+const MEMBER_REPORT_INTERVAL_MS = 5000
+
+/** 房主保持暂停的自身动作窗口（ms）：窗口内的 pause/play 事件是保持逻辑自己发起的，不算用户手动操作 */
+const SELF_ACTION_WINDOW_MS = 1500
+
+/**
+ * 房主自动动作回声静默窗（ms）：超时续播、看门狗 rekick 等自动 play/seek 产生的事件
+ * 回声在窗口内不触发「等待成员预加载」/取消判定——否则超时续播→play 事件→重新 hold→
+ * 再超时会与停滞看门狗形成无限震荡，永远到不了真正的用户意图分支
+ */
+const AUTO_ACTION_QUIET_MS = 3000
 
 /** 房间控制器：UI 与 P2P/视频层之间的唯一中介 */
 export class RoomController {
@@ -82,6 +108,10 @@ export class RoomController {
   syncTabId: number | null = null
   /** 成员端收到房主切换同步页签回调（参数：新同步页签 url；UI 负责复用/新建/置顶/跳转并回填 syncTabId） */
   onSyncTab: ((url: string) => void | Promise<void>) | null = null
+  /** 房主端：直接推流需要打开的「本机回放」页签（参数：本机回环媒体 url；UI 新建/复用并跳转，不改同步目标） */
+  onHostPlaybackTab: ((url: string) => void | Promise<void>) | null = null
+  /** 同步结束回调（房主离开/心跳超时）：UI 清空 syncTabId，同步页签恢复可关闭 */
+  onSyncUnlocked: (() => void) | null = null
   private room: RoomHandle | null = null
   private lastSnapshot: StateSnapshot | null = null
   /** 成员端最近一次收到房主 state 心跳的时间（0=尚未建立同步，不做断线判定） */
@@ -97,6 +127,23 @@ export class RoomController {
   private eventTimer: number | null = null
   /** 事件采样防重入标记（drainEvents 为异步 IPC，避免并发堆积） */
   private draining = false
+  /** 房主停滞看门狗定时器（1s 观测播放位置进展） */
+  private stallTimer: number | null = null
+  /** 看门狗观测：最近一次播放位置、该位置首次出现的时间、同段停滞内已重试次数 */
+  private stallPos = -1
+  private stallSince = 0
+  private stallKicks = 0
+  /** 房主：成员缓冲就绪上报（peerId → { ready, at }），驱动「等待成员预加载」 */
+  private peerReady = new Map<string, { ready: boolean; at: number }>()
+  /** 房主：是否正为成员预加载保持暂停 */
+  private holdingForMembers = false
+  private holdTimer: number | null = null
+  private holdStartedAt = 0
+  /** 房主：最近一次自动动作（超时续播/看门狗 rekick）时刻，其事件回声不触发保持逻辑 */
+  private autoActionAt = 0
+  /** 成员：最近一次上报的就绪态与时间（变化即报 + 周期保鲜） */
+  private lastReadyReported: boolean | null = null
+  private lastReadySentAt = 0
   /** 加入看门狗定时器 */
   private joinTimer: number | null = null
   /** 成员端桥就绪标记（视频元素已创建并注入；换页后重置） */
@@ -113,6 +160,33 @@ export class RoomController {
   private lastHostSeekAt = 0
   /** 成员端暂停同步标记：true 时不采纳房主指令、不校准本地视频（本地可自由操作） */
   private syncPaused = false
+  /** 媒体共享模式（url=各端拉网页/直链；file=成员用本地副本播放） */
+  shareMode: ShareMode = 'url'
+  /** 当前共享媒体 ID（仅 file 模式） */
+  shareFileId = ''
+  /** 当前共享展示名 */
+  shareName = ''
+  /** url 模式下成员应打开的地址（直链共享时固定为该地址） */
+  private shareUrl = ''
+  /** url 模式是否走「原画直链」（true=成员不跟随房主页面跳转） */
+  private directShare = false
+  /** 成员端：渐进媒体接收（边收边播；独立模块 src/renderer/mediaStream.ts） */
+  private media = new MediaStreamReceiver({
+    onNeed: (fileId, ranges) => {
+      // 房主（远程中继源）：自己拉字节，同时喂本机播放与全体成员 —— 只向源站取一份
+      if (this.hostFiles.has(fileId)) void this.relayFetch(fileId, ranges)
+      else this.room?.broadcast({ t: 'fileNeed', fileId, ranges })
+    },
+    onProgress: () => this.onShareChanged?.(),
+    log: (...args) => p2pLog(...args),
+  })
+  /** 房主：fileId → 本地源路径、远程源、大小与 MIME */
+  private hostFiles = new Map<string, { path?: string; remote?: string; size: number; mime?: string }>()
+  /** 房主：最近一次直接推流的 fileId / 展示名（回选推流页签时重新广播用） */
+  private relayFileId = ''
+  private relayName = ''
+  /** 共享进度变化回调（UI 刷新） */
+  onShareChanged: (() => void) | null = null
 
   /**
    * 成员端是否处于暂停同步（供 UI 渲染黄点/按钮态）。
@@ -125,6 +199,7 @@ export class RoomController {
   /**
    * 成员端暂停同步：解除跟随守卫，停止采纳房主 play/pause/seek/state。
    * 说明：不主动改本地播放状态；房主转让/断线/退出时会重置本标记（见相应路径）。
+   * 暂停期间同步页签解锁为可关闭（本地可自由控制）。
    * 返回值：无。
    */
   pauseSync(): void {
@@ -242,11 +317,37 @@ export class RoomController {
       },
     })
     this.room = createRoom(raw, (msg, peerId) => this.handleMsg(msg, peerId))
+    // 文件分块：成员落盘；房主侧理论上不收
+    this.room.onBinary((data, meta) => void this.onFileChunk(data, meta))
     this.room.onPeerJoin((id) => {
       this.peers.add(id)
       p2pLog('peerJoin', id)
       // 新成员加入：向其自我介绍（对方也会介绍自己）
       this.announceProfile()
+      // 房主：已有待分发/分发中的文件时对新成员定向补要约+补发（中途加入不丢片；与观看模式无关）
+      if (this.role === 'host' && this.shareFileId) {
+        const fid = this.shareFileId
+        const meta = this.hostFiles.get(fid)
+        if (meta) {
+          const streamMode = this.shareMode === 'file'
+          this.room?.sendTo(id, {
+            t: 'fileOffer',
+            fileId: fid,
+            name: this.shareName || 'video',
+            size: meta.size,
+            mime: 'video/mp4',
+            asSource: streamMode,
+          })
+          // 流式模式：新成员自行按缺口拉取；副本模式才整份补发
+          if (!streamMode) void this.sendFileTo(fid, id).catch((e) => p2pLog('resend file failed', e))
+        }
+      }
+      // 直链共享（url 模式）展示名不再随心跳重复携带：新成员加入时定向补发一次同步页签信息
+      if (this.role === 'host' && this.directShare && this.shareUrl) {
+        this.room?.sendTo(id, { t: 'syncTab', url: this.shareUrl, mode: 'url', name: this.shareName || undefined })
+      }
+      // 新成员加入且正在推流：等它把当前进度预加载到位再继续同步
+      if (this.role === 'host' && this.shareFileId) void this.maybeHoldForMembers('peer join')
       this.onPeersChanged?.()
     })
     this.room.onPeerLeave((id) => {
@@ -255,6 +356,7 @@ export class RoomController {
       p2pLog('peerLeave', id, name)
       this.peers.delete(id)
       this.peerNames.delete(id)
+      this.peerReady.delete(id)
       this.rtt.removePeer(id)
       // 离开的是房主：清除房主标记，并交还本地控制权（否则旧快照+守卫会让人无法暂停）
       if (this.hostPeerId === id) {
@@ -278,7 +380,15 @@ export class RoomController {
    * 参数：url 新同步页签当前地址，成员据此复用/新建页签并跳转。
    */
   broadcastSyncTab(url: string): void {
-    this.room?.broadcast({ t: 'syncTab', url })
+    // 本地文件路径对成员不可见（P2P 对端没有同一文件），广播 URL 无意义：
+    // 成员观看源由 fileOffer（无损文件流）指定
+    if (url.startsWith('file://')) return
+    // 页面地址共享：成员跟随房主页面跳转（与直链/推流共享互斥）——显式切回 url 模式，
+    // 否则从推流切回网页页签时成员会按旧的 file 模式去开本机回环地址
+    this.shareMode = 'url'
+    this.directShare = false
+    this.shareUrl = url
+    this.room?.broadcast({ t: 'syncTab', url, mode: 'url' })
   }
 
   /**
@@ -337,6 +447,10 @@ export class RoomController {
     this.stopPolling()
     this.role = 'follower'
     this.hostPeerId = newHostPeerId
+    // 房主侧状态作废：清空成员就绪表，重置本端上报基准（作为成员重新上报）
+    this.peerReady.clear()
+    this.lastReadyReported = null
+    this.lastReadySentAt = 0
     // 清空同步基准并重置断线状态，等待新房主心跳重建
     this.lastSnapshot = null
     this.lastStateAt = 0
@@ -419,7 +533,74 @@ export class RoomController {
     }
     // 房主切换同步页签（全员广播）：仅成员消费，由 UI 复用/新建页签并跳转
     if (msg.t === 'syncTab') {
-      if (this.role === 'follower') void this.onSyncTab?.(msg.url)
+      if (this.role === 'follower') {
+        this.shareMode = msg.mode ?? 'url'
+        this.shareFileId = msg.fileId ?? ''
+        this.shareName = msg.name ?? ''
+        this.onShareChanged?.()
+        // file 模式只认本地副本（避免跳到房主磁盘路径）；url 模式打开房主给的地址
+        let navUrl = msg.url
+        if (this.shareMode === 'file') {
+          const localUrl = this.shareFileId ? this.media.urlFor(this.shareFileId) : undefined
+          if (!localUrl) {
+            if (this.shareFileId) this.room?.broadcast({ t: 'fileNeed', fileId: this.shareFileId })
+            return
+          }
+          navUrl = localUrl
+        }
+        void this.onSyncTab?.(navUrl)
+      }
+      return
+    }
+    // 房主结束共享：成员解锁同步页签（可关闭），本地已落盘副本可继续看
+    if (msg.t === 'syncEnd') {
+      if (this.role === 'follower') {
+        this.shareMode = 'url'
+        this.shareFileId = ''
+        this.shareName = ''
+        this.onShareChanged?.()
+        this.unlockSyncTab('syncEnd')
+      }
+      return
+    }
+    // 文件要约：成员登记并准备临时文件；asSource 表示以本地副本为观看源（边收边播）
+    if (msg.t === 'fileOffer') {
+      if (this.role !== 'follower') return
+      if (msg.asSource) {
+        this.shareMode = 'file'
+        this.shareName = msg.name
+        this.shareFileId = msg.fileId
+        this.onShareChanged?.()
+      }
+      void this.media.attach(msg.fileId, msg.name, msg.size, { mime: msg.mime }).then((url) => {
+        if (!msg.asSource || this.role !== 'follower' || !url) return
+        // 渐进源无需等传完：未就绪区间由本机媒体服务阻塞等待，随收随播
+        void this.onSyncTab?.(url)
+      })
+      return
+    }
+    // 文件传完：完成标志（渐进模式下源早已可播，这里仅补齐导航与进度）
+    if (msg.t === 'fileDone') {
+      if (this.role !== 'follower') return
+      const url = this.media.urlFor(msg.fileId)
+      if (!url) return
+      this.shareFileId = msg.fileId
+      if (this.shareMode === 'file') {
+        const changed = this.videoUrl !== url
+        this.videoUrl = url
+        if (changed) void this.onSyncTab?.(url)
+      }
+      this.onShareChanged?.()
+      return
+    }
+    // 成员要文件：流式模式按缺口定向补发；无缺口信息时整份补发
+    if (msg.t === 'fileNeed') {
+      if (this.role !== 'host') return
+      const info = this.hostFiles.get(msg.fileId)
+      if (msg.ranges?.length) void this.sendFileRanges(msg.fileId, peerId, msg.ranges)
+      // 远程中继源整份补发也走按区间的就绪优先路径（避免未落盘区间把稀疏零发出去）
+      else if (info?.remote && info.path) void this.sendFileRanges(msg.fileId, peerId, [[0, info.size]])
+      else void this.sendFileTo(msg.fileId, peerId)
       return
     }
     // 房主解散指令：成员端先交还控制权再通知 UI 退出（否则守卫/旧快照会让本地暂停失效）
@@ -433,6 +614,8 @@ export class RoomController {
     if (this.role === 'host') {
       // 房主：响应 hello 回全量状态
       if (msg.t === 'hello') this.sendState()
+      // 成员缓冲就绪上报：驱动「等待成员预加载」的保持/放行
+      if (msg.t === 'mready') this.peerReady.set(peerId, { ready: msg.ready, at: Date.now() })
       return
     }
     // 成员：应用房主指令
@@ -462,6 +645,12 @@ export class RoomController {
       // 收到房主心跳即证明数据通道已打通
       this.markConnected()
       this.markAlive()
+      // 共享模式同步（file/stream 时成员不跟 url 导航）
+      this.shareMode = msg.mode ?? this.shareMode
+      if (msg.fileId) this.shareFileId = msg.fileId
+      // 房主已停共享（无 fileId 且非 file 模式）：清掉残留 fileId，避免 applySnapshot 一直锁在旧副本
+      else if (this.shareMode !== 'file') this.shareFileId = ''
+      this.onShareChanged?.()
       // 就绪门控：房主未就绪（初始加载/中途网络缓冲，readyState<2）时确认后暂停冻结成员，
       // 期间不采纳基准、不做对齐；房主刚 seek 后用更少拍数尽快冻，避免成员先加载完抢跑。
       if (msg.ready === false) {
@@ -537,19 +726,50 @@ export class RoomController {
   }
 
   /**
-   * 房主消失（退出/断线/peer leave）时交还成员本地控制权。
-   * 参数：reason 日志原因（仅诊断用）。
-   * 说明：清空跟随基准防止 follow 循环按旧 playing 快照反复起播；
-   * 解除跟随守卫使本地暂停可点；并下发一次 pause 冻结在当前位置。
+   * 房主：结束当前共享（关闭同步页签/停止本地文件推流）。
+   * 清空本端共享与同步目标，并广播 syncEnd，成员据此解锁同步页签可自由关闭。
+   * 返回值：无。
    */
-  private releaseLocalControl(reason: string): void {
-    p2pLog('release local control', reason)
+  endShare(): void {
+    p2pLog('end share')
+    this.shareMode = 'url'
+    this.shareFileId = ''
+    this.shareName = ''
+    this.shareUrl = ''
+    this.directShare = false
+    this.videoUrl = ''
+    this.syncTabId = null
+    this.room?.broadcast({ t: 'syncEnd' })
+  }
+
+  /**
+   * 解锁同步页签（房主停同步/离开/断线）：解除守卫、清空同步指针并通知 UI 恢复可关闭。
+   * 参数：reason 日志原因（仅诊断用）。
+   * 说明：不暂停本地播放，成员可继续看已落盘副本；也可直接关闭页签。
+   * 返回值：无。
+   */
+  private unlockSyncTab(reason: string): void {
+    p2pLog('unlock sync tab', reason)
     this.lastSnapshot = null
     this.hostNotReady = false
     this.notReadyCount = 0
     this.lastHostSeekAt = 0
-    this.syncPaused = false
+    // 先按旧 id 解除跟随守卫，再清空指针：同步已结束，成员可关闭该页签
     if (this.syncTabId != null) void window.p2pApi.setSyncTab(this.syncTabId, false)
+    this.syncTabId = null
+    this.onSyncUnlocked?.()
+  }
+
+  /**
+   * 房主消失（退出/断线/peer leave）时交还成员本地控制权。
+   * 参数：reason 日志原因（仅诊断用）。
+   * 说明：解锁同步页签（可关闭），并下发一次 pause 冻结在当前位置。
+   * 若房主随后重连，applySnapshot 经 onSyncTab 重建同步。
+   */
+  private releaseLocalControl(reason: string): void {
+    p2pLog('release local control', reason)
+    this.syncPaused = false
+    this.unlockSyncTab(reason)
     void window.p2pApi.videoCmd('pause')
   }
 
@@ -567,6 +787,27 @@ export class RoomController {
     }
     this.applyingSnapshot = true
     try {
+      // file 模式：导航一律用成员本地副本 URL（忽略房主 path，避免被带去房主磁盘路径）
+      if (this.shareMode === 'file') {
+        const localUrl = this.shareFileId ? this.media.urlFor(this.shareFileId) : undefined
+        if (!localUrl) {
+          // 缺副本则请求补发，待源就绪后再打开
+          if (this.shareFileId) {
+            this.room?.broadcast({ t: 'fileNeed', fileId: this.shareFileId })
+            return
+          }
+          // 无观看源（房主已停共享）：解锁同步页签
+          this.unlockSyncTab('no file source')
+          return
+        }
+        url = localUrl
+      }
+      // 房主无观看源（未共享/已关闭同步页签）：解锁同步页签，成员可关闭
+      if (!url && this.syncTabId != null) {
+        this.unlockSyncTab('host no source')
+        this.lastSnapshot = s
+        return
+      }
       if (url && this.syncTabId == null) {
         // 尚无同步页签（首次收到心跳/同步页签缺失）：由 UI 复用或新建并回填 syncTabId
         await this.onSyncTab?.(url)
@@ -638,13 +879,22 @@ export class RoomController {
     return false
   }
 
-  /** 房主：开启周期心跳（2s 全量对表兜底）+ 事件采样（80ms 即时广播视频操作） */
+  /** 房主：开启周期心跳（2s 全量对表兜底）+ 事件采样（80ms 即时广播视频操作）+ 停滞看门狗 */
   private startHeartbeat(): void {
     this.stopPolling()
     // 状态心跳：全量快照兜底，负责地址同步、新成员对齐与存活判定
     this.pollTimer = window.setInterval(() => this.sendState(), 2000)
     // 事件采样：play/pause/seek 发生后立即广播，操作同步延迟从 2s 降到 80ms 粒度以内
     this.eventTimer = window.setInterval(() => void this.broadcastEvents(), EVENT_POLL_MS)
+    this.ensureStallTimer()
+  }
+
+  /** 启动停滞看门狗（房主/成员共用一个定时器，按角色分发；幂等） */
+  private ensureStallTimer(): void {
+    if (this.stallTimer) return
+    this.stallTimer = window.setInterval(() => {
+      void (this.role === 'follower' ? this.followerStallWatchdog() : this.hostStallWatchdog())
+    }, 1000)
   }
 
   /**
@@ -657,8 +907,20 @@ export class RoomController {
     try {
       for (const ev of await window.p2pApi.drainEvents()) {
         if (ev.ev === 'play') {
+          // 自动续播（超时/看门狗）的事件回声：不参与保持判定，否则续播会立刻重新触发
+          // 「等待成员预加载」形成 hold↔看门狗无限震荡
+          const autoEcho = Date.now() - this.autoActionAt < AUTO_ACTION_QUIET_MS
+          // 等待期间用户自己按了播放：尊重用户意图，取消保持（成员自行追赶）
+          if (!autoEcho && this.holdingForMembers && Date.now() - this.holdStartedAt > SELF_ACTION_WINDOW_MS) {
+            this.cancelHold('user play')
+          }
           this.room?.broadcast({ t: 'play', position: ev.position, at: Date.now() })
+          if (!autoEcho) void this.maybeHoldForMembers('play')
         } else if (ev.ev === 'pause') {
+          // 等待期间用户手动暂停（非保持逻辑自身的暂停）：取消等待，不自动续播
+          if (this.holdingForMembers && Date.now() - this.holdStartedAt > SELF_ACTION_WINDOW_MS) {
+            this.cancelHold('user pause')
+          }
           this.room?.broadcast({ t: 'pause', position: ev.position })
         } else if (ev.ev === 'seek') {
           const st = await window.p2pApi.videoStatus()
@@ -670,10 +932,131 @@ export class RoomController {
             // 拖进度时房主是否已缓冲就绪；false → 成员暂停等待，避免成员先加载完抢跑
             ready: Boolean(st?.hasVideo && st.readyState >= 2),
           })
+          // 看门狗原地重 seek 的事件回声：位置未变，失效/重等只会无限推迟就绪判定
+          if (Date.now() - this.autoActionAt >= AUTO_ACTION_QUIET_MS) {
+            // 成员数据落盘晚于房主：拖动后等成员预加载到位再继续同步。
+            // seek 使成员旧的就绪态全部失效——它们的「就绪」针对的是旧位置，
+            // 新目标要等成员 seek 后重新上报（slow 网成员会晚好几秒）
+            for (const p of this.peers) {
+              const r = this.peerReady.get(p)
+              if (r) r.ready = false
+            }
+            void this.maybeHoldForMembers('seek')
+          }
         }
       }
     } finally {
       this.draining = false
+    }
+  }
+
+  /**
+   * 房主停滞看门狗：本机回放源（file/stream 共享）请求到未就绪区间时，播放可能停滞——
+   * 位置无进展且 readyState<2 持续超过阈值时原地重 seek 一次重建媒体栈请求（实测有效），
+   * 同时保持缺口需求上报（mediaWanted → relayFetch）不中断。
+   * 连续两拍仍未恢复则视为元素已进入 error 态（如响应截断后 MEDIA_ERR_NETWORK，
+   * 此时 seek 不再发请求）：reload 重建资源管线再对齐位置，播放意图不变。
+   */
+  private async hostStallWatchdog(): Promise<void> {
+    if (this.role !== 'host' || !this.shareFileId || !this.hostFiles.has(this.shareFileId)) {
+      this.stallPos = -1
+      this.stallSince = 0
+      this.stallKicks = 0
+      return
+    }
+    // 等待成员预加载的暂停是有意的：位置停滞属预期，不看重门狗，否则其
+    // reload+play 升级会在成员就绪前强行续播，破坏 hold 语义
+    if (this.holdingForMembers) {
+      this.stallPos = -1
+      this.stallSince = 0
+      this.stallKicks = 0
+      return
+    }
+    let st: (VideoSnapshot & { pageUrl: string; hasVideo: boolean }) | null = null
+    try {
+      st = await window.p2pApi.videoStatus()
+    } catch {
+      return
+    }
+    // 位置在动或已缓冲就绪：无停滞
+    if (!st?.hasVideo || st.readyState >= 2) {
+      this.stallPos = -1
+      this.stallSince = 0
+      this.stallKicks = 0
+      return
+    }
+    const now = Date.now()
+    if (st.position !== this.stallPos) {
+      this.stallPos = st.position
+      this.stallSince = now
+      return
+    }
+    if (!this.stallSince) this.stallSince = now
+    if (now - this.stallSince < HOST_STALL_RESEEK_MS) return
+    this.stallSince = now
+    const kick = ++this.stallKicks
+    const pos = st.position
+    const wasPlaying = !st.paused
+    p2pLog('host stalled, rekick media stack', { pos, kick, wasPlaying })
+    // rekick 产生的 play/seek 回声不触发「等待成员预加载」（自愈动作，非用户意图）
+    this.autoActionAt = Date.now()
+    try {
+      if (kick >= 2) {
+        await window.p2pApi.videoCmd('reload')
+        await window.p2pApi.videoCmd('seek', pos)
+        if (wasPlaying) await window.p2pApi.videoCmd('play')
+      } else {
+        // 首拍原地 seek：重建请求即可自愈，代价最小
+        await window.p2pApi.videoCmd('seek', pos)
+      }
+    } catch {
+      // 同步页签可能已关闭
+    }
+  }
+
+  /**
+   * 成员停滞看门狗：元素因等待数据超时（媒体服务回 503）进入 error 态后，
+   * follow 循环的 readyState<2 跳过逻辑会让它永远停摆（解冻后的 seek 对 error
+   * 元素无效）。房主已就绪而本机位置持续无进展时，reload 重建资源管线再按
+   * 房主基准对齐——数据通常已在房主推送下落盘，重建后立即从本机副本续播。
+   */
+  private async followerStallWatchdog(): Promise<void> {
+    // 房主未就绪冻结/暂停同步/尚无基准：不动作（冻结期停滞是设计内等待）
+    if (this.role !== 'follower' || !this.connected || this.hostNotReady || this.syncPaused || !this.lastSnapshot) {
+      this.stallPos = -1
+      this.stallSince = 0
+      return
+    }
+    let st: (VideoSnapshot & { pageUrl: string; hasVideo: boolean }) | null = null
+    try {
+      st = await window.p2pApi.videoStatus()
+    } catch {
+      return
+    }
+    if (!st?.hasVideo || st.readyState >= 2) {
+      this.stallPos = -1
+      this.stallSince = 0
+      return
+    }
+    const now = Date.now()
+    if (st.position !== this.stallPos) {
+      this.stallPos = st.position
+      this.stallSince = now
+      return
+    }
+    if (!this.stallSince) this.stallSince = now
+    if (now - this.stallSince < HOST_STALL_RESEEK_MS) return
+    this.stallSince = now
+    const target = this.lastSnapshot.playing
+      ? computeTargetPosition(this.lastSnapshot, now)
+      : this.lastSnapshot.position
+    p2pLog('follower stalled, reload and realign', { pos: st.position, target })
+    try {
+      await window.p2pApi.videoCmd('reload')
+      await window.p2pApi.videoCmd('seek', target)
+      if (this.lastSnapshot.playing) await window.p2pApi.videoCmd('play')
+    } catch {
+      // 同步页签可能已关闭
     }
   }
 
@@ -682,7 +1065,8 @@ export class RoomController {
     window.p2pApi.videoStatus().then((st) => {
       if (!this.room) return
       // 地址优先取视频页实时 pageUrl（含无视频/加载中的换页），退回 UI 地址栏输入值（空串让成员等待）
-      const url = st?.pageUrl || this.videoUrl
+      // 直链共享时固定用共享源地址：成员不跟随房主页面跳转（登录墙站点页面地址对成员无意义）
+      const url = this.directShare ? this.shareUrl : st?.pageUrl || this.videoUrl
       this.room.broadcast({
         t: 'state',
         url,
@@ -693,13 +1077,16 @@ export class RoomController {
         // 成员收到后暂停冻结，避免跟随零位置/停滞进度造成进度抖动
         ready: Boolean(st?.hasVideo && st.readyState >= 2),
         at: Date.now(),
+        mode: this.shareMode,
+        fileId: this.shareFileId || undefined,
       })
     })
   }
 
-  /** 成员：开启校准循环（每 2s 对表，超过阈值 seek，否则 rate 微调） */
+  /** 成员：开启校准循环（每 2s 对表，超过阈值 seek）+ 就绪上报 + 停滞看门狗 */
   private startFollowLoop(): void {
     if (this.followTimer) return
+    this.ensureStallTimer()
     this.followTimer = window.setInterval(async () => {
       // 断线看门狗：曾与房主建立同步后长时间无心跳 → 判定连接断开并交还本地控制权
       if (!this.connectionLost && isConnectionLost(this.lastStateAt, Date.now(), STATE_TIMEOUT_MS)) {
@@ -709,12 +1096,15 @@ export class RoomController {
         this.onConnectionLost?.()
         return
       }
+      const st = await window.p2pApi.videoStatus().catch(() => null)
+      // 向房主上报本机缓冲就绪态（房主「等待成员预加载」的决策依据；
+      // 冻结/暂停同步期间也要上报——冻结期正是成员在缓冲的时刻）
+      this.reportBufferState(st)
       if (!this.lastSnapshot) return
       // 房主未就绪冻结期：成员保持暂停，不做播放对齐与位置校正，等就绪心跳一次性对齐
       if (this.hostNotReady) return
       // 暂停同步：不做校准与状态对齐（本地自由控制）
       if (this.syncPaused) return
-      const st = await window.p2pApi.videoStatus()
       // 桥未就绪（播放器还在创建）时本轮不动作，由 applySnapshot 负责首次对齐
       if (!st || !st.hasVideo) return
       // 播放状态优先对齐：房主在播而本地暂停（或反之）直接下发，位置校正留到下一轮
@@ -740,7 +1130,98 @@ export class RoomController {
     }, 2000)
   }
 
-  /** 停止房主轮询（状态心跳 + 事件采样，重建房间前调用） */
+  /**
+   * 成员：向房主上报本机缓冲就绪态（变化即报 + 周期保鲜重报）。
+   * 暂停同步时始终按就绪上报——自由观看的成员不应拖住房主的「等待预加载」。
+   * 参数：st 本机视频快照（可能为 null：无桥/无视频按未就绪上报）。
+   */
+  private reportBufferState(st: (VideoSnapshot & { pageUrl: string; hasVideo: boolean }) | null): void {
+    if (this.role !== 'follower' || !this.connected) return
+    const ready = this.syncPaused ? true : Boolean(st?.hasVideo && st.readyState >= 2)
+    if (ready === this.lastReadyReported && Date.now() - this.lastReadySentAt < MEMBER_REPORT_INTERVAL_MS) return
+    this.lastReadyReported = ready
+    this.lastReadySentAt = Date.now()
+    this.sendToHost({ t: 'mready', ready })
+  }
+
+  /** 成员：定向发送给房主（房主身份未知时退化为全员广播，仅房主消费） */
+  private sendToHost(msg: SyncMsg): void {
+    if (this.hostPeerId) this.room?.sendTo(this.hostPeerId, msg)
+    else this.room?.broadcast(msg)
+  }
+
+  /** 房主：全部成员是否都已在当前进度缓冲就绪（上报保鲜期内且 ready） */
+  private membersAllReady(): boolean {
+    const now = Date.now()
+    for (const p of this.peers) {
+      const r = this.peerReady.get(p)
+      if (!r || !r.ready || now - r.at > MEMBER_READY_FRESH_MS) return false
+    }
+    return true
+  }
+
+  /**
+   * 房主：等待成员预加载。推流/文件共享下成员的数据落盘晚于房主（尤其拖到未预读区间），
+   * 房主直接继续播放会让成员停在原地大幅落后。因此在播放意图下发现成员未就绪时：
+   * 先暂停自己（toast 提示），全员缓冲就绪或超时后再统一续播，让进度同步从同一位置出发。
+   * 参数：reason 触发来源（seek/play/join，仅日志用）。
+   */
+  private async maybeHoldForMembers(reason: string): Promise<void> {
+    if (this.role !== 'host' || !this.room || this.holdingForMembers) return
+    if (this.peers.size === 0) return
+    // 仅文件/推流共享需要等：url 模式成员各自拉 CDN，与房主无数据依赖
+    if (!this.shareFileId || !this.hostFiles.has(this.shareFileId)) return
+    let st: (VideoSnapshot & { pageUrl: string; hasVideo: boolean }) | null = null
+    try {
+      st = await window.p2pApi.videoStatus()
+    } catch {
+      return
+    }
+    // 无播放意图不用等：暂停状态下成员本来就停着，起播时会再走一次本检查
+    if (!st?.hasVideo || st.paused) return
+    if (this.membersAllReady()) return
+    this.holdingForMembers = true
+    this.holdStartedAt = Date.now()
+    p2pLog('hold for member preload', reason, { peers: this.peers.size })
+    window.p2pApi.notify('已暂停，等待成员预加载…')
+    window.p2pApi.videoCmd('pause')
+    const deadline = Date.now() + MEMBER_WAIT_TIMEOUT_MS
+    this.holdTimer = window.setInterval(() => {
+      if (this.peers.size === 0 || this.membersAllReady() || Date.now() >= deadline) {
+        this.finishHold(Date.now() >= deadline)
+      }
+    }, 500)
+  }
+
+  /** 结束成员等待：统一续播（超时也继续，成员端自愈路径兜底） */
+  private finishHold(timedOut: boolean): void {
+    this.clearHoldTimer()
+    this.holdingForMembers = false
+    p2pLog('hold finished', { timedOut })
+    window.p2pApi.notify(timedOut ? '等待成员预加载超时，继续播放' : '成员已就绪，继续播放')
+    // 续播的 play 回声不触发新一轮保持（否则超时→续播→重等会无限震荡）
+    this.autoActionAt = Date.now()
+    void window.p2pApi.videoStatus().then((s) => {
+      if (s?.hasVideo && s.paused) window.p2pApi.videoCmd('play')
+    })
+  }
+
+  /** 取消成员等待（等待期间用户手动操作了播放/暂停，尊重用户意图，不自动续播） */
+  private cancelHold(reason: string): void {
+    if (!this.holdingForMembers) return
+    this.clearHoldTimer()
+    this.holdingForMembers = false
+    p2pLog('hold cancelled', reason)
+  }
+
+  private clearHoldTimer(): void {
+    if (this.holdTimer) {
+      clearInterval(this.holdTimer)
+      this.holdTimer = null
+    }
+  }
+
+  /** 停止房主轮询（状态心跳 + 事件采样 + 停滞看门狗，重建房间前调用） */
   private stopPolling(): void {
     if (this.pollTimer) {
       clearInterval(this.pollTimer)
@@ -750,7 +1231,408 @@ export class RoomController {
       clearInterval(this.eventTimer)
       this.eventTimer = null
     }
+    if (this.stallTimer) {
+      clearInterval(this.stallTimer)
+      this.stallTimer = null
+    }
     this.draining = false
+    this.stallPos = -1
+    this.stallSince = 0
+    this.stallKicks = 0
+    this.clearHoldTimer()
+    this.holdingForMembers = false
+  }
+
+  /**
+   * 房主：把网页视频的「原画直链」共享给成员（成员本机直接播，零重编码、自带音轨）。
+   * 场景：登录墙站点（如次元城）成员打不开页面，但 CDN 直链免 cookie 且支持 Range，可直接播。
+   * 参数：url 直链（http/https）；name 展示名。
+   * 返回值：无。
+   */
+  hostShareDirectUrl(url: string, name: string): void {
+    // 回环地址是本机媒体服务的产物：共享出去带房主端口号，成员机打不开
+    if (this.role !== 'host' || !/^https?:/i.test(url) || isLoopbackMediaUrl(url)) return
+    this.shareMode = 'url'
+    this.shareName = name
+    this.shareFileId = ''
+    this.videoUrl = url
+    // 直链共享：成员固定打开该地址，不再跟随房主页面跳转（页面地址对成员无意义）
+    this.shareUrl = url
+    this.directShare = true
+    this.hostFiles.clear()
+    this.room?.broadcast({ t: 'syncTab', url, mode: 'url', name })
+    this.sendState()
+    this.onShareChanged?.()
+  }
+
+  /**
+   * 房主：把网页视频按「直接推流」共享给成员——房主按 Range 拉远程直链字节，中继给成员落盘播放。
+   * 成员端完全复用无损文件流（本机 Range 服务），画质/音轨与源一致，且不依赖成员能否访问该 CDN。
+   * 参数：url 原画直链（http/https，需支持 Range）；name 展示名。
+   * 返回值：true=已开始中继；false=直链不支持 Range / 探测失败（成员端无源可用）。
+   */
+  async hostShareRemote(url: string, name: string): Promise<boolean> {
+    // 回环地址是本机媒体服务的产物：拿来当源会自吞噬（自己中继自己已落盘的副本）
+    if (this.role !== 'host' || isLoopbackMediaUrl(url)) return false
+    const media = await probeRemoteMedia(url)
+    if (!media) return false
+    const fileId = newFileId()
+    this.shareFileId = fileId
+    this.shareName = name
+    this.relayFileId = fileId
+    this.relayName = name
+    this.relayCursor.clear()
+    this.relayRunning.clear()
+    this.relayMemberDemand.clear()
+    this.hostFiles.set(fileId, { remote: url, size: media.size, mime: media.mime || 'video/mp4' })
+    this.shareMode = 'file'
+    this.directShare = false
+    this.room?.broadcast({
+      t: 'fileOffer',
+      fileId,
+      name,
+      size: media.size,
+      mime: media.mime || 'video/mp4',
+      asSource: true,
+    })
+    // 房主自己也从本机媒体服务播同一份：中继只有一次源站下载（不重复取流）
+    const localUrl = await this.media.attach(fileId, name, media.size, { mime: media.mime })
+    // 记下落盘路径：此后所有补发/预读先读本机副本，严格保证每个字节只向源站取一次
+    const localPath = this.media.pathFor(fileId)
+    if (localPath) this.hostFiles.set(fileId, { remote: url, path: localPath, size: media.size, mime: media.mime || 'video/mp4' })
+    // 推流页签独立于同步目标：房主可在「网页页签（进度同步）」与「推流页签（直接推流）」间切换
+    if (localUrl) await this.onHostPlaybackTab?.(localUrl)
+    this.sendState()
+    this.onShareChanged?.()
+    return true
+  }
+
+  /**
+   * 房主：重新广播已建立的中继（房主回选「推流页签」时调用）——成员据此重新登记本地副本并切到推流。
+   * 说明：中继字节流与 hostFiles 一直保留，这里只补发要约/状态，不重新探测源站。
+   * 返回值：无。
+   */
+  resyncRelay(): void {
+    const fileId = this.relayFileId
+    const info = fileId ? this.hostFiles.get(fileId) : undefined
+    if (!fileId || !info) return
+    this.shareFileId = fileId
+    this.shareName = this.relayName
+    this.shareMode = 'file'
+    this.directShare = false
+    this.room?.broadcast({
+      t: 'fileOffer',
+      fileId,
+      name: this.relayName,
+      size: info.size,
+      mime: info.mime || 'video/mp4',
+      asSource: true,
+    })
+    this.sendState()
+    this.onShareChanged?.()
+  }
+
+  /**
+   * 房主：播放器需要某缺口时启动/校正「滚动预读」——连续大块下载并同时喂本机与成员。
+   * 参数：fileId 媒体 ID；ranges 缺口区间（块对齐，取最靠前者作为基准）。
+   * 返回值：Promise（下载在后台连续进行）。
+   */
+  private async relayFetch(fileId: string, ranges: Array<[number, number]>): Promise<void> {
+    const info = this.hostFiles.get(fileId)
+    if (!info?.remote) return
+    // 就绪抑制：缺口若已全部落盘（重复上报/成员回跳），不动游标——阻塞中的请求会由
+    // 落盘标记直接放行；重置游标只会让预读反复向源站重复拉取
+    const pending = unreadyRanges(ranges, await this.readyRanges(fileId))
+    if (!pending.length) return
+    const want = pending[0][0]
+    const cur = this.relayCursor.get(fileId) ?? 0
+    // 拖动进度条导致缺口远离游标：重置游标（旧位置之后的数据不再需要）
+    if (want < cur || want - cur > RELAY_PREFETCH_BYTES * 2) {
+      this.relayCursor.set(fileId, Math.max(0, want))
+    }
+    void this.relayChase(fileId)
+  }
+
+  /**
+   * 房主：滚动预读循环——每轮拉一个跨度并转发，保持「领先播放位置不超过 3 个跨度」。
+   * 游标被 seek 重置时当前跨度立刻作废（收到块边界即中止），从新缺口继续；
+   * 跨度完成后只有游标未被外部重置才推进，避免覆盖 seek 目标、回爬旧位置。
+   * 参数：fileId 媒体 ID。返回值：Promise（循环结束即预读停止）。
+   */
+  private async relayChase(fileId: string): Promise<void> {
+    const info = this.hostFiles.get(fileId)
+    if (!info?.remote || this.relayRunning.has(fileId)) return
+    this.relayRunning.add(fileId)
+    try {
+      for (;;) {
+        if (!this.room || this.hostFiles.get(fileId)?.remote !== info.remote) return
+        const cur = this.relayCursor.get(fileId) ?? 0
+        if (cur >= info.size) return
+        const end = Math.min(info.size, cur + RELAY_PREFETCH_BYTES)
+        const room = this.room
+        // 游标被重置（用户拖动）：当前跨度作废，尽快转向新缺口
+        const moved = () => (this.relayCursor.get(fileId) ?? 0) !== cur
+        // 严格一份：本机已就绪的段直接读盘广播（多为定向补发回填的字节），只向源站拉缺失段
+        const segments = splitRangeByReady(cur, end, await this.readyRanges(fileId))
+        for (const seg of segments) {
+          if (moved()) break
+          if (seg.ready && info.path) {
+            for (let off = seg.start; off < seg.end; off += FILE_CHUNK_SIZE) {
+              if (moved()) break
+              const len = Math.min(FILE_CHUNK_SIZE, seg.end - off)
+              const buf = await window.p2pApi.readFileChunk(info.path, off, len)
+              if (!buf || buf.byteLength === 0) return
+              await room.sendBinary(buf, { fileId, offset: off })
+            }
+          } else {
+            let sent = 0
+            const read = await streamRemoteRange(info.remote, seg.start, seg.end - seg.start, async (data) => {
+              if (moved()) return false
+              const off = seg.start + sent
+              sent += data.byteLength
+              // 1) 房主自己落盘（本机媒体服务播放同一份，播放进度即同步基准）
+              await this.media.acceptChunk(fileId, off, data)
+              // 2) 广播给全体成员（成员端按块落盘 + 放行本机 Range 读）
+              await room.sendBinary(data, { fileId, offset: off })
+              return true
+            })
+            if (moved()) break
+            if (read <= 0) return
+          }
+        }
+        // 跨度完成且游标未被外部重置才推进；被重置则保留新游标（下一轮从新位置继续）
+        if (!moved()) this.relayCursor.set(fileId, end)
+        // 预读上限：领先播放位置过多时等待（不为不看的内容白拉）。
+        // 但有人正在挨饿时不节流：本机播放器（VBR 内容下线性字节估算的领先量会误判）
+        // 或成员（缺口正由预读代拉）在等数据，停拉会把它们卡在游标处直到超时
+        while (this.room && !moved() && (await this.relayAheadBytes(fileId)) > RELAY_PREFETCH_BYTES * 3) {
+          if ((await this.mediaWantedPeek(fileId)).length) break
+          if (Date.now() - (this.relayMemberDemand.get(fileId) ?? 0) < 3000) break
+          await new Promise((r) => setTimeout(r, 1000))
+        }
+      }
+    } catch (e) {
+      p2pLog('relay chase failed', e)
+    } finally {
+      this.relayRunning.delete(fileId)
+    }
+  }
+
+  /** 房主：当前预读游标领先播放位置约多少字节（无法判断时返回 0） */
+  private async relayAheadBytes(fileId: string): Promise<number> {
+    const info = this.hostFiles.get(fileId)
+    if (!info) return 0
+    try {
+      const st = await window.p2pApi.videoStatus()
+      const dur = st?.duration ?? 0
+      if (!st?.hasVideo || dur <= 0) return 0
+      const played = (st.position / dur) * info.size
+      return Math.max(0, (this.relayCursor.get(fileId) ?? 0) - played)
+    } catch {
+      return 0
+    }
+  }
+
+  /** 房主：按数据源类型读取一块（本地路径 / 远程直链） */
+  private async readSource(
+    info: { path?: string; remote?: string },
+    offset: number,
+    length: number,
+  ): Promise<ArrayBuffer | null> {
+    if (info.remote) return readRemoteChunk(info.remote, offset, length)
+    if (info.path) return window.p2pApi.readFileChunk(info.path, offset, length)
+    return null
+  }
+
+  /**
+   * 房主：把本地文件完整副本分发给成员（可选；默认本地视频走推流，此接口供「发送完整副本」）。
+   * 参数：info 本地文件元数据（pick_video_file 返回）；
+   *       opts.asSource 是否以该文件为观看源（成员收完后本地 file:// 播放；缺省否，仅后台传副本不打断推流）。
+   * 返回值：Promise 发起分发完成（传输在后台继续）。
+   */
+  async hostShareLocalFile(
+    info: { path: string; url: string; name: string; size: number },
+    opts?: { asSource?: boolean },
+  ): Promise<void> {
+    const fileId = newFileId()
+    this.shareFileId = fileId
+    this.shareName = info.name
+    this.hostFiles.set(fileId, { path: info.path, size: info.size })
+    // 仅当以文件为观看源时切换模式；默认保持当前 shareMode（推流/网页）不打断成员画面
+    const asSource = !!opts?.asSource
+    if (asSource) this.shareMode = 'file'
+    this.directShare = false
+    this.room?.broadcast({ t: 'fileOffer', fileId, name: info.name, size: info.size, mime: 'video/mp4', asSource })
+    // 流式模式（asSource）：成员按缺口按需拉取，不盲目全量推送；副本模式才整份发
+    if (!asSource) {
+      void this.sendFileTo(fileId).catch((e) => p2pLog('send file failed', e))
+    }
+    this.onShareChanged?.()
+  }
+
+  /**
+   * 房主：向指定成员（或全员）分发文件块。
+   * 参数：fileId 媒体 ID；target 缺省全员。
+   * 返回值：Promise 发送完成。
+   */
+  private async sendFileTo(fileId: string, target?: string): Promise<void> {
+    const info = this.hostFiles.get(fileId)
+    if (!info || !this.room) return
+    const room = this.room
+    await sendFileChunks({
+      fileId,
+      size: info.size,
+      read: async (offset, length) => {
+        const buf = await this.readSource(info, offset, length)
+        return buf ?? new ArrayBuffer(0)
+      },
+      send: (data, meta, t) => room.sendBinary(data, meta, t ?? target),
+      target,
+      onProgress: (ratio) => {
+        // 定向补发不覆盖全员发送进度，避免 UI 回跳
+        if (target) return
+        this.sendRatios.set(fileId, ratio)
+        this.onShareChanged?.()
+      },
+    })
+    if (!target) this.sendRatios.set(fileId, 1)
+    room.broadcast({ t: 'fileDone', fileId })
+    this.onShareChanged?.()
+  }
+
+  /**
+   * 房主：按成员上报的缺口区间定向补发（流式：只发播放真正需要的字节）。
+   * 严格一份：已落盘区间（本机媒体服务位图）直接读临时文件回发，只有真正缺失的段
+   * 才向远程源站发请求，并把拉到的字节回填本机副本（此后该段可从盘上分发）。
+   * 参数：fileId 媒体 ID；target 成员 peerId；ranges [起始, 结束) 字节区间（已按块对齐）。
+   * 返回值：Promise 本轮补发派发完成（发送在后台继续）。
+   */
+  private async sendFileRanges(
+    fileId: string,
+    target: string,
+    ranges: Array<[number, number]>,
+  ): Promise<void> {
+    const info = this.hostFiles.get(fileId)
+    if (!info || !this.room) return
+    const room = this.room
+    let set = this.inflightRanges.get(target)
+    if (!set) {
+      set = new Set<string>()
+      this.inflightRanges.set(target, set)
+    }
+    const inflight = set
+    // 就绪位图只对注册过本机媒体服务的远程中继源有效（本地文件源整段直接读源文件）
+    const ready = info.remote && info.path ? await this.readyRanges(fileId) : []
+    for (const [rawA, rawB] of ranges) {
+      const start = Math.max(0, Math.floor(rawA))
+      const end = Math.min(info.size, Math.ceil(rawB))
+      if (end <= start) continue
+      const key = `${start}-${end}`
+      if (inflight.has(key)) continue
+      inflight.add(key)
+      const segments = info.remote ? splitRangeByReady(start, end, ready) : [{ start, end, ready: false }]
+      void (async () => {
+        try {
+          for (const seg of segments) {
+            if (seg.ready && info.path) {
+              // 已落盘段：读本机副本定向回发（不碰源站）
+              for (let off = seg.start; off < seg.end; off += FILE_CHUNK_SIZE) {
+                const len = Math.min(FILE_CHUNK_SIZE, seg.end - off)
+                const buf = await window.p2pApi.readFileChunk(info.path, off, len)
+                if (!buf || buf.byteLength === 0) return
+                await room.sendBinary(buf, { fileId, offset: off }, target)
+              }
+            } else if (info.remote) {
+              // 滚动预读正在朝该段拉（游标未越过段起点）：不并行向源站开第二条连接
+              // （同一 CDN 的并发 Range 会被分摊限速，双方都变慢，成员端可能等超时），
+              // 让预读广播回填本机副本，成员端 pump 会重新上报缺口、下一轮从盘上回发
+              const cursor = this.relayCursor.get(fileId) ?? 0
+              if (this.relayRunning.has(fileId) && seg.start >= cursor) {
+                // 记录成员需求信号：让预读的领先节流让位（成员正靠这次预读回填）
+                this.relayMemberDemand.set(fileId, Date.now())
+                continue
+              }
+              // 缺失段：一次大请求流式转发（小 Range 请求会被 CDN 限速 → 吞吐过低），同时回填本机副本
+              let sent = 0
+              const read = await streamRemoteRange(info.remote, seg.start, seg.end - seg.start, async (data) => {
+                const off = seg.start + sent
+                sent += data.byteLength
+                await this.media.acceptChunk(fileId, off, data)
+                await room.sendBinary(data, { fileId, offset: off }, target)
+                return true
+              })
+              if (read <= 0) p2pLog('remote range empty', seg.start, seg.end - seg.start)
+            } else {
+              for (let off = seg.start; off < seg.end; off += FILE_CHUNK_SIZE) {
+                const len = Math.min(FILE_CHUNK_SIZE, seg.end - off)
+                const buf = await this.readSource(info, off, len)
+                if (!buf || buf.byteLength === 0) break
+                await room.sendBinary(buf, { fileId, offset: off }, target)
+              }
+            }
+          }
+        } catch (e) {
+          p2pLog('send range failed', e)
+        } finally {
+          inflight.delete(key)
+        }
+      })()
+    }
+  }
+
+  /** 房主：查询本机已落盘就绪区间（升序、互不重叠；查询失败按全缺处理） */
+  private async readyRanges(fileId: string): Promise<Array<[number, number]>> {
+    try {
+      return await window.p2pApi.mediaReadyRanges(fileId)
+    } catch {
+      return []
+    }
+  }
+
+  /** 房主：查看未满足缺口（不取走；空列表=播放器没有在挨饿的请求） */
+  private async mediaWantedPeek(fileId: string): Promise<Array<[number, number]>> {
+    try {
+      return await window.p2pApi.mediaWantedPeek(fileId)
+    } catch {
+      return []
+    }
+  }
+
+  /** 房主：fileId → 已发送比例 0~1（「整份预取」进度用） */
+  private sendRatios = new Map<string, number>()
+  /** 房主：peerId → 发送中的区间（避免同一区间重复补发） */
+  private inflightRanges = new Map<string, Set<string>>()
+  /** 房主：远程中继的滚动预读游标（fileId → 下一个待拉字节） */
+  private relayCursor = new Map<string, number>()
+  /** 房主：正在滚动预读的 fileId（同一源同时只跑一条） */
+  private relayRunning = new Set<string>()
+  /** 房主：成员缺口正由预读代拉的最后信号时间（fileId → ms；让领先节流让位） */
+  private relayMemberDemand = new Map<string, number>()
+
+  /**
+   * 成员：写入一块文件数据（落盘 + 放行阻塞中的 Range 请求）。
+   * 参数：data 块字节；meta 块元数据。
+   * 返回值：Promise 写入完成。
+   */
+  private async onFileChunk(data: ArrayBuffer, meta: FileChunkMeta): Promise<void> {
+    const bytes = data instanceof ArrayBuffer ? data : (data as Uint8Array).buffer.slice(
+      (data as Uint8Array).byteOffset,
+      (data as Uint8Array).byteOffset + (data as Uint8Array).byteLength,
+    ) as ArrayBuffer
+    await this.media.acceptChunk(meta.fileId, meta.offset, bytes)
+  }
+
+  /**
+   * 查询文件进度：房主查发送比例，成员查接收比例。
+   * 参数：fileId 媒体 ID。
+   * 返回值：0~1。
+   */
+  fileRatio(fileId: string): number {
+    const sent = this.sendRatios.get(fileId)
+    if (sent !== undefined) return sent
+    // 成员：以媒体服务实际就绪字节为准（重传不会重复计数）
+    const recv = this.media.ratioFor(fileId)
+    return recv >= 0 ? recv : 0
   }
 
   /**
@@ -767,6 +1649,7 @@ export class RoomController {
   /** 离开房间并清理全部定时器 */
   async leave(): Promise<void> {
     this.stopPolling()
+    void this.media.release()
     this.rtt.stop()
     this.rtt.clear()
     this.clearJoinWatchdog()
@@ -777,6 +1660,16 @@ export class RoomController {
     // 解除跟随守卫并清空同步页签指针（页签保留，UI 端随后解锁为普通页签可关闭）
     void window.p2pApi.setSyncTab(null, false)
     this.syncTabId = null
+    this.shareMode = 'url'
+    this.shareFileId = ''
+    this.shareUrl = ''
+    this.directShare = false
+    this.relayCursor.clear()
+    this.relayRunning.clear()
+    this.relayMemberDemand.clear()
+    this.peerReady.clear()
+    this.lastReadyReported = null
+    this.lastReadySentAt = 0
     await this.room?.leave()
     this.room = null
     this.lastSnapshot = null

@@ -1,4 +1,4 @@
-﻿//! IPC 命令层：window.p2pApi 的全部方法映射（与 Electron preload.ts 一一对应）。
+//! IPC 命令层：window.p2pApi 的全部方法映射（与 Electron preload.ts 一一对应）。
 //! 参数命名 camelCase 由 Tauri command 自动映射（js 参数 camelCase ↔ rust snake_case）。
 //!
 //! 全部命令声明为 async fn：使其运行于工作线程而非主线程消息回调内，
@@ -184,4 +184,86 @@ pub async fn tab_status(app: AppHandle, tab_id: i64) -> Option<crate::state::Bri
 #[tauri::command]
 pub async fn seek_tab(app: AppHandle, tab_id: i64, position: f64) {
     tabs::seek_tab(&app, tab_id, position);
+}
+
+/// 弹出系统对话框选择本地视频；取消返回 null
+#[tauri::command]
+pub async fn pick_video_file() -> Option<crate::media::MediaFileInfo> {
+    tauri::async_runtime::spawn_blocking(crate::media::pick_video_file)
+        .await
+        .ok()
+        .flatten()
+}
+
+/// 查询文件字节数（联调/分发前探测）
+#[tauri::command]
+pub async fn file_size(path: String) -> u64 {
+    crate::media::file_size(&path)
+}
+
+/// 按偏移读取本地媒体一块字节（无损分发发送端；二进制直传，避免 JSON 数组开销）
+#[tauri::command]
+pub async fn read_file_chunk(path: String, offset: u64, length: u64) -> tauri::ipc::Response {
+    let data = tauri::async_runtime::spawn_blocking(move || crate::media::read_file_chunk(&path, offset, length))
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or_default();
+    tauri::ipc::Response::new(data)
+}
+
+/// 创建/截断临时媒体文件（成员端接收），返回含 file:// URL 的元数据
+#[tauri::command]
+pub async fn create_temp_media(file_id: String, name: String, size: u64) -> Option<crate::media::MediaFileInfo> {
+    crate::media::create_temp_media(&file_id, &name, size)
+}
+
+/// 按偏移写入临时媒体文件一块
+#[tauri::command]
+pub async fn write_temp_chunk(path: String, offset: u64, data: Vec<u8>) -> bool {
+    crate::media::write_temp_chunk(&path, offset, &data)
+}
+
+/// 注册成员端渐进媒体源（本机 Range 服务），返回可播放 URL
+#[tauri::command]
+pub async fn media_publish(file_id: String, path: String) -> String {
+    crate::media_server::publish(&file_id, &path)
+}
+
+/// 注销成员端渐进媒体源
+#[tauri::command]
+pub async fn media_unpublish(file_id: String) -> bool {
+    crate::media_server::unpublish(&file_id);
+    true
+}
+
+/// 标记某区间已落盘就绪（放行阻塞中的 Range 请求）
+#[tauri::command]
+pub async fn media_have(file_id: String, offset: u64, len: u64) -> bool {
+    crate::media_server::mark_have(&file_id, offset, len);
+    true
+}
+
+/// 取走未满足缺口（按 BLOCK 对齐合并），供前端向房主补拉
+#[tauri::command]
+pub async fn media_wanted(file_id: String) -> Vec<(u64, u64)> {
+    crate::media_server::take_wanted(&file_id)
+}
+
+/// 查看未满足缺口（不取走）：房主预读判断播放器是否正在挨饿
+#[tauri::command]
+pub async fn media_wanted_peek(file_id: String) -> Vec<(u64, u64)> {
+    crate::media_server::wanted_peek(&file_id)
+}
+
+/// 查询渐进媒体就绪进度（已就绪字节, 总字节）
+#[tauri::command]
+pub async fn media_progress(file_id: String) -> (u64, u64) {
+    crate::media_server::progress(&file_id)
+}
+
+/// 查询已就绪区间的字节列表（升序、互不重叠；房主中继优先读本机副本用）
+#[tauri::command]
+pub async fn media_ready_ranges(file_id: String) -> Vec<(u64, u64)> {
+    crate::media_server::ready_ranges(&file_id)
 }

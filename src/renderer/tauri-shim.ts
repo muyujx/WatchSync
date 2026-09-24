@@ -79,6 +79,32 @@ import { parseShareUrl } from '../core/shareLink'
     tabStatus: (tabId: number) => invoke('tab_status', { tabId }),
     /** 向指定页签下发续播 seek（秒）；页签不存在/无桥时静默忽略（需先 tabStatus 确认就绪再下发） */
     seekTab: (tabId: number, position: number) => invoke('seek_tab', { tabId, position }),
+    /** 弹出系统对话框选择本地视频；取消返回 null */
+    pickVideoFile: () => invoke('pick_video_file'),
+    /** 查询文件字节数 */
+    fileSize: (path: string) => invoke('file_size', { path }),
+    /** 按偏移读取本地媒体一块（ArrayBuffer） */
+    readFileChunk: (path: string, offset: number, length: number) => invoke('read_file_chunk', { path, offset, length }),
+    /** 创建/截断临时媒体文件（成员端接收） */
+    createTempMedia: (fileId: string, name: string, size: number) =>
+      invoke('create_temp_media', { fileId, name, size }),
+    /** 按偏移写入临时媒体一块（二进制直传，不转 number[]） */
+    writeTempChunk: (path: string, offset: number, data: ArrayBuffer | Uint8Array) =>
+      invoke('write_temp_chunk', { path, offset, data: data instanceof Uint8Array ? data : new Uint8Array(data) }),
+    /** 注册成员端渐进媒体源（本机 Range 服务），返回可播放 URL */
+    mediaPublish: (fileId: string, path: string) => invoke('media_publish', { fileId, path }),
+    /** 注销成员端渐进媒体源 */
+    mediaUnpublish: (fileId: string) => invoke('media_unpublish', { fileId }),
+    /** 标记区间已落盘就绪（放行阻塞中的 Range 请求） */
+    mediaHave: (fileId: string, offset: number, len: number) => invoke('media_have', { fileId, offset, len }),
+    /** 取走未满足缺口（BLOCK 对齐），向房主补拉 */
+    mediaWanted: (fileId: string) => invoke('media_wanted', { fileId }),
+    /** 查看未满足缺口（不取走；房主预读判断播放器是否正在挨饿） */
+    mediaWantedPeek: (fileId: string) => invoke('media_wanted_peek', { fileId }),
+    /** 查询渐进媒体就绪进度（已就绪, 总长） */
+    mediaProgress: (fileId: string) => invoke('media_progress', { fileId }),
+    /** 查询已就绪区间的字节列表（升序、互不重叠；房主中继优先读本机副本用） */
+    mediaReadyRanges: (fileId: string) => invoke('media_ready_ranges', { fileId }),
   }
   // 就绪标记（调试用）
   g.__p2pShimReady = true

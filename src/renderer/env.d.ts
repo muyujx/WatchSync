@@ -16,6 +16,8 @@ declare global {
     duration: number
     /** 就绪程度（0 无数据 ~ 4；<1 无 metadata，<2 正在缓冲） */
     readyState: number
+    /** 当前播放源（直链共享用；blob:/MSE 站点不可直传） */
+    src: string
   }
 
   interface Window {
@@ -100,6 +102,34 @@ declare global {
       tabStatus(tabId: number): Promise<VideoSnapshot | null>
       /** 向指定页签下发续播 seek（秒）；页签不存在/无桥时静默忽略（需先 tabStatus 确认就绪再下发） */
       seekTab(tabId: number, position: number): Promise<void>
+      /** 本地媒体文件元数据 */
+      pickVideoFile(): Promise<{ path: string; url: string; name: string; size: number } | null>
+      /** 查询文件字节数 */
+      fileSize(path: string): Promise<number>
+      /** 按偏移读取本地媒体一块 */
+      readFileChunk(path: string, offset: number, length: number): Promise<ArrayBuffer | null>
+      /** 创建/截断临时媒体文件 */
+      createTempMedia(
+        fileId: string,
+        name: string,
+        size: number,
+      ): Promise<{ path: string; url: string; name: string; size: number } | null>
+      /** 按偏移写入临时媒体一块 */
+      writeTempChunk(path: string, offset: number, data: ArrayBuffer | Uint8Array): Promise<boolean>
+      /** 注册成员端渐进媒体源（本机 Range 服务），返回可播放 URL */
+      mediaPublish(fileId: string, path: string): Promise<string>
+      /** 注销成员端渐进媒体源 */
+      mediaUnpublish(fileId: string): Promise<boolean>
+      /** 标记区间已落盘就绪 */
+      mediaHave(fileId: string, offset: number, len: number): Promise<boolean>
+      /** 取走未满足缺口（BLOCK 对齐） */
+      mediaWanted(fileId: string): Promise<Array<[number, number]>>
+      /** 查看未满足缺口（不取走；房主预读判断播放器是否正在挨饿） */
+      mediaWantedPeek(fileId: string): Promise<Array<[number, number]>>
+      /** 查询渐进媒体就绪进度（已就绪, 总长） */
+      mediaProgress(fileId: string): Promise<[number, number]>
+      /** 查询已就绪区间的字节列表（升序、互不重叠；房主中继优先读本机副本用） */
+      mediaReadyRanges(fileId: string): Promise<Array<[number, number]>>
     }
   }
 }

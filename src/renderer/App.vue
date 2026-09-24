@@ -1,85 +1,52 @@
 <template>
-  <TabStrip
+  <TopBar
     v-show="!videoFullscreen"
+    v-model:url="videoUrl"
+    v-model:join-input="joinInput"
     :tabs="tabs"
     :active-id="activeTabId"
     :sync-id="syncTabId"
     :role="tabRole"
     :sync-paused="syncPaused"
     :is-max="isMax"
+    :title-of="tabTitleOf"
+    :room-id="roomId"
+    :is-host="isHost"
+    :busy="busy"
+    :connection-lost="connectionLost"
+    :show-direct-relay="showDirectRelay"
+    :member-count="memberList.length"
+    :history-open="historyOpen"
     @activate="activateTab"
     @set-sync="setSyncTab"
     @close="closeTab"
     @home="goHome"
     @win="win"
+    @nav="nav"
+    @open="onOpen"
+    @host="onHost"
+    @copy-link="onCopyLink"
+    @direct-relay="onDirectRelay"
+    @open-members="openMembers"
+    @toggle-sync-pause="toggleSyncPause"
+    @exit-room="exitRoom"
+    @join-link="onJoinLink"
+    @toggle-history="toggleHistory"
+    @open-settings="openSettings"
   />
 
-  <!-- 工具栏 44px（Chrome 式）：导航 + 地址栏 + 房间操作；网页视频全屏时隐藏，让视频铺满整窗 -->
-  <div v-show="!videoFullscreen" class="toolbar">
-  <!-- 后退：完整左箭头（带箭杆），对齐参考图的细线风格 -->
-  <button class="icon-btn" title="后退" :disabled="activeTabId == null" @click="nav('back')">
-    <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-      <path d="M19 12H5" />
-      <path d="M12 19l-7-7 7-7" />
-    </svg>
-  </button>
-  <!-- 前进：与后退镜像的完整右箭头 -->
-  <button class="icon-btn" title="前进" :disabled="activeTabId == null" @click="nav('forward')">
-    <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-      <path d="M5 12h14" />
-      <path d="M12 5l7 7-7 7" />
-    </svg>
-  </button>
-  <!-- 刷新：顶部开口圆环 + 箭头，对齐参考图 -->
-  <button class="icon-btn" title="刷新" :disabled="activeTabId == null" @click="nav('reload')">
-    <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-      <path d="M21 12a9 9 0 1 1-2.64-6.36" />
-      <path d="M21 3v6h-6" />
-    </svg>
-  </button>
-
-    <input ref="omniboxEl" v-model="videoUrl" class="url omnibox" placeholder="输入或粘贴视频网页地址，回车打开" @keydown.enter="onOpen" />
-
-    <template v-if="!roomId">
-      <button class="m-btn filled" :disabled="!!busy" title="以当前打开的视频网页创建同步房间" @click="onHost">
-        <span v-if="busy === 'hosting'" class="spinner"></span>{{ busy === 'hosting' ? '创建中…' : '创建房间' }}
-      </button>
-    </template>
-    <template v-else>
-      <button class="m-btn" @click="onCopyLink">复制邀请</button>
-      <button class="m-btn" @click="openMembers">房间 ({{ memberList.length }})</button>
-      <!-- 成员端：暂停/恢复同步（房主不显示；转让后角色变化由 isHost 驱动显隐） -->
-      <button
-        v-if="!isHost"
-        class="m-btn"
-        :title="syncPaused ? '恢复跟随房主同步' : '暂停跟随（本地可自由播放，不同步房主）'"
-        @click="toggleSyncPause"
-      >
-        {{ syncPaused ? '恢复同步' : '暂停同步' }}
-      </button>
-      <span v-if="connectionLost" class="chip danger" title="与房主连接已断开，可点「退出房间」后重新加入">连接已断开</span>
-      <button class="m-btn" @click="exitRoom">{{ isHost ? '解散房间' : '退出房间' }}</button>
-    </template>
-
-    <input v-if="!roomId" v-model="joinInput" class="join" placeholder="粘贴邀请链接" :disabled="!!busy" />
-    <button v-if="!roomId" class="m-btn tonal" :disabled="!joinInput || !!busy" @click="onJoinLink">
-      <span v-if="busy === 'joining'" class="spinner"></span>{{ busy === 'joining' ? '连接中…' : '加入' }}
-    </button>
-
-    <div class="flex-spacer"></div>
-    <button class="icon-btn history-btn" :class="{ on: historyOpen }" title="播放记录" @click="toggleHistory">
-      <svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-        <circle cx="12" cy="12" r="9" />
-        <path d="M12 7v5l3 2" />
-      </svg>
-    </button>
-    <button class="icon-btn settings-btn" title="设置" @click="openSettings">
-      <svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-        <circle cx="12" cy="12" r="3" />
-        <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
-      </svg>
-    </button>
-  </div>
+  <!-- 播放页底部操作区（本地文件页：路径/预取；网页页：共享给成员；高度与 Rust tabs::CHROME_BOTTOM 一致） -->
+  <ShareBar
+    :visible="streamBarVisible"
+    :share-mode="shareBarMode"
+    :share-name="shareName"
+    :can-share-web="!!(roomId && isHost && !onLocalFilePage && syncTabId != null)"
+    :can-prefetch="!!(roomId && isHost && onLocalFilePage && localFile)"
+    :prefetch-ratio="fileCopying ? fileCopyRatio : -1"
+    :file-path="onLocalFilePage ? (localFile?.path ?? '') : ''"
+    @share-web="onShareWeb"
+    @prefetch="onSendFileCopy"
+  />
 
   <!-- 主页：无激活页签时显示（页签可保留在后台）；站点卡片点击新开页签，末尾加号可添加自定义书签 -->
   <div v-if="activeTabId == null" class="home">
@@ -119,6 +86,20 @@
         <span class="site-name">添加站点</span>
       </button>
     </div>
+
+    <!-- 本地视频入口：与站点卡片同款式，放在整个站点列表下方（在房且为房主时会自动推流给成员） -->
+    <div class="sites local-sites">
+      <button class="site-card" title="选择本机视频文件播放（在房且为房主时自动推流给成员）" @click="onPickLocal">
+        <span class="site-icon fallback local-icon">
+          <svg viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <rect x="3" y="4.5" width="18" height="15" rx="2" />
+            <path d="M8 4.5v15M16 4.5v15" />
+            <path d="M10.6 9.8 14.4 12l-3.8 2.2z" />
+          </svg>
+        </span>
+        <span class="site-name">打开本地视频</span>
+      </button>
+    </div>
   </div>
 
   <MembersDialog :open="membersOpen" :members="memberList" :i-am-host="isHost" @close="closeMembers" @transfer="onTransferHost" />
@@ -140,20 +121,23 @@
 
 <script setup lang="ts">
 /**
- * 应用根组件：工具栏与房间/视频流程编排。
- * 标签行、成员面板、设置对话框已拆分为独立组件；中继探测由 useRelays 单例承担。
+ * 应用根组件：房间/视频流程编排；顶部栏（标签+工具栏）已抽到 components/TopBar.vue。
  */
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { RoomController } from './room'
 import { buildShareUrl } from '../core/shareLink'
 import { HOME_SITES } from '../core/sites'
 import { setRelaySink, useRelays } from './composables/useRelays'
 import { hostOf } from './format'
-import TabStrip, { type TabInfo, type TabRole } from './components/TabStrip.vue'
+import { isLoopbackMediaUrl } from '../core/mediaSource'
+import TopBar from './components/TopBar.vue'
+import type { TabInfo, TabRole } from './components/TabStrip.vue'
 import MembersDialog, { type MemberItem } from './components/MembersDialog.vue'
 import SettingsDialog from './components/SettingsDialog.vue'
 import SiteDialog from './components/SiteDialog.vue'
 import HistoryPanel from './components/HistoryPanel.vue'
+import ShareBar from './components/ShareBar.vue'
+import { WebShareFeature } from './webShare'
 import type { HistoryRecord } from '../core/history'
 import { RTT_STALE_MS } from './rtt'
 
@@ -293,6 +277,19 @@ const isMax = ref(false)
 /** 网页视频 HTML 全屏状态（全屏时隐藏自绘顶部栏，让原生视频视图铺满整窗） */
 const videoFullscreen = ref(false)
 
+/**
+ * 播放页底部操作区是否显示（同时决定 Rust 侧是否为它预留 48px）。
+ * 只属于本地视频播放页：网页页/主页/成员流页都不显示，各页面相互独立。
+ */
+const onLocalFilePage = computed(() => {
+  if (activeTabId.value == null) return false
+  const t = tabs.value.find((x) => x.id === activeTabId.value)
+  return !!t && t.url.startsWith('file:')
+})
+const streamBarVisible = computed(
+  () => activeTabId.value != null && !videoFullscreen.value && onLocalFilePage.value,
+)
+
 /** 窗口控制按钮（自定义标题栏，转发 TabStrip 事件） */
 function win(action: string): void {
   window.p2pApi.winControl(action)
@@ -358,14 +355,31 @@ async function openInTab(raw: string): Promise<void> {
  * 参数：id 目标页签 ID。
  */
 async function setSyncTab(id: number): Promise<void> {
+  const t = tabs.value.find((x) => x.id === id)
+  if (!t) return
+  // 尚无同步目标＝首次同步（打开页签自动设为同步）：提示「同步成功」，非「切换」
+  const firstSync = syncTabId.value == null
+  const url = t.url
   syncTabId.value = id
   await window.p2pApi.setSyncTab(id, false)
-  const t = tabs.value.find((x) => x.id === id)
-  const url = t?.url ?? ''
-  controller.videoUrl = url
   controller.syncTabId = id
-  controller.broadcastSyncTab(url)
-  notify('已切换同步页签')
+  controller.videoUrl = url
+  // 「页签即模式」：本地播放页=文件流、推流页签=直接推流、网页页签=进度同步
+  if (url.startsWith('file:')) {
+    controller.broadcastSyncTab(url)
+    // 从推流/其它源切回本地文件页签：重新把该文件作为观看源广播（fileId 不同才重发，避免开文件时重复要约）
+    if (localFile.value && localFileId.value && controller.shareFileId !== localFileId.value) {
+      await controller.hostShareLocalFile(localFile.value, { asSource: true })
+      localFileId.value = controller.shareFileId
+    }
+  } else if (isLoopbackMediaUrl(url)) {
+    // 推流页签：重新广播已建立的中继，成员切回推流画面
+    controller.resyncRelay()
+  } else {
+    // 网页页签：进度同步（原画直链优先，退回页面地址）
+    await webShare.shareProgress(id, { force: true, announce: true })
+  }
+  notify(firstSync ? '同步成功' : '已切换同步页签')
 }
 
 /**
@@ -376,19 +390,20 @@ async function setSyncTab(id: number): Promise<void> {
 async function afterTabNavigated(id: number, url: string): Promise<void> {
   if (!roomId.value || !isHost.value) return
   if (syncTabId.value == null) await setSyncTab(id)
-  else if (id === syncTabId.value) {
-    controller.videoUrl = url
-    notify('已开始同步')
+  else if (id === syncTabId.value && !isLoopbackMediaUrl(url) && !url.startsWith('file:')) {
+    // 网页同步页签导航（换集/换站）：重发进度同步源让成员跟随
+    void webShare.shareProgress(id)
   }
 }
 
 /**
- * 关闭页签：成员端同步页签禁止关闭（兜底，UI 层已不渲染关闭按钮）；
- * 房主关闭同步页签时清同步目标并提示重选。
+ * 关闭页签：成员端跟随中的同步页签禁止关闭（暂停同步/同步结束后可关）；
+ * 房主关闭同步页签时结束共享（广播 syncEnd）并提示重选。
  * 参数：id 页签 ID。
  */
 async function closeTab(id: number): Promise<void> {
-  if (tabRole.value === 'follower' && id === syncTabId.value) {
+  // 仅「跟随中」锁定：暂停同步后本地可自由关闭
+  if (tabRole.value === 'follower' && id === syncTabId.value && !syncPaused.value) {
     notify('同步中的页签不能关闭，退出房间后可关闭')
     return
   }
@@ -396,18 +411,21 @@ async function closeTab(id: number): Promise<void> {
   await window.p2pApi.closeVideo(id)
   const idx = tabs.value.findIndex((x) => x.id === id)
   if (idx >= 0) tabs.value.splice(idx, 1)
+  if (relayTabId.value === id) relayTabId.value = null
   if (activeTabId.value === id) {
     // 激活相邻页签（优先右侧，其次左侧）；无页签回主页
     const next = tabs.value[idx] ?? tabs.value[idx - 1] ?? null
     if (next) await activateTab(next.id)
     else await goHome()
   }
-  if (syncTabId.value === id && tabRole.value === 'host') {
+  // 关掉的是同步页签（含暂停同步后关闭）：清同步目标；房主再广播结束共享
+  if (syncTabId.value === id) {
     syncTabId.value = null
-    controller.videoUrl = ''
     controller.syncTabId = null
     await window.p2pApi.setSyncTab(null, false)
-    notify('同步目标已关闭：请点击其他页签的同步按钮继续同步')
+    if (tabRole.value === 'host') {
+      controller.endShare()
+    }
   }
 }
 
@@ -419,11 +437,54 @@ async function closeTab(id: number): Promise<void> {
 function ensureTab(id: number, url: string): TabInfo | null {
   let t = tabs.value.find((x) => x.id === id) ?? null
   if (!t && url) {
-    t = { id, url, title: '', favicon: new URL(url).origin + '/favicon.ico' }
+    // file:// 无 origin，favicon 用空串（UI 首字母兜底）
+    const fav = url.startsWith('file:') ? '' : new URL(url).origin + '/favicon.ico'
+    t = { id, url, title: '', favicon: fav }
     tabs.value.push(t)
   }
   if (t) closedTabIds.delete(id)
   return t
+}
+
+/** 去掉扩展名，只留文件名（本地视频页签展示用；不显示路径） */
+function baseName(name: string): string {
+  const base = name.split(/[\\/]/).pop() || name
+  const dot = base.lastIndexOf('.')
+  return dot > 0 ? base.slice(0, dot) : base
+}
+
+/** 从 file:// 地址取文件名（去后缀），解析失败返回空串 */
+function fileUrlBaseName(url: string): string {
+  try {
+    const p = decodeURIComponent(new URL(url).pathname)
+    return baseName(p.split('/').pop() || '')
+  } catch {
+    return ''
+  }
+}
+
+/**
+ * 页签展示名覆盖：本地视频页签只显示文件名（去后缀），不显示路径/文件名后缀。
+ * 房主本机 file:// 页签从地址取；成员无损文件流页签取房主下发的文件名。
+ * 参数：t 页签条目。
+ * 返回值：展示名；非本地视频页签返回空串（由组件回退标题→域名）。
+ */
+function tabTitleOf(t: { id: number; url: string }): string {
+  if (t.id === relayTabId.value) return '直接推流'
+  if (t.url.startsWith('file:')) {
+    const n = fileUrlBaseName(t.url)
+    if (n) return n
+  }
+  // 成员无损文件流页签 = 本机回环媒体地址；页签被导航到网页后不再套用文件名
+  if (
+    t.id === syncTabId.value &&
+    shareModeR.value === 'file' &&
+    shareName.value &&
+    isLoopbackMediaUrl(t.url)
+  ) {
+    return baseName(shareName.value)
+  }
+  return ''
 }
 
 /** 状态提示：走主进程 Toast 小窗（独立透明窗口，显示于视频画面顶部 UI 区正下方居中，4 秒自动消失） */
@@ -449,6 +510,134 @@ const connectionLost = ref(false)
 const syncPaused = ref(false)
 const controller = new RoomController()
 
+/** ===== 本地文件 / 共享 ===== */
+/** 最近一次选择的本地视频（供「预取整份」） */
+const localFile = ref<{ path: string; url: string; name: string; size: number } | null>(null)
+/** 本地文件作为观看源时的共享 ID（回选本地文件页签时判断是否需要重新广播） */
+const localFileId = ref('')
+/** 是否正在发送整份副本 */
+const fileCopying = ref(false)
+/** 整份副本传输进度 0~1 */
+const fileCopyRatio = ref(0)
+/** 共享展示名 */
+const shareName = ref('')
+
+/** controller.shareMode 的响应式镜像（controller 非响应式，用它驱动 UI 重算） */
+const shareModeR = ref<typeof controller.shareMode>(controller.shareMode)
+
+/** 网页视频共享特性（同步进度 / 直接推流；详见 src/renderer/webShare.ts） */
+const webShare = new WebShareFeature({
+  tabStatus: (tabId) => window.p2pApi.tabStatus(tabId),
+  shareDirect: (url, name) => controller.hostShareDirectUrl(url, name),
+  sharePage: (url) => {
+    controller.videoUrl = url
+    controller.broadcastSyncTab(url)
+  },
+  shareRelay: (url, name) => controller.hostShareRemote(url, name),
+  pauseSourceTab: () => void window.p2pApi.videoCmd('pause'),
+  notify: (msg) => notify(msg),
+  syncTabId: () => syncTabId.value,
+  activeTabId: () => activeTabId.value,
+  tabs: () => tabs.value.map((t) => ({ id: t.id, url: t.url, title: t.title })),
+})
+
+/** 房主：直接推流页签 ID（本机回环回放页，独立于同步目标；供模式判定/标题/复用） */
+const relayTabId = ref<number | null>(null)
+
+/**
+ * 顶部「直接推流」按钮：房主 + 在房间 + 当前激活页签是可推流的网页视频时显示。
+ * 「页签即模式」——网页页签点同步=进度同步，本按钮把该网页视频转成推流页签并切过去。
+ */
+const showDirectRelay = computed(() => {
+  if (!roomId.value || !isHost.value) return false
+  const id = activeTabId.value
+  if (id == null) return false
+  const t = tabs.value.find((x) => x.id === id)
+  if (!t || t.url.startsWith('file:') || isLoopbackMediaUrl(t.url)) return false
+  return webShare.relaySupported.value
+})
+
+/**
+ * 房主点「直接推流」：对当前网页视频建立中继（会打开/复用推流页签并广播 fileOffer），
+ * 随即把同步目标切到推流页签——成员立刻切到推流画面。
+ * 返回值：Promise。
+ */
+async function onDirectRelay(): Promise<void> {
+  const id = activeTabId.value
+  if (id == null || !roomId.value || !isHost.value) return
+  const ok = await webShare.startRelay(id)
+  if (!ok) return
+  const rid = relayTabId.value
+  if (rid == null) return
+  syncTabId.value = rid
+  controller.syncTabId = rid
+  await window.p2pApi.setSyncTab(rid, false)
+  notify('已切换到直接推流')
+}
+
+/** 底部条「共享给成员」：按当前同步页签重发进度共享（本地文件页不显示该按钮，保留兜底） */
+function onShareWeb(): void {
+  const id = syncTabId.value ?? activeTabId.value
+  if (id == null) {
+    notify('请先打开视频页签')
+    return
+  }
+  void webShare.shareProgress(id, { force: true, announce: true })
+}
+
+/** 底部条展示的共享模式：本地文件状态只在本地播放页显示，网页页只在 url 共享时显示（避免本地/网页混杂） */
+const shareBarMode = computed<typeof controller.shareMode | 'none'>(() => {
+  if (!roomId.value || !isHost.value) return 'none'
+  if (shareModeR.value === 'file' && !onLocalFilePage.value) return 'none'
+  return shareModeR.value
+})
+
+controller.onShareChanged = () => {
+  shareModeR.value = controller.shareMode
+  shareName.value = controller.shareName
+  // 整份副本传输进度（房主侧按已登记的 shareFileId 查询）
+  if (fileCopying.value && controller.shareFileId) {
+    fileCopyRatio.value = controller.fileRatio(controller.shareFileId)
+    if (fileCopyRatio.value >= 1) {
+      fileCopying.value = false
+      notify('完整副本已发送完成')
+    }
+  }
+}
+
+/**
+ * 打开本地视频：系统对话框选文件 → 本机 file:// 播放；若在房且是房主则立即推流同步（成员马上能看）。
+ * 返回值：Promise。
+ */
+async function onPickLocal(): Promise<void> {
+  const info = await window.p2pApi.pickVideoFile()
+  if (!info) return
+  localFile.value = info
+  videoUrl.value = info.url
+  const id = await window.p2pApi.openVideo(info.url)
+  ensureTab(id, info.url)
+  await activateTab(id)
+  await afterTabNavigated(id, info.url)
+  if (roomId.value && isHost.value) {
+    // 本地源走无损文件流：成员边收边播（画质/音轨与源文件一致），不再抓屏推流
+    await controller.hostShareLocalFile(info, { asSource: true })
+    localFileId.value = controller.shareFileId
+  }
+}
+
+/**
+ * 房主：把完整本地文件副本发给成员（可选无损路径，不打断当前推流）。
+ * 返回值：Promise。
+ */
+async function onSendFileCopy(): Promise<void> {
+  const info = localFile.value
+  if (!info || !roomId.value || !isHost.value) return
+  fileCopying.value = true
+  fileCopyRatio.value = 0
+  await controller.hostShareLocalFile(info)
+  notify('开始整份预取给成员')
+}
+
 /** ===== 用户设置 ===== */
 const settingsOpen = ref(false)
 /** ===== 播放记录面板 ===== */
@@ -462,8 +651,11 @@ type Theme = 'light' | 'dark'
 const theme = ref<Theme>('light')
 /** 已持久化主题：打开设置时快照，取消/关闭时回退到它 */
 const persistedTheme = ref<Theme>('light')
-/** 地址栏元素引用（聚焦时不被视频页 URL 覆盖） */
-const omniboxEl = ref<HTMLInputElement | null>(null)
+
+/** 地址栏是否聚焦（顶部栏抽离后按 class 判定，聚焦时不被视频页 URL 覆盖） */
+function isOmniboxFocused(): boolean {
+  return document.activeElement?.classList.contains('omnibox') ?? false
+}
 
 /**
  * 应用主题：切换 <html class="dark"> 并同步 localStorage 缓存
@@ -585,6 +777,10 @@ controller.onRoleChanged = (nowHost) => {
   syncPaused.value = controller.isSyncPaused
   syncDebug()
 }
+// 同步结束（房主离开/心跳超时）：清空同步页签标记，页签恢复可关闭
+controller.onSyncUnlocked = () => {
+  syncTabId.value = null
+}
 // 成员端断线：仅提示，房间状态与后续操作交给用户自己决定
 controller.onConnectionLost = () => {
   connectionLost.value = true
@@ -633,9 +829,12 @@ function normUrlKey(u: string): string {
 // 成员端：房主切换同步页签 → 复用相同地址页签或新建，置顶第一位并自动跳转显示。
 // 同样适用于首次心跳建立同步（syncTabId 为空时 applySnapshot 也会走这里）
 controller.onSyncTab = async (url) => {
-  // 规范化匹配已有页签（忽略尾斜杠/hash 差异），避免同页重复开新页签
+  // 成员：始终复用「当前同步页签」原地导航——观看源在 网页/直链/推流 之间切换也只保留一个页签；
+  // 尚无同步页签时先按地址复用同址页签，仍无则新建。
+  const cur =
+    syncTabId.value != null ? tabs.value.find((x) => x.id === syncTabId.value) ?? null : null
   const key = normUrlKey(url)
-  let t = tabs.value.find((x) => normUrlKey(x.url) === key) ?? null
+  let t = cur ?? tabs.value.find((x) => normUrlKey(x.url) === key) ?? null
   if (!t) {
     const id = await window.p2pApi.openVideo(url)
     t = ensureTab(id, url)!
@@ -651,8 +850,36 @@ controller.onSyncTab = async (url) => {
   syncTabId.value = t.id
   controller.syncTabId = t.id
   controller.videoUrl = url
-  // 迁移跟随守卫到新同步页签（旧同步页签由主进程自动解除），并跳转显示
-  await window.p2pApi.setSyncTab(t.id, true)
+  // 迁移跟随守卫到新同步页签（旧同步页签由主进程自动解除），并跳转显示。
+  // 守卫只该给成员（跟随端不采集事件）：房主若被挂守卫，本机 play/pause/seek
+  // 会被 harness push() 静默丢弃，事件级同步（含「等待成员预加载」）整体失效
+  await window.p2pApi.setSyncTab(t.id, tabRole.value === 'follower')
+  await activateTab(t.id)
+}
+
+// 房主端：直接推流需要展示「本机回放」页签 → 新建或复用推流页签并跳转。
+// 只负责打开/跳转，不改同步目标（是否切推流由房主点该页签的「同步」或顶部的「直接推流」决定）
+controller.onHostPlaybackTab = async (url) => {
+  const cur =
+    relayTabId.value != null ? tabs.value.find((x) => x.id === relayTabId.value) ?? null : null
+  if (cur) {
+    // 已有推流页签：原地导航到新地址并跳转（不新建、不改动排列）
+    if (cur.url !== url) {
+      await window.p2pApi.openVideo(url, cur.id)
+      cur.url = url
+    }
+    await activateTab(cur.id)
+    return
+  }
+  const id = await window.p2pApi.openVideo(url)
+  const t = ensureTab(id, url)!
+  relayTabId.value = t.id
+  // 浏览器习惯：新页签插在当前（源）页签右侧
+  const rest = tabs.value.filter((x) => x.id !== t.id)
+  const at = activeTabId.value
+  const idx = at != null ? rest.findIndex((x) => x.id === at) : -1
+  rest.splice(idx + 1, 0, t)
+  tabs.value = rest
   await activateTab(t.id)
 }
 
@@ -758,6 +985,10 @@ async function diagSnapshot(): Promise<unknown> {
     peerNames: Object.fromEntries(controller.peerNames),
     peerRtt: Object.fromEntries(controller.peerRtt),
     relays: Object.entries(sockets).map(([url, ws]) => ({ url, readyState: ws?.readyState ?? -1 })),
+    // 媒体共享状态（联调共享/文件分发用）
+    shareMode: controller.shareMode,
+    shareName: controller.shareName,
+    shareFileId: controller.shareFileId,
   }
 }
 
@@ -812,10 +1043,24 @@ async function onJoinLink(): Promise<void> {
   // 成功与否由 onHostConnected / onJoinFailed 回调决定，不在此处提前宣告
 }
 
-/** 地址栏回车：打开/导航视频网页（激活页签内导航，主页时新开页签；房内房主自动联动同步） */
+/** 地址栏回车：邀请链接直接加入；其余按视频网页打开（激活页签内导航，主页时新开页签） */
 async function onOpen(): Promise<void> {
   if (!videoUrl.value) return
-  await openInTab(videoUrl.value)
+  const raw = videoUrl.value.trim()
+  // 粘进来的是邀请链接（watchsync://join?room=...）时按「加入房间」处理，
+  // 否则会被当成视频地址去打开、看起来像「粘贴没反应」
+  const parsed = await window.p2pApi.parseLink(raw)
+  if (parsed) {
+    if (roomId.value) {
+      notify('已在房间中，请先「退出房间」再加入')
+      return
+    }
+    joinInput.value = raw
+    videoUrl.value = ''
+    await onJoinLink()
+    return
+  }
+  await openInTab(raw)
 }
 
 /** 复制邀请链接（仅含房间号，不含任何同步信息） */
@@ -841,6 +1086,8 @@ function resetRoomState(): void {
   // 同步目标解除：跟随守卫清空，页签全部解锁为普通页签（成员端同步页签恢复可关闭）
   syncTabId.value = null
   controller.syncTabId = null
+  relayTabId.value = null
+  localFileId.value = ''
   syncPaused.value = false
   void window.p2pApi.setSyncTab(null, false)
   syncDebug()
@@ -858,6 +1105,33 @@ async function exitRoom(): Promise<void> {
 onMounted(() => {
   // 暴露诊断快照给联调脚本（drive.cjs debug）
   ;(window as unknown as { __p2pDiag: () => Promise<unknown> }).__p2pDiag = diagSnapshot
+  // 联调：E2E 入口（建房/加入/按路径共享本地视频）
+  ;(window as unknown as { __p2pE2e?: unknown }).__p2pE2e = {
+    host: () => onHost(),
+    join: (url: string) => {
+      joinInput.value = url
+      return onJoinLink()
+    },
+    shareLocalPath: async (path: string) => {
+      const name = path.split(/[\\/]/).pop() || 'video.mp4'
+      const size = await window.p2pApi.fileSize(path)
+      const url = path.startsWith('file:') ? path : 'file:///' + path.replace(/\\/g, '/')
+      // 房主本机也打开该文件进视频页签，便于同步进度
+      const id = await window.p2pApi.openVideo(url)
+      ensureTab(id, url)
+      await activateTab(id)
+      await afterTabNavigated(id, url)
+      // E2E 文件分发路径：以文件为观看源（成员收完后本地播放）
+      await controller.hostShareLocalFile({ path, url, name, size }, { asSource: true })
+      return { path, url, name, size }
+    },
+    shareUrl: () => buildShareUrl(roomId.value),
+    shareWeb: () => onShareWeb(),
+    shareRelay: () => onDirectRelay(),
+    webShareMode: () => (syncTabId.value === relayTabId.value ? 'relay' : 'progress'),
+    diag: diagSnapshot,
+    openLocalPick: () => onPickLocal(),
+  }
   // 读取用户设置（首次启动生成默认昵称）；装载自定义中继并后台重新探测；回填自定义站点书签
   window.p2pApi.getSettings().then((s) => {
     // settings.json 为权威主题来源（覆盖启动时的 localStorage 预置值）
@@ -886,9 +1160,44 @@ onMounted(() => {
     const t = ensureTab(info.tabId, info.url || '')
     if (t && info.url) {
       t.title = info.title
-      if (info.url !== t.url) t.url = info.url
-      if (info.tabId === activeTabId.value && document.activeElement !== omniboxEl.value) videoUrl.value = info.url
+      if (info.url !== t.url) {
+        t.url = info.url
+        // 页内导航（站内点链接/重定向）只走桥 tick 不走 afterTabNavigated：
+        // 房主同步页签地址变化时重发进度同步源（换集/换站都能跟随）
+        if (
+          roomId.value &&
+          isHost.value &&
+          info.tabId === syncTabId.value &&
+          !isLoopbackMediaUrl(info.url) &&
+          !info.url.startsWith('file:')
+        ) {
+          void webShare.shareProgress(info.tabId)
+        }
+      }
+      if (info.tabId === activeTabId.value && !isOmniboxFocused()) videoUrl.value = info.url
     }
+  })
+  // 房主：当前网页的视频常晚于导航就绪（SPA/播放器异步换源），导航钩子只探一次会漏。
+  // 轮询激活页签播放源，源一变就重探测「能否直接推流」，驱动顶部「直接推流」按钮显隐。
+  let relayProbeSrc = ''
+  const probeActiveRelay = (): void => {
+    void (async () => {
+      if (!roomId.value || !isHost.value || activeTabId.value == null) return
+      const t = tabs.value.find((x) => x.id === activeTabId.value)
+      if (!t || t.url.startsWith('file:') || isLoopbackMediaUrl(t.url)) return
+      const st = await window.p2pApi.tabStatus(t.id)
+      const src = st?.src ?? ''
+      if (src && src !== relayProbeSrc) {
+        relayProbeSrc = src
+        await webShare.detect(t.id)
+      }
+    })()
+  }
+  window.setInterval(probeActiveRelay, 2000)
+  // 切换激活页签：重置探测缓存并立即探测该页是否可推流
+  watch(activeTabId, () => {
+    relayProbeSrc = ''
+    probeActiveRelay()
   })
 })
 </script>

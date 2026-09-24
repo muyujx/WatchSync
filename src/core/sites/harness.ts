@@ -79,11 +79,15 @@ export const HARNESS_SCRIPT = `
         site.pause ? site.pause(video) : video.pause()
       } else if (action === 'seek') {
         site.seek ? site.seek(video, arg) : (video.currentTime = arg)
+      } else if (action === 'reload') {
+        // 重建媒体资源管线：元素因网络错误（如响应截断）进入 error 态后 seek 不再发请求，
+        // load() 强制重新拉源（配合随后 seek 对齐位置）
+        video.load()
       } else if (action === 'rate') {
         site.setRate ? site.setRate(video, arg) : (video.playbackRate = arg)
       }
     },
-    status: () => ({ position: video.currentTime, paused: video.paused, rate: video.playbackRate, duration: video.duration, readyState: video.readyState }),
+    status: () => ({ position: video.currentTime, paused: video.paused, rate: video.playbackRate, duration: video.duration, readyState: video.readyState, src: video.currentSrc || video.src || '' }),
     setFollow: (on) => { window.__p2pGuard = !!on; on ? enableGuard() : disableGuard() },
     dispose,
   }

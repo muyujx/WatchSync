@@ -19,6 +19,9 @@ pub const TAB_HEIGHT: f64 = 36.0;
 pub const TOOLBAR_HEIGHT: f64 = 44.0;
 /// 网页内容区顶部偏移 = 标签行 + 工具栏
 pub const CHROME_TOP: f64 = TAB_HEIGHT + TOOLBAR_HEIGHT;
+/// 播放页底部控制栏高度（px）= 视频区下方常驻控件条；UI 侧 CSS 须保持一致（App.vue .streambar）
+/// 仅在「有激活视频页签且未 HTML 全屏」时占位：视频不再铺满整窗，全屏时归零让视频铺满
+pub const CHROME_BOTTOM: f64 = 48.0;
 
 /// 跟随守卫开启脚本：写全局标记，并同步已安装桥的 setFollow（否则只改 flag 不会开关采集）
 pub const GUARD_ON: &str =
@@ -55,6 +58,21 @@ __SCRIPT__
     } catch (e) {}
   }
   window.__p2pReport = send
+  // 媒体文档（本地视频 / 成员流：Chromium 原生 <video> 播放页）默认黑底 → 改白，
+  // 与下方页面操作区一起形成「白底 + 视频居中」的播放页；仅对 video/*/audio/* 文档生效，站点网页不受影响
+  if (!window.__p2pMediaWhite) {
+    window.__p2pMediaWhite = true
+    try {
+      if (/^(video|audio)\//.test(document.contentType)) {
+        const st = document.createElement('style')
+        // 跟随应用主题（窗口 PreferredColorScheme → prefers-color-scheme）：
+        // 浅色 #fff、深色 #1e1f20，均与 UI 侧 --ws-surface 一致，与下方操作区无缝
+        st.textContent = 'html,body{background:#fff !important}video{background:transparent !important;width:75vw !important;height:75vh !important;max-width:75vw !important;max-height:75vh !important;object-fit:contain !important}' +
+          '@media (prefers-color-scheme: dark){html,body{background:#1e1f20 !important}}'
+        ;(document.head || document.documentElement).appendChild(st)
+      }
+    } catch (e) {}
+  }
   window.__p2pReporter = setInterval(() => {
     const b = window.__p2pBridge
     // 封面：og:image 优先，退 video.poster；由 Rust 侧归一化/过滤（见 history.rs）
@@ -121,9 +139,20 @@ fn build_inject_script(tab_id: i64, adapter_id: &str, inject_script: &str, guard
         .replace("__SCRIPT__", &format!(";{};", inject_script))
 }
 
-/// 激活页签的布局（逻辑坐标）：HTML 全屏铺满整窗，否则顶部预留 UI 区
+/// 底部预留高度：只有本地视频播放页（file:// 媒体页）需要视频下方的本地文件操作区；
+/// 网页页/成员流页不预留，视频铺到窗口底部（各页面相互独立）
+fn bottom_inset(url: &str) -> f64 {
+    if url.starts_with("file:") {
+        CHROME_BOTTOM
+    } else {
+        0.0
+    }
+}
+
+/// 激活页签的布局（逻辑坐标）：HTML 全屏铺满整窗，否则顶部预留 UI 区；
+/// 底部预留仅本地播放页需要（见 bottom_inset），网页页视频铺到窗口底部
 /// 参数：app 句柄。
-/// 返回值：(位置, 尺寸)，均为逻辑坐标；全屏时 top=0 且高度为整窗高。
+/// 返回值：(位置, 尺寸)，均为逻辑坐标；全屏时 top=0 且高度为整窗高度。
 fn active_bounds(app: &tauri::AppHandle) -> (LogicalPosition<f64>, LogicalSize<f64>) {
     let fullscreen = state(app).html_fullscreen.lock().unwrap().clone();
     let win = main_window(app);
@@ -138,8 +167,21 @@ fn active_bounds(app: &tauri::AppHandle) -> (LogicalPosition<f64>, LogicalSize<f
             h = h.max(ms.height as f64 / scale);
         }
     }
-    let top = if fullscreen { 0.0 } else { CHROME_TOP };
-    (LogicalPosition::new(0.0, top), LogicalSize::new(w, h - top))
+    let url = {
+        let active = state(app).active_id.lock().unwrap().clone();
+        active
+            .and_then(|id| state(app).tabs.lock().unwrap().get(&id).map(|t| t.page_url.clone()))
+            .unwrap_or_default()
+    };
+    let (top, bottom) = if fullscreen {
+        (0.0, 0.0)
+    } else {
+        (CHROME_TOP, bottom_inset(&url))
+    };
+    (
+        LogicalPosition::new(0.0, top),
+        LogicalSize::new(w, (h - top - bottom).max(0.0)),
+    )
 }
 
 /// 将主窗口切入/切出 OS 级全屏，并强制铺满当前显示器。
@@ -259,8 +301,12 @@ pub fn open(app: &tauri::AppHandle, url: &str, tab_id: Option<i64>, args: &str) 
     let builder = WebviewBuilder::new(&label, WebviewUrl::External(parsed))
         .additional_browser_args(args)
         .data_directory(crate::webview_data_dir(app));
-    win.add_child(builder, LogicalPosition::new(0.0, CHROME_TOP), LogicalSize::new(w, h - CHROME_TOP))
-        .expect("创建视频页签 webview 失败");
+    win.add_child(
+        builder,
+        LogicalPosition::new(0.0, CHROME_TOP),
+        LogicalSize::new(w, (h - CHROME_TOP - bottom_inset(url)).max(0.0)),
+    )
+    .expect("创建视频页签 webview 失败");
     st.tabs.lock().unwrap().insert(
         id,
         TabEntry {
@@ -515,6 +561,7 @@ pub fn video_status(app: &tauri::AppHandle) -> Option<crate::state::VideoStatusF
             ready_state: s.ready_state,
             page_url,
             has_video: true,
+            src: s.src.clone(),
         },
         None => crate::state::VideoStatusFull {
             position: 0.0,
@@ -524,25 +571,37 @@ pub fn video_status(app: &tauri::AppHandle) -> Option<crate::state::VideoStatusF
             ready_state: 0.0,
             page_url,
             has_video: false,
+            src: String::new(),
         },
     })
 }
 
-/// 桥 tick 里的标题/URL 更新（由 bridge.rs 调用）：标题变化时 emit page-title 给 UI。
+/// 桥 tick 里的标题/URL 更新（由 bridge.rs 调用）：标题或地址变化时 emit page-title 给 UI。
 pub fn on_tab_tick(app: &tauri::AppHandle, tab_id: i64, title: &str, url: &str) {
     static LAST: OnceLock<Mutex<std::collections::HashMap<i64, String>>> = OnceLock::new();
     let last = LAST.get_or_init(|| Mutex::new(std::collections::HashMap::new()));
+    let mut relayout = false;
     {
         let st = state(app);
+        let active = st.active_id.lock().unwrap().clone();
         let mut tabs = st.tabs.lock().unwrap();
         if let Some(e) = tabs.get_mut(&tab_id) {
+            // 本地播放页与网页/成员页的底部预留不同：激活页签在 file: 与其它之间切换时重排布局
+            if active == Some(tab_id) && e.page_url.starts_with("file:") != url.starts_with("file:") {
+                relayout = true;
+            }
             e.page_url = url.to_string();
         }
     }
+    if relayout {
+        resize_active(app);
+    }
     let changed = {
         let mut m = last.lock().unwrap();
-        if m.get(&tab_id).map(|s| s.as_str()) != Some(title) {
-            m.insert(tab_id, title.to_string());
+        // 标题或地址任一变化都上报：纯地址变化（媒体页/换集不改标题）也要让 UI 走导航联动
+        let sig = format!("{title}\u{1}{url}");
+        if m.get(&tab_id).map(String::as_str) != Some(sig.as_str()) {
+            m.insert(tab_id, sig);
             true
         } else {
             false

@@ -11,6 +11,8 @@
 mod bridge;
 mod commands;
 mod history;
+mod media;
+mod media_server;
 mod settings;
 mod state;
 mod tabs;
@@ -115,6 +117,18 @@ fn main() {
             commands::history_clear,
             commands::tab_status,
             commands::seek_tab,
+            commands::pick_video_file,
+            commands::file_size,
+            commands::read_file_chunk,
+            commands::create_temp_media,
+            commands::write_temp_chunk,
+            commands::media_publish,
+            commands::media_unpublish,
+            commands::media_have,
+            commands::media_wanted,
+            commands::media_wanted_peek,
+            commands::media_progress,
+            commands::media_ready_ranges,
         ])
         .setup(move |app| {
             // 播放历史启动加载（损坏/缺失按空恢复，见 history.rs）；

@@ -7,9 +7,11 @@
 import { decodeMsg, encodeMsg, type SyncMsg } from './protocol'
 import { p2pLog } from './log'
 
-/** makeAction 上下文（仅用到 peerId） */
+/** makeAction 上下文（peerId + 可选二进制元数据） */
 export interface ActionContext {
   peerId: string
+  /** 二进制/流附带的元数据（file 分块等） */
+  metadata?: FileChunkMeta
 }
 
 /** Trystero 房间对象的最小接口（与 0.25 Room 类型兼容） */
@@ -17,6 +19,7 @@ export interface TrysteroRoomLike {
   makeAction: <T>(ns: string, config?: { onMessage?: (data: T, ctx: ActionContext) => void }) => {
     send: (data: T, options?: unknown) => Promise<void>
     onMessage: ((data: T, ctx: ActionContext) => void) | null
+    onReceiveProgress?: ((percent: number, ctx: ActionContext) => void) | null
   }
   /** 属性赋值制回调，默认 null */
   onPeerJoin: ((peerId: string) => void) | null
@@ -29,12 +32,22 @@ export interface TrysteroRoomLike {
 /** 应用命名空间：编入版本号，协议不兼容时切换，避免新旧版本串台 */
 export const APP_ID = 'watchsync-v1'
 
+/** 文件块二进制元数据 */
+export interface FileChunkMeta {
+  fileId: string
+  offset: number
+}
+
 /** 房间句柄：业务层唯一接触的房间接口 */
 export interface RoomHandle {
   /** 向全员广播一条同步消息 */
   broadcast: (msg: SyncMsg) => void
   /** 向指定成员定向发送一条同步消息（用于房主移交等点对点指令） */
   sendTo: (peerId: string, msg: SyncMsg) => void
+  /** 发送文件二进制块（target 缺省全员） */
+  sendBinary: (data: ArrayBuffer, meta: FileChunkMeta, target?: string) => Promise<void>
+  /** 订阅收到文件二进制块 */
+  onBinary: (cb: (data: ArrayBuffer, meta: FileChunkMeta, peerId: string) => void) => void
   /** 房间内成员 ID 集合（不含本端） */
   peers: Set<string>
   /** 订阅成员加入（叠加在内部成员维护之上，可多次调用） */
@@ -54,12 +67,22 @@ export function createRoom(trysteroRoom: TrysteroRoomLike, onMessage: (msg: Sync
   const peers = new Set<string>()
   const joinCbs: Array<(id: string) => void> = []
   const leaveCbs: Array<(id: string) => void> = []
+  const binaryCbs: Array<(data: ArrayBuffer, meta: FileChunkMeta, peerId: string) => void> = []
 
   // 'sync' 命名空间承载全部 SyncMsg；统一字符串编码，校验集中在 protocol.ts
   const action = trysteroRoom.makeAction<string>('sync')
   action.onMessage = (data, ctx) => {
     const msg = decodeMsg(String(data))
     if (msg) onMessage(msg, ctx.peerId)
+  }
+
+  // 'fbin' 命名空间承载文件分块二进制（自动分块/进度由 Trystero 处理）
+  const bin = trysteroRoom.makeAction<ArrayBuffer>('fbin')
+  bin.onMessage = (data, ctx) => {
+    const meta = ctx.metadata
+    if (meta && typeof meta.fileId === 'string') {
+      binaryCbs.forEach((f) => f(data as ArrayBuffer, meta, ctx.peerId))
+    }
   }
 
   // 属性赋值制：同时维护内部成员表与外部回调
@@ -81,6 +104,9 @@ export function createRoom(trysteroRoom: TrysteroRoomLike, onMessage: (msg: Sync
       // 定向发送：Trystero 通过 options.target 指定接收方 peerId
       action.send(encodeMsg(msg), { target: peerId }).catch((e) => console.error('[room] sendTo failed:', e))
     },
+    sendBinary: (data, meta, target) =>
+      bin.send(data, target ? { target, metadata: meta } : { metadata: meta }),
+    onBinary: (cb) => binaryCbs.push(cb),
     peers,
     onPeerJoin: (cb) => joinCbs.push(cb),
     onPeerLeave: (cb) => leaveCbs.push(cb),

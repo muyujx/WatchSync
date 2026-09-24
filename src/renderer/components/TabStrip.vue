@@ -11,13 +11,13 @@
     >
       <img v-if="!iconFailed[t.id]" class="tab-icon" :src="t.favicon" alt="" referrerpolicy="no-referrer" @error="iconFailed[t.id] = true" />
       <span v-else class="tab-icon fb">{{ letterOf(t) }}</span>
-      <span class="tab-title">{{ t.title || hostOf(t.url) }}</span>
+      <span class="tab-title">{{ titleText(t) }}</span>
       <!-- 房主：每页签带同步按钮（当前同步页签为激活态），点按钮切换同步目标 -->
       <button
         v-if="role === 'host'"
         class="tab-sync"
         :class="{ on: t.id === syncId }"
-        :title="t.id === syncId ? '同步中——点击其他页签的此按钮切换同步' : '把同步切换到此页签'"
+        :title="t.id === syncId ? '同步中——点击其他页签的此按钮切换同步' : '把同步切换到此页签（网页=进度同步；推流/本地播放页=对应观看源）'"
         @click.stop="emit('setSync', t.id)"
       >
         <svg viewBox="0 0 12 12" width="10" height="10">
@@ -37,9 +37,9 @@
           <circle cx="6" cy="6" r="2" fill="currentColor" />
         </svg>
       </span>
-      <!-- 关闭按钮：成员端同步页签不可关闭（退出房间后解锁） -->
+      <!-- 关闭按钮：成员端跟随中的同步页签不可关闭（暂停同步/同步结束后可关） -->
       <button
-        v-if="!(role === 'follower' && t.id === syncId)"
+        v-if="!(role === 'follower' && t.id === syncId && !syncPaused)"
         class="tab-close"
         title="关闭标签页"
         @click.stop="emit('close', t.id)"
@@ -72,7 +72,7 @@
  * 标签行组件：多网页标签展示 + 同步标记 + 主页按钮 + 窗口控制按钮（最小化/最大化/关闭）。
  * 纯展示组件：状态由父级（App）持有，交互通过事件上报。
  * - role='host'：每页签渲染同步按钮（点按钮=切换同步目标，点本体=切换查看）
- * - role='follower'：仅同步页签渲染只读同步绿点（圆环+圆点），且该页签无关闭按钮
+ * - role='follower'：仅同步页签渲染只读同步绿点（圆环+圆点）；跟随中该页签无关闭按钮，暂停同步后可关
  * - role='none'：普通浏览器页签行为
  */
 import { reactive } from 'vue'
@@ -94,7 +94,7 @@ export interface TabInfo {
 export type TabRole = 'host' | 'follower' | 'none'
 
 /** 组件属性：tabs 页签列表；activeId 当前显示页签；syncId 同步页签；role 角色语义；isMax 窗口最大化；syncPaused 成员是否暂停同步 */
-defineProps<{
+const props = defineProps<{
   tabs: TabInfo[]
   activeId: number | null
   syncId: number | null
@@ -102,6 +102,8 @@ defineProps<{
   /** 成员端暂停同步：同步点变黄（房主端忽略） */
   syncPaused?: boolean
   isMax: boolean
+  /** 展示名覆盖（如本地视频页签显示文件名而非路径）；缺省回退 标题→域名 */
+  titleOf?: (t: TabInfo) => string
 }>()
 /** 组件事件：activate 切换查看；setSync 切换同步（房主）；close 关闭页签；home 回主页；win 窗口控制 */
 const emit = defineEmits<{ activate: [id: number]; setSync: [id: number]; close: [id: number]; home: []; win: [action: string] }>()
@@ -109,8 +111,14 @@ const emit = defineEmits<{ activate: [id: number]; setSync: [id: number]; close:
 /** 各页签 favicon 加载失败标记（key = 页签 ID） */
 const iconFailed = reactive<Record<number, boolean>>({})
 
+/** 页签展示名：优先父级覆盖（本地视频显示文件名去后缀），否则标题，最后回退域名 */
+function titleText(t: TabInfo): string {
+  const override = props.titleOf?.(t)
+  return override || t.title || hostOf(t.url)
+}
+
 /** 页签 favicon 加载失败时的字母占位 */
 function letterOf(t: TabInfo): string {
-  return (t.title || hostOf(t.url)).trim()[0]?.toUpperCase() || '?'
+  return titleText(t).trim()[0]?.toUpperCase() || '?'
 }
 </script>

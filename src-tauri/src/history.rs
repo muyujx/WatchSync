@@ -368,6 +368,7 @@ mod tests {
             rate: 1.0,
             duration,
             ready_state: 4.0,
+            src: String::new(),
         }
     }
 
@@ -379,6 +380,7 @@ mod tests {
             rate: 1.0,
             duration,
             ready_state: 4.0,
+            src: String::new(),
         }
     }
 

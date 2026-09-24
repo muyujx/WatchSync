@@ -2,11 +2,15 @@
 .home { padding: 32px 24px; }
 .home-title { color: var(--ws-text); font-size: 16px; font-weight: 600; margin-bottom: 16px; }
 .sites { display: flex; flex-wrap: wrap; gap: 16px; }
+/* 本地视频入口：独立一行放在整个站点列表下方（与站点卡片同款式） */
+.local-sites { margin-top: 16px; }
 .site-card { position: relative; display: flex; flex-direction: column; align-items: center; gap: 8px; width: 128px; padding: 20px 8px 14px; border: none; border-radius: 14px; background: var(--ws-surface); cursor: pointer; box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1); transition: box-shadow 0.2s, transform 0.15s; font-family: inherit; }
 .site-card:hover { box-shadow: 0 4px 16px rgba(0, 0, 0, 0.16); transform: translateY(-2px); }
 .site-card:focus-visible { outline: 2px solid var(--ws-accent); outline-offset: 2px; }
 .site-icon { width: 56px; height: 56px; border-radius: 14px; object-fit: contain; }
 .site-icon.fallback { display: flex; align-items: center; justify-content: center; background: var(--ws-primary); color: #fff; font-size: 26px; font-weight: 600; }
+/* 本地视频入口图标：整体灰白（不跟随站点 fallback 的主题绿，避免突兀） */
+.site-icon.fallback.local-icon { background: var(--ws-fill); color: var(--ws-text-2); }
 .site-name { font-size: 14px; color: var(--ws-text); font-weight: 500; }
 .site-host { font-size: 11px; color: var(--ws-text-3); }
 .home-hint { margin-top: 24px; color: var(--ws-text-3); font-size: 13px; }

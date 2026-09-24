@@ -26,6 +26,8 @@ pub struct BridgeStatus {
     pub duration: f64,
     #[serde(rename = "readyState")]
     pub ready_state: f64,
+    /// 当前播放源地址（直链共享用；blob:/MSE 时不可直传）
+    pub src: String,
 }
 
 /// videoStatus 命令返回（pageUrl 由 Rust 侧实时取，hasVideo 表示桥是否已装）
@@ -41,6 +43,8 @@ pub struct VideoStatusFull {
     pub page_url: String,
     #[serde(rename = "hasVideo")]
     pub has_video: bool,
+    /// 当前播放源（直链共享用）
+    pub src: String,
 }
 
 /// 单个视频页签元数据（webview 句柄按 label 动态获取，不长期持有）

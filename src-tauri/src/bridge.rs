@@ -40,6 +40,7 @@ pub fn handle_report(
                         rate: s.get("rate").and_then(|x| x.as_f64()).unwrap_or(1.0),
                         duration: s.get("duration").and_then(|x| x.as_f64()).unwrap_or(0.0),
                         ready_state: s.get("readyState").and_then(|x| x.as_f64()).unwrap_or(0.0),
+                        src: s.get("src").and_then(|x| x.as_str()).unwrap_or("").to_string(),
                     })
                 });
                 // close 与在途 tick 的竞态防御：页签已销毁就不再插回死条目（否则永久残留）
