@@ -21,7 +21,7 @@ const props = defineProps<{
   canPrefetch: boolean
   /** 整份预取进度 0~1；<0 表示当前不在预取 */
   prefetchRatio: number
-  /** 房主本地文件的绝对路径（有此值时左下角直接显示路径，不再显示「无损同步 · 名称」） */
+  /** 房主本地文件的绝对路径（有此值时左下角直接显示路径，不再显示共享名） */
   filePath?: string
   /** 房主从视频源下载速率（字节/秒；<0 不显示——本地文件源无下载） */
   downloadSpeed?: number
@@ -37,10 +37,10 @@ const emit = defineEmits<{
 }>()
 
 const statusLabel = computed(() => {
-  // 房主本地文件：直接显示绝对路径（不显示「无损同步 · 名称」）
+  // 房主本地文件：直接显示绝对路径（不显示共享名）
   if (props.filePath) return props.filePath
   const name = props.shareName || '视频'
-  if (props.shareMode === 'file') return `无损同步 · ${name}`
+  if (props.shareMode === 'file') return name
   if (props.shareMode === 'url') return `原画直链 · ${name}`
   return '未共享'
 })

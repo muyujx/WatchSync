@@ -114,6 +114,11 @@ export class MediaStreamReceiver {
     return r === undefined ? -1 : r
   }
 
+  /** 停止缺口轮询但保留已注册的本地媒体源：已落盘副本可继续播放，只是不再向房主补拉 */
+  stopRequesting(): void {
+    this.stopPump()
+  }
+
   /** 注销媒体源并清理状态（缺省清理全部） */
   async release(fileId?: string): Promise<void> {
     const ids = fileId ? [fileId] : [...this.urls.keys(), ...this.paths.keys(), ...this.pending.keys()]

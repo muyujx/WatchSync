@@ -565,6 +565,9 @@ export class RoomController {
     // 房主结束共享：成员解锁同步页签（可关闭），本地已落盘副本可继续看
     if (msg.t === 'syncEnd') {
       if (this.role === 'follower') {
+        // 房主已停发：先停止缺口轮询，避免继续广播 fileNeed 白拉流量；
+        // 本机媒体源保留，已落盘副本仍可正常播放/seek
+        this.media.stopRequesting()
         this.shareMode = 'url'
         this.shareFileId = ''
         this.shareName = ''
@@ -742,6 +745,10 @@ export class RoomController {
    */
   endShare(): void {
     p2pLog('end share')
+    // 关闭共享页签即停发：注销房主侧该文件的源登记。hostFiles 是 fileNeed 补块与
+    // 滚动预读的唯一依据，删掉后不再发送、预读循环下一轮即退出；
+    // 成员已落盘的本地副本不受影响，仍可继续播放/seek。
+    if (this.shareFileId) this.hostFiles.delete(this.shareFileId)
     this.shareMode = 'url'
     this.shareFileId = ''
     this.shareName = ''
