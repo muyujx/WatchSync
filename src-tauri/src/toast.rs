@@ -12,8 +12,9 @@ use crate::state::state;
 /// 小窗尺寸（逻辑 px；胶囊在透明画布内自适应文本宽度，超出省略）
 const TOAST_W: f64 = 520.0;
 const TOAST_H: f64 = 44.0;
-/// 距顶部 UI 区下缘间距
-const TOP_GAP: f64 = 12.0;
+/// 距主窗口顶部偏移：toast 落在顶部应用 UI 条（页签+工具栏）内垂直居中，
+/// 不压下方网页/视频内容
+const TOP_GAP: f64 = (CHROME_TOP - TOAST_H) / 2.0;
 
 /// 获取（或首次创建）Toast 小窗。
 fn ensure_window(app: &tauri::AppHandle) -> tauri::WebviewWindow {
@@ -60,14 +61,14 @@ fn attach_owner(main: &tauri::Window, toast: &tauri::WebviewWindow) {
     }
 }
 
-/// 把 Toast 小窗定位到主窗口顶部 UI 区正下方居中（物理坐标）。
+/// 把 Toast 小窗定位到主窗口顶部 UI 条内垂直居中（物理坐标）。
 pub fn reposition(app: &tauri::AppHandle) {
     let Some(toast) = app.get_webview_window("toast") else { return };
     let Some(main) = app.get_window("main") else { return };
     let Ok(pos) = main.outer_position() else { return };
     let Ok(sz) = main.outer_size() else { return };
     let scale = main.scale_factor().unwrap_or(1.0);
-    let top = (CHROME_TOP + TOP_GAP) * scale;
+    let top = TOP_GAP * scale;
     let x = pos.x + ((sz.width as f64 - TOAST_W * scale) / 2.0).round() as i32;
     let y = pos.y + top as i32;
     let _ = toast.set_position(tauri::PhysicalPosition::new(x, y));
@@ -89,7 +90,8 @@ fn show_on_main(app: tauri::AppHandle, text: String, duration_ms: u64) {
     let _ = app.emit_to("toast", "toast-text", json!(text));
     // 不调用 set_focus：保持 show 不抢主窗口焦点（对齐 Electron showInactive 语义）
     let _ = win.show();
-    // 隐藏计时：序号防旧定时器隐藏新提示
+    // 隐藏计时：序号防旧定时器隐藏新提示。hide 与 show 一样必须主线程执行
+    // （Windows HWND 操作；后台线程直接调用会被静默忽略 → 提示永不消失）
     let st = state(&app);
     let seq = st
         .toast_seq
@@ -97,11 +99,13 @@ fn show_on_main(app: tauri::AppHandle, text: String, duration_ms: u64) {
         + 1;
     std::thread::spawn(move || {
         std::thread::sleep(std::time::Duration::from_millis(duration_ms));
-        let st = state(&app);
-        if st.toast_seq.load(std::sync::atomic::Ordering::Relaxed) == seq {
-            if let Some(w) = app.get_webview_window("toast") {
-                let _ = w.hide();
-            }
+        if state(&app).toast_seq.load(std::sync::atomic::Ordering::Relaxed) == seq {
+            let app2 = app.clone();
+            let _ = app.run_on_main_thread(move || {
+                if let Some(w) = app2.get_webview_window("toast") {
+                    let _ = w.hide();
+                }
+            });
         }
     });
 }

@@ -88,9 +88,11 @@ import { parseShareUrl } from '../core/shareLink'
     /** 创建/截断临时媒体文件（成员端接收） */
     createTempMedia: (fileId: string, name: string, size: number) =>
       invoke('create_temp_media', { fileId, name, size }),
-    /** 按偏移写入临时媒体一块（二进制直传，不转 number[]） */
-    writeTempChunk: (path: string, offset: number, data: ArrayBuffer | Uint8Array) =>
-      invoke('write_temp_chunk', { path, offset, data: data instanceof Uint8Array ? data : new Uint8Array(data) }),
+    /** 按偏移写入临时媒体一块并标记就绪（二进制 raw body + 头携带 fileId/offset，一次 IPC 完成） */
+    writeTempChunk: (fileId: string, offset: number, data: ArrayBuffer | Uint8Array) =>
+      invoke('write_temp_chunk', data instanceof Uint8Array ? data : new Uint8Array(data), {
+        headers: { 'x-file-id': fileId, 'x-offset': String(offset) },
+      }),
     /** 注册成员端渐进媒体源（本机 Range 服务），返回可播放 URL */
     mediaPublish: (fileId: string, path: string) => invoke('media_publish', { fileId, path }),
     /** 注销成员端渐进媒体源 */

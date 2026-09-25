@@ -97,8 +97,9 @@ export function quantizeRanges(
 /**
  * 中继预取跨度：网页直链对小 Range 请求限速明显（实测 CDN 256KB≈67KB/s、4MB≈232KB/s、
  * 16MB≈364KB/s），故把播放器的小缺口扩展成大跨度请求，服务端按块流式到达、成员边收边播。
+ * 取实测吞吐最高的 16MB（再大收益递减且会拉长 seek 响应/增大预读浪费）。
  */
-export const RELAY_PREFETCH_BYTES = 4 * 1024 * 1024
+export const RELAY_PREFETCH_BYTES = 16 * 1024 * 1024
 
 /**
  * 把小缺口扩展成至少 minSpan 跨度的请求区间（块对齐 + 合并 + 夹到文件长度）。

@@ -29,6 +29,11 @@ const WANTED_MAX: usize = 32;
 
 static PORT: OnceLock<u16> = OnceLock::new();
 
+/// 已监听的回环端口（未启动返回 0）；布局/URL 判定用
+pub fn port() -> u16 {
+    *PORT.get().unwrap_or(&0)
+}
+
 struct Source {
     path: PathBuf,
     size: u64,
@@ -55,6 +60,12 @@ fn registry() -> &'static Mutex<HashMap<String, Arc<Source>>> {
 
 fn lookup(file_id: &str) -> Option<Arc<Source>> {
     registry().lock().ok()?.get(file_id).cloned()
+}
+
+/// 取媒体源的本机文件路径（落盘写入命令按 fileId 定位文件用）。
+/// 返回值：已注册源的路径；未注册返回 None。
+pub fn path_of(file_id: &str) -> Option<PathBuf> {
+    lookup(file_id).map(|s| s.path.clone())
 }
 
 /// 按扩展名猜 MIME（原生播放器用）

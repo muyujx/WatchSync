@@ -40,10 +40,13 @@
     :visible="streamBarVisible"
     :share-mode="shareBarMode"
     :share-name="shareName"
-    :can-share-web="!!(roomId && isHost && !onLocalFilePage && syncTabId != null)"
+    :can-share-web="!!(roomId && isHost && !onLocalFilePage && !onLoopbackMediaPage && syncTabId != null)"
     :can-prefetch="!!(roomId && isHost && onLocalFilePage && localFile)"
     :prefetch-ratio="fileCopying ? fileCopyRatio : -1"
     :file-path="onLocalFilePage ? (localFile?.path ?? '') : ''"
+    :download-speed="shareSpeeds.download"
+    :upload-speed="shareSpeeds.upload"
+    :load-speed="shareSpeeds.load"
     @share-web="onShareWeb"
     @prefetch="onSendFileCopy"
   />
@@ -123,7 +126,7 @@
 /**
  * 应用根组件：房间/视频流程编排；顶部栏（标签+工具栏）已抽到 components/TopBar.vue。
  */
-import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { RoomController } from './room'
 import { buildShareUrl } from '../core/shareLink'
 import { HOME_SITES } from '../core/sites'
@@ -279,15 +282,22 @@ const videoFullscreen = ref(false)
 
 /**
  * 播放页底部操作区是否显示（同时决定 Rust 侧是否为它预留 48px）。
- * 只属于本地视频播放页：网页页/主页/成员流页都不显示，各页面相互独立。
+ * 本地视频播放页 + 推流回放/成员收流页（本机回环媒体页签）：前者显示路径/预取，
+ * 后者显示共享状态与传输速度；网页页/主页不显示，各页面相互独立。
  */
 const onLocalFilePage = computed(() => {
   if (activeTabId.value == null) return false
   const t = tabs.value.find((x) => x.id === activeTabId.value)
   return !!t && t.url.startsWith('file:')
 })
+/** 激活页签是否为本机回环媒体页（房主推流回放页 / 成员收流页，file 共享模式的播放面） */
+const onLoopbackMediaPage = computed(() => {
+  if (activeTabId.value == null) return false
+  const t = tabs.value.find((x) => x.id === activeTabId.value)
+  return !!t && isLoopbackMediaUrl(t.url) && t.url.includes('/media/')
+})
 const streamBarVisible = computed(
-  () => activeTabId.value != null && !videoFullscreen.value && onLocalFilePage.value,
+  () => activeTabId.value != null && !videoFullscreen.value && (onLocalFilePage.value || onLoopbackMediaPage.value),
 )
 
 /** 窗口控制按钮（自定义标题栏，转发 TabStrip 事件） */
@@ -463,14 +473,24 @@ function fileUrlBaseName(url: string): string {
   }
 }
 
+/** 共享源展示名：本地文件名去媒体扩展名；网页视频标题原样保留（标题本身可能含点） */
+function shareDisplayTitle(name: string): string {
+  const base = name.split(/[\\/]/).pop() || name
+  return base.replace(/\.(mp4|m4v|mkv|webm|mov|avi|ts|flv)$/i, '')
+}
+
 /**
  * 页签展示名覆盖：本地视频页签只显示文件名（去后缀），不显示路径/文件名后缀。
- * 房主本机 file:// 页签从地址取；成员无损文件流页签取房主下发的文件名。
+ * 房主本机 file:// 页签从地址取；推流回放页签与成员无损文件流页签显示共享源的
+ * 名称（shareName 由房主下发，网页视频=源页签标题）。
  * 参数：t 页签条目。
  * 返回值：展示名；非本地视频页签返回空串（由组件回退标题→域名）。
  */
 function tabTitleOf(t: { id: number; url: string }): string {
-  if (t.id === relayTabId.value) return '直接推流'
+  // 房主推流回放页签：显示网页视频名（与成员收流页签一致；无名字时回退「直接推流」）
+  if (t.id === relayTabId.value) {
+    return (shareName.value && shareDisplayTitle(shareName.value)) || '直接推流'
+  }
   if (t.url.startsWith('file:')) {
     const n = fileUrlBaseName(t.url)
     if (n) return n
@@ -482,7 +502,7 @@ function tabTitleOf(t: { id: number; url: string }): string {
     shareName.value &&
     isLoopbackMediaUrl(t.url)
   ) {
-    return baseName(shareName.value)
+    return shareDisplayTitle(shareName.value)
   }
   return ''
 }
@@ -585,11 +605,47 @@ function onShareWeb(): void {
   void webShare.shareProgress(id, { force: true, announce: true })
 }
 
-/** 底部条展示的共享模式：本地文件状态只在本地播放页显示，网页页只在 url 共享时显示（避免本地/网页混杂） */
+/**
+ * 底部条展示的共享模式。
+ * 房主：本地文件状态只在本地播放页显示；推流回放页（回环媒体页）显示推流状态；网页页只在 url 共享时显示。
+ * 成员：只在收流页（file 共享模式）显示状态与加载速度，其余页面留白。
+ */
 const shareBarMode = computed<typeof controller.shareMode | 'none'>(() => {
-  if (!roomId.value || !isHost.value) return 'none'
+  if (!roomId.value) return 'none'
+  if (onLoopbackMediaPage.value) return shareModeR.value === 'file' ? 'file' : 'none'
+  if (!isHost.value) return 'none'
   if (shareModeR.value === 'file' && !onLocalFilePage.value) return 'none'
   return shareModeR.value
+})
+
+/** 速度显示每秒刷新（SpeedMeter 是滑窗计算，非响应式；仅在房间里才有意义） */
+const speedTick = ref(0)
+let speedTimer: number | null = null
+onMounted(() => {
+  speedTimer = window.setInterval(() => {
+    speedTick.value++
+  }, 1000)
+})
+onUnmounted(() => {
+  if (speedTimer !== null) window.clearInterval(speedTimer)
+})
+
+/**
+ * 底部条速率（字节/秒；-1 = 不显示）。
+ * 房主：下载速率仅网页视频推流时有（本地文件源无下载）；上传速率为发给成员的速率。
+ * 成员：加载速率为从房主接收的速率。
+ */
+const shareSpeeds = computed(() => {
+  void speedTick.value
+  if (!roomId.value || shareBarMode.value === 'none') return { download: -1, upload: -1, load: -1 }
+  if (isHost.value) {
+    return {
+      download: controller.isRemoteShare ? controller.pullSpeed : -1,
+      upload: controller.pushSpeed,
+      load: -1,
+    }
+  }
+  return { download: -1, upload: -1, load: controller.loadSpeed }
 })
 
 controller.onShareChanged = () => {
@@ -980,6 +1036,7 @@ async function diagSnapshot(): Promise<unknown> {
     tabs: tabs.value.map((t) => ({ id: t.id, url: t.url, title: t.title, active: t.id === activeTabId.value, sync: t.id === syncTabId.value })),
     selfId,
     hostConnected: controller.hostConnected,
+    followerFrozen: controller.isFollowerFrozen,
     hostPeerId: controller.hostPeerId,
     peers: [...controller.peers],
     peerNames: Object.fromEntries(controller.peerNames),

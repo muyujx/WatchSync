@@ -4,7 +4,7 @@
  * 职责：
  * - 收到文件要约 → 建临时文件 + 注册本机 Range 媒体服务（mediaPublish），成员无需等传完即可开播
  * - 轮询播放器阻塞中的缺口（mediaWanted）→ 经 onNeed 回调交给房间层向房主补拉
- * - 收到数据块 → 落盘并标记就绪（mediaHave），放行阻塞中的读
+ * - 收到数据块 → 落盘并标记就绪（一次二进制 IPC 完成），放行阻塞中的读
  * 与房间/信令解耦：只依赖 p2pApi 的媒体命令 + 注入回调。
  */
 import { expandRanges, mediaExtension, quantizeRanges, RELAY_PREFETCH_BYTES } from '../core/mediaSource'
@@ -84,6 +84,8 @@ export class MediaStreamReceiver {
    * 接收一块媒体数据（未 attach 时先入队）。
    * 参数：fileId 媒体 ID；offset 块起始偏移；data 块字节。
    * 返回值：Promise 落盘完成。
+   * 说明：不逐块刷新接收比例——每块一次 mediaProgress IPC 会让热路径 IPC 翻倍，
+   * pump 每 200ms 的刷新对 UI 进度足够。
    */
   async acceptChunk(fileId: string, offset: number, data: ArrayBuffer): Promise<void> {
     const path = this.paths.get(fileId)
@@ -93,10 +95,7 @@ export class MediaStreamReceiver {
       this.pending.set(fileId, q)
       return
     }
-    await window.p2pApi.writeTempChunk(path, offset, data)
-    // 放行阻塞中的 Range 请求（边收边播的关键）
-    await window.p2pApi.mediaHave(fileId, offset, data.byteLength)
-    this.refreshRatio(fileId)
+    await window.p2pApi.writeTempChunk(fileId, offset, data)
   }
 
   /** 查询可播放地址（未登记返回 undefined） */

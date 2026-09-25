@@ -44,8 +44,13 @@ export interface RoomHandle {
   broadcast: (msg: SyncMsg) => void
   /** 向指定成员定向发送一条同步消息（用于房主移交等点对点指令） */
   sendTo: (peerId: string, msg: SyncMsg) => void
-  /** 发送文件二进制块（target 缺省全员） */
-  sendBinary: (data: ArrayBuffer, meta: FileChunkMeta, target?: string) => Promise<void>
+  /**
+   * 发送文件二进制块（target 缺省全员）。
+   * 返回值：是否完整送达。Trystero 的背压等待超时/通道错误会静默截断消息
+   * （send 正常返回但尾部 16KB 分片未发出，接收端该块永远拼不齐），用发送进度
+   * 是否到达 1 判定完整性：进度=最后发出的分片序号/总分片数，正常结束必为 1。
+   */
+  sendBinary: (data: ArrayBuffer, meta: FileChunkMeta, target?: string) => Promise<boolean>
   /** 订阅收到文件二进制块 */
   onBinary: (cb: (data: ArrayBuffer, meta: FileChunkMeta, peerId: string) => void) => void
   /** 房间内成员 ID 集合（不含本端） */
@@ -104,8 +109,21 @@ export function createRoom(trysteroRoom: TrysteroRoomLike, onMessage: (msg: Sync
       // 定向发送：Trystero 通过 options.target 指定接收方 peerId
       action.send(encodeMsg(msg), { target: peerId }).catch((e) => console.error('[room] sendTo failed:', e))
     },
-    sendBinary: (data, meta, target) =>
-      bin.send(data, target ? { target, metadata: meta } : { metadata: meta }),
+    sendBinary: (data, meta, target) => {
+      if (!target) return bin.send(data, { metadata: meta }).then(() => true).catch(() => false)
+      // 定向发送：进度回调逐分片上报（0~1），send 返回后进度 <1 即被截断
+      let complete = false
+      return bin
+        .send(data, {
+          target,
+          metadata: meta,
+          onProgress: (p: number) => {
+            if (p >= 1) complete = true
+          },
+        })
+        .then(() => complete)
+        .catch(() => false)
+    },
     onBinary: (cb) => binaryCbs.push(cb),
     peers,
     onPeerJoin: (cb) => joinCbs.push(cb),

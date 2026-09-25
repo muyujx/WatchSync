@@ -115,7 +115,7 @@ declare global {
         size: number,
       ): Promise<{ path: string; url: string; name: string; size: number } | null>
       /** 按偏移写入临时媒体一块 */
-      writeTempChunk(path: string, offset: number, data: ArrayBuffer | Uint8Array): Promise<boolean>
+      writeTempChunk(fileId: string, offset: number, data: ArrayBuffer | Uint8Array): Promise<boolean>
       /** 注册成员端渐进媒体源（本机 Range 服务），返回可播放 URL */
       mediaPublish(fileId: string, path: string): Promise<string>
       /** 注销成员端渐进媒体源 */

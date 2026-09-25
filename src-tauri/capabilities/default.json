@@ -1,8 +1,9 @@
 {
   "$schema": "gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "UI 壳与 Toast 小窗的基础权限（事件监听/剪贴板）；视频页签为外部站点，不授予任何 Tauri API",
-  "windows": ["ui", "toast"],
+  "description": "UI 壳与 Toast 小窗的基础权限（事件监听/剪贴板）；视频页签为外部站点，不授予任何 Tauri API。注意：UI 壳是 main 窗口内的子 webview（multiwebview），必须用 webviews 描述符授权——windows:[ui] 匹配不到它，会导致 UI 收不到任何 Rust 事件（page-title/win-state/video-fullscreen 全部失效）",
+  "windows": ["toast"],
+  "webviews": ["ui"],
   "permissions": [
     "core:default",
     "clipboard-manager:allow-write-text"

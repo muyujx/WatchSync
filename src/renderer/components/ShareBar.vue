@@ -6,6 +6,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import type { ShareMode } from '../../core/protocol'
+import { formatSpeed } from '../../core/speed'
 
 const props = defineProps<{
   /** 是否显示（播放页 + 非网页全屏） */
@@ -22,6 +23,12 @@ const props = defineProps<{
   prefetchRatio: number
   /** 房主本地文件的绝对路径（有此值时左下角直接显示路径，不再显示「无损同步 · 名称」） */
   filePath?: string
+  /** 房主从视频源下载速率（字节/秒；<0 不显示——本地文件源无下载） */
+  downloadSpeed?: number
+  /** 房主发给成员的上传速率（字节/秒；<0 不显示） */
+  uploadSpeed?: number
+  /** 成员从房主接收的加载速率（字节/秒；<0 不显示） */
+  loadSpeed?: number
 }>()
 
 const emit = defineEmits<{
@@ -47,9 +54,16 @@ const statusTitle = computed(() => {
   return '尚未共享观看源'
 })
 
-/** 有共享状态或可操作按钮时渲染内容；否则底部只留空白（成员端不再出现无意义的「未共享」） */
+/** 有共享状态、速度或可操作按钮时渲染内容；否则底部只留空白（成员端不再出现无意义的「未共享」） */
 const hasContent = computed(
-  () => !!props.filePath || props.shareMode !== 'none' || props.canShareWeb || props.canPrefetch,
+  () =>
+    !!props.filePath ||
+    props.shareMode !== 'none' ||
+    props.canShareWeb ||
+    props.canPrefetch ||
+    (props.downloadSpeed ?? -1) >= 0 ||
+    (props.uploadSpeed ?? -1) >= 0 ||
+    (props.loadSpeed ?? -1) >= 0,
 )
 </script>
 
@@ -57,6 +71,15 @@ const hasContent = computed(
   <div v-show="props.visible" class="streambar">
     <template v-if="hasContent">
       <span class="stream-idle" :title="statusTitle">{{ statusLabel }}</span>
+      <span v-if="(props.downloadSpeed ?? -1) >= 0" class="stream-speed" title="房主从视频源下载的速度">
+        ↓ {{ formatSpeed(props.downloadSpeed ?? 0) }}
+      </span>
+      <span v-if="(props.uploadSpeed ?? -1) >= 0" class="stream-speed" title="房主发给成员的上传速度">
+        ↑ {{ formatSpeed(props.uploadSpeed ?? 0) }}
+      </span>
+      <span v-if="(props.loadSpeed ?? -1) >= 0" class="stream-speed" title="从房主接收数据的加载速度">
+        ↓ {{ formatSpeed(props.loadSpeed ?? 0) }}
+      </span>
       <div class="flex-spacer"></div>
       <button
         v-if="props.canShareWeb"

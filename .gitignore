@@ -24,6 +24,7 @@ logs/
 # 编辑器与系统文件
 .vscode/
 .idea/
+.zcode/
 .DS_Store
 Thumbs.db
 

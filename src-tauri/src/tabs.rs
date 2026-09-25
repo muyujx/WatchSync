@@ -59,7 +59,9 @@ __SCRIPT__
   }
   window.__p2pReport = send
   // 媒体文档（本地视频 / 成员流：Chromium 原生 <video> 播放页）默认黑底 → 改白，
-  // 与下方页面操作区一起形成「白底 + 视频居中」的播放页；仅对 video/*/audio/* 文档生效，站点网页不受影响
+  // 与下方页面操作区一起形成「白底 + 视频」的播放页；视频铺满页签视口且画面贴底
+  // （object-position:bottom），画面下缘紧贴底部的状态/速度条，不留居中空档；
+  // 仅对 video/*/audio/* 文档生效，站点网页不受影响
   if (!window.__p2pMediaWhite) {
     window.__p2pMediaWhite = true
     try {
@@ -67,7 +69,8 @@ __SCRIPT__
         const st = document.createElement('style')
         // 跟随应用主题（窗口 PreferredColorScheme → prefers-color-scheme）：
         // 浅色 #fff、深色 #1e1f20，均与 UI 侧 --ws-surface 一致，与下方操作区无缝
-        st.textContent = 'html,body{background:#fff !important}video{background:transparent !important;width:75vw !important;height:75vh !important;max-width:75vw !important;max-height:75vh !important;object-fit:contain !important}' +
+        st.textContent = 'html,body{background:#fff !important;margin:0 !important;height:100% !important;overflow:hidden !important}' +
+          'video{background:transparent !important;display:block !important;width:100vw !important;height:100vh !important;object-fit:contain !important;object-position:center bottom !important}' +
           '@media (prefers-color-scheme: dark){html,body{background:#1e1f20 !important}}'
         ;(document.head || document.documentElement).appendChild(st)
       }
@@ -139,10 +142,20 @@ fn build_inject_script(tab_id: i64, adapter_id: &str, inject_script: &str, guard
         .replace("__SCRIPT__", &format!(";{};", inject_script))
 }
 
-/// 底部预留高度：只有本地视频播放页（file:// 媒体页）需要视频下方的本地文件操作区；
-/// 网页页/成员流页不预留，视频铺到窗口底部（各页面相互独立）
-fn bottom_inset(url: &str) -> f64 {
+/// 是否需要底部控制条：本地视频播放页（file://）与推流回放/成员收流页
+/// （本机媒体服务回环地址，成员边收边播时同样要露出速度/状态条）
+fn needs_bottom_inset(url: &str) -> bool {
     if url.starts_with("file:") {
+        return true;
+    }
+    let port = crate::media_server::port();
+    port > 0 && url.starts_with(&format!("http://127.0.0.1:{port}/media/"))
+}
+
+/// 底部预留高度：本地播放页与推流/收流页需要视频下方的操作/速度条；
+/// 其他网页页视频铺到窗口底部（各页面相互独立）
+fn bottom_inset(url: &str) -> f64 {
+    if needs_bottom_inset(url) {
         CHROME_BOTTOM
     } else {
         0.0
@@ -150,7 +163,7 @@ fn bottom_inset(url: &str) -> f64 {
 }
 
 /// 激活页签的布局（逻辑坐标）：HTML 全屏铺满整窗，否则顶部预留 UI 区；
-/// 底部预留仅本地播放页需要（见 bottom_inset），网页页视频铺到窗口底部
+/// 底部预留见 bottom_inset（本地播放页/推流收流页），其他网页页视频铺到窗口底部
 /// 参数：app 句柄。
 /// 返回值：(位置, 尺寸)，均为逻辑坐标；全屏时 top=0 且高度为整窗高度。
 fn active_bounds(app: &tauri::AppHandle) -> (LogicalPosition<f64>, LogicalSize<f64>) {
@@ -586,8 +599,8 @@ pub fn on_tab_tick(app: &tauri::AppHandle, tab_id: i64, title: &str, url: &str) 
         let active = st.active_id.lock().unwrap().clone();
         let mut tabs = st.tabs.lock().unwrap();
         if let Some(e) = tabs.get_mut(&tab_id) {
-            // 本地播放页与网页/成员页的底部预留不同：激活页签在 file: 与其它之间切换时重排布局
-            if active == Some(tab_id) && e.page_url.starts_with("file:") != url.starts_with("file:") {
+            // 激活页签在「需要底部控制条」（本地播放页/推流收流页）与其它页之间切换时重排布局
+            if active == Some(tab_id) && needs_bottom_inset(&e.page_url) != needs_bottom_inset(url) {
                 relayout = true;
             }
             e.page_url = url.to_string();

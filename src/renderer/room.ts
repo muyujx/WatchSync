@@ -10,6 +10,7 @@ import { MediaStreamReceiver } from './mediaStream'
 import { probeRemoteMedia, readRemoteChunk, streamRemoteRange } from './remoteMedia'
 import { RELAY_PREFETCH_BYTES, isLoopbackMediaUrl, splitRangeByReady, unreadyRanges } from '../core/mediaSource'
 import { newFileId, sendFileChunks, FILE_CHUNK_SIZE } from '../core/fileShare'
+import { SpeedMeter } from '../core/speed'
 import { p2pLog } from '../core/log'
 import { RttProbe } from './rtt'
 
@@ -45,6 +46,10 @@ const HOST_STALL_RESEEK_MS = 8000
 
 /** 房主等待成员预加载的超时（ms）：超时后不再等，直接继续（成员端自愈路径兜底） */
 const MEMBER_WAIT_TIMEOUT_MS = 30000
+
+/** 预读跟随停滞判定（ms）：成员缺口落在预读跨度内时跟随预读增量转发，
+ *  超过该时长无任何新字节则判定预读停滞，改为直拉兜底 */
+const RELAY_FOLLOW_STALL_MS = 15000
 
 /** 成员就绪上报保鲜窗（ms）：超过该时长未刷新的上报视为过期（按未就绪处理） */
 const MEMBER_READY_FRESH_MS = 8000
@@ -303,6 +308,11 @@ export class RoomController {
   /** 是否已与房主建立数据连接（供诊断快照读取） */
   get hostConnected(): boolean {
     return this.connected
+  }
+
+  /** 成员端是否处于「房主未就绪」冻结（供诊断快照读取） */
+  get isFollowerFrozen(): boolean {
+    return this.hostNotReady
   }
 
   /** 建立 P2P 房间并注册消息处理 */
@@ -598,9 +608,9 @@ export class RoomController {
       if (this.role !== 'host') return
       const info = this.hostFiles.get(msg.fileId)
       if (msg.ranges?.length) void this.sendFileRanges(msg.fileId, peerId, msg.ranges)
-      // 远程中继源整份补发也走按区间的就绪优先路径（避免未落盘区间把稀疏零发出去）
-      else if (info?.remote && info.path) void this.sendFileRanges(msg.fileId, peerId, [[0, info.size]])
-      else void this.sendFileTo(msg.fileId, peerId)
+      // 远程中继源无缺口信息不整份补发：多为成员尚未完成 attach（fileOffer 流程会补上），
+      // 播放器就绪后会按缺口重新上报；整份直拉会白向源站+DC 灌整片流量
+      else if (!info?.remote) void this.sendFileTo(msg.fileId, peerId)
       return
     }
     // 房主解散指令：成员端先交还控制权再通知 UI 退出（否则守卫/旧快照会让本地暂停失效）
@@ -1283,7 +1293,6 @@ export class RoomController {
     this.relayName = name
     this.relayCursor.clear()
     this.relayRunning.clear()
-    this.relayMemberDemand.clear()
     this.hostFiles.set(fileId, { remote: url, size: media.size, mime: media.mime || 'video/mp4' })
     this.shareMode = 'file'
     this.directShare = false
@@ -1354,7 +1363,11 @@ export class RoomController {
   }
 
   /**
-   * 房主：滚动预读循环——每轮拉一个跨度并转发，保持「领先播放位置不超过 3 个跨度」。
+   * 房主：滚动预读循环——按跨度连续向源站拉取、只喂本机副本，保持「领先播放位置
+   * 不超过 3 个跨度」。本机副本是房主播放与成员补发的公共盘上源：成员缺口由
+   * sendFileRanges 按「盘上直发 / 预读代拉」满足，这里不再向成员广播——广播会把
+   * 房主落盘速率与最慢成员的链路速率绑死（房主自己播放跟着卡），也向暂停/落后
+   * 成员白推字节。
    * 游标被 seek 重置时当前跨度立刻作废（收到块边界即中止），从新缺口继续；
    * 跨度完成后只有游标未被外部重置才推进，避免覆盖 seek 目标、回爬旧位置。
    * 参数：fileId 媒体 ID。返回值：Promise（循环结束即预读停止）。
@@ -1369,45 +1382,45 @@ export class RoomController {
         const cur = this.relayCursor.get(fileId) ?? 0
         if (cur >= info.size) return
         const end = Math.min(info.size, cur + RELAY_PREFETCH_BYTES)
-        const room = this.room
         // 游标被重置（用户拖动）：当前跨度作废，尽快转向新缺口
         const moved = () => (this.relayCursor.get(fileId) ?? 0) !== cur
-        // 严格一份：本机已就绪的段直接读盘广播（多为定向补发回填的字节），只向源站拉缺失段
+        p2pLog('relay span', { fileId, from: cur, to: end })
+        // 已落盘段跳过（可能由成员补发回填），只向源站拉缺失段
         const segments = splitRangeByReady(cur, end, await this.readyRanges(fileId))
         for (const seg of segments) {
           if (moved()) break
-          if (seg.ready && info.path) {
-            for (let off = seg.start; off < seg.end; off += FILE_CHUNK_SIZE) {
-              if (moved()) break
-              const len = Math.min(FILE_CHUNK_SIZE, seg.end - off)
-              const buf = await window.p2pApi.readFileChunk(info.path, off, len)
-              if (!buf || buf.byteLength === 0) return
-              await room.sendBinary(buf, { fileId, offset: off })
-            }
-          } else {
-            let sent = 0
-            const read = await streamRemoteRange(info.remote, seg.start, seg.end - seg.start, async (data) => {
-              if (moved()) return false
-              const off = seg.start + sent
-              sent += data.byteLength
-              // 1) 房主自己落盘（本机媒体服务播放同一份，播放进度即同步基准）
-              await this.media.acceptChunk(fileId, off, data)
-              // 2) 广播给全体成员（成员端按块落盘 + 放行本机 Range 读）
-              await room.sendBinary(data, { fileId, offset: off })
-              return true
-            })
-            if (moved()) break
-            if (read <= 0) return
-          }
+          if (seg.ready) continue
+          let sent = 0
+          const read = await streamRemoteRange(info.remote, seg.start, seg.end - seg.start, async (data) => {
+            if (moved()) return false
+            const off = seg.start + sent
+            sent += data.byteLength
+            this.pullMeter.add(data.byteLength)
+            await this.media.acceptChunk(fileId, off, data)
+            return true
+          })
+          if (moved()) break
+          if (read <= 0) return
         }
         // 跨度完成且游标未被外部重置才推进；被重置则保留新游标（下一轮从新位置继续）
         if (!moved()) this.relayCursor.set(fileId, end)
         // 预读上限：领先播放位置过多时等待（不为不看的内容白拉）。
-        // 但有人正在挨饿时不节流：本机播放器（VBR 内容下线性字节估算的领先量会误判）
-        // 或成员（缺口正由预读代拉）在等数据，停拉会把它们卡在游标处直到超时
-        while (this.room && !moved() && (await this.relayAheadBytes(fileId)) > RELAY_PREFETCH_BYTES * 3) {
-          if ((await this.mediaWantedPeek(fileId)).length) break
-          if (Date.now() - (this.relayMemberDemand.get(fileId) ?? 0) < 3000) break
+        // 仅「缺口紧邻播放头」视为真实挨饿让位：播放器后台预缓冲的请求也会停在副本
+        // 前沿（远超播放头），只看 wanted 非空会让节流失效、向源站过量预读。
+        // 成员缺口不在此让位：落在当前跨度的由跨度完成覆盖，跨度的由 sendFileRanges
+        // 的等待窗/直拉兜底，不需要预读追着成员的缓冲前沿跑。
+        // 注意以推进后的游标为基准检测外部重置——若沿用跨度起点的 moved()，
+        // 推进后恒为「已重置」，节流永远不会执行。
+        const advanced = this.relayCursor.get(fileId) ?? 0
+        while (
+          this.room &&
+          (this.relayCursor.get(fileId) ?? 0) === advanced &&
+          (await this.relayAheadBytes(fileId)) > RELAY_PREFETCH_BYTES * 3
+        ) {
+          const played = await this.playedByteOffset(fileId)
+          const wanted = await this.mediaWantedPeek(fileId)
+          const starving = wanted.some(([s]) => played === null || s < played + RELAY_PREFETCH_BYTES)
+          if (starving) break
           await new Promise((r) => setTimeout(r, 1000))
         }
       }
@@ -1418,19 +1431,25 @@ export class RoomController {
     }
   }
 
-  /** 房主：当前预读游标领先播放位置约多少字节（无法判断时返回 0） */
-  private async relayAheadBytes(fileId: string): Promise<number> {
+  /** 房主：当前播放位置对应的大致字节偏移（线性估算，VBR 内容下有误差；无法判断返回 null） */
+  private async playedByteOffset(fileId: string): Promise<number | null> {
     const info = this.hostFiles.get(fileId)
-    if (!info) return 0
+    if (!info) return null
     try {
       const st = await window.p2pApi.videoStatus()
       const dur = st?.duration ?? 0
-      if (!st?.hasVideo || dur <= 0) return 0
-      const played = (st.position / dur) * info.size
-      return Math.max(0, (this.relayCursor.get(fileId) ?? 0) - played)
+      if (!st?.hasVideo || dur <= 0) return null
+      return (st.position / dur) * info.size
     } catch {
-      return 0
+      return null
     }
+  }
+
+  /** 房主：当前预读游标领先播放位置约多少字节（无法判断时返回 0） */
+  private async relayAheadBytes(fileId: string): Promise<number> {
+    const played = await this.playedByteOffset(fileId)
+    if (played === null) return 0
+    return Math.max(0, (this.relayCursor.get(fileId) ?? 0) - played)
   }
 
   /** 房主：按数据源类型读取一块（本地路径 / 远程直链） */
@@ -1486,7 +1505,16 @@ export class RoomController {
         const buf = await this.readSource(info, offset, length)
         return buf ?? new ArrayBuffer(0)
       },
-      send: (data, meta, t) => room.sendBinary(data, meta, t ?? target),
+      send: async (data, meta, t) => {
+        const to = t ?? target
+        // 定向副本发送必须完整：截断的块是成员副本上的永久缺洞（播放花屏/中断），
+        // 重试耗尽直接中止本轮分发（fileDone 不会发出，成员不会拿到残缺副本）
+        if (to && !(await this.sendBlockReliable(room, data, meta, to))) throw new Error(`send block failed @${meta.offset}`)
+        if (!to) {
+          const delivered = await room.sendBinary(data, meta)
+          if (delivered) this.pushMeter.add(data.byteLength)
+        }
+      },
       target,
       onProgress: (ratio) => {
         // 定向补发不覆盖全员发送进度，避免 UI 回跳
@@ -1501,9 +1529,155 @@ export class RoomController {
   }
 
   /**
+   * 带重试的定向块发送。Trystero 背压等待超时/通道错误会静默截断消息（send 正常
+   * resolve 但尾部 16KB 分片未发出，接收端该块永远拼不齐），sendBinary 用发送进度
+   * 判定送达，false 时整块重发。重试耗尽返回 false：该块在成员副本上暂缺，
+   * 成员的缺口轮询稍后会重新拉取（幂等，按偏移落盘）。
+   */
+  private async sendBlockReliable(
+    room: RoomHandle,
+    data: ArrayBuffer,
+    meta: FileChunkMeta,
+    target: string,
+    attempts = 3,
+  ): Promise<boolean> {
+    for (let i = 0; i < attempts; i++) {
+      if (this.room !== room) return false
+      if (await room.sendBinary(data, meta, target)) {
+        this.pushMeter.add(data.byteLength)
+        return true
+      }
+      await new Promise((r) => setTimeout(r, 300 * (i + 1)))
+    }
+    p2pLog('send block truncated, give up', meta.fileId, meta.offset)
+    return false
+  }
+
+  /**
+   * 房主：把本机副本 [start,end) 按 256KB 块定向发给指定成员（已落盘区间）。
+   * 逐块等待送达（Trystero 背压自然把速率限制到该成员的链路速率），发送失败即中止。
+   */
+  private async sendDiskRange(
+    room: RoomHandle,
+    fileId: string,
+    path: string,
+    start: number,
+    end: number,
+    target: string,
+  ): Promise<void> {
+    for (let off = start; off < end; off += FILE_CHUNK_SIZE) {
+      if (this.room !== room) return
+      const len = Math.min(FILE_CHUNK_SIZE, end - off)
+      const buf = await window.p2pApi.readFileChunk(path, off, len)
+      if (!buf || buf.byteLength === 0) return
+      if (!(await this.sendBlockReliable(room, buf, { fileId, offset: off }, target))) return
+    }
+  }
+
+  /**
+   * 房主：向远程源按大跨度拉取 [start,end) 并流式转发给指定成员，同时回填本机副本
+   * （此后该段可从盘上分发给其他成员/放行房主播放）。回填与发送并行，任一失败中止。
+   */
+  private async sendRemoteRange(
+    room: RoomHandle,
+    fileId: string,
+    info: { remote: string },
+    start: number,
+    end: number,
+    target: string,
+  ): Promise<void> {
+    let sent = 0
+    const read = await streamRemoteRange(info.remote, start, end - start, async (data) => {
+      if (this.room !== room) return false
+      const off = start + sent
+      sent += data.byteLength
+      this.pullMeter.add(data.byteLength)
+      await Promise.all([
+        this.media.acceptChunk(fileId, off, data),
+        this.sendBlockReliable(room, data, { fileId, offset: off }, target),
+      ])
+      return true
+    })
+    if (read <= 0) p2pLog('remote range empty', start, end - start)
+  }
+
+  /**
+   * 房主：满足成员的一个缺口区间（sendFileRanges 派发的单个区间任务）。
+   * 段落分配：预读跨度即将覆盖的段**跟随预读增量转发**（预读每落盘一段就从盘上
+   * 补发一段，不与预读并发开第二条 CDN 连接——慢 CDN 下并发连接分摊限速且重复
+   * 下载同一区间，是推流卡顿的主因）；预读停滞才直拉兜底；已落盘段读本机副本；
+   * 每个字节只向源站取一次。
+   */
+  private async fillRange(
+    room: RoomHandle,
+    fileId: string,
+    info: { path?: string; remote?: string; size: number },
+    start: number,
+    end: number,
+    target: string,
+  ): Promise<void> {
+    let pos = start
+    // 段起点落在当前预读跨度 [cursor, cursor+16MB) 内：跟随预读进度转发
+    const cursor = this.relayCursor.get(fileId) ?? 0
+    if (info.remote && info.path && this.relayRunning.has(fileId) && pos >= cursor && pos < cursor + RELAY_PREFETCH_BYTES) {
+      pos = await this.followPrefetch(room, fileId, info, pos, end, target)
+    }
+    if (this.room !== room || pos >= end) return
+    // 就绪位图只对注册过本机媒体服务的远程中继源有效（本地文件源整段直接读源文件）
+    const remote = info.remote
+    const path = info.path
+    const ready = remote && path ? await this.readyRanges(fileId) : []
+    const segments = remote && path ? splitRangeByReady(pos, end, ready) : [{ start: pos, end, ready: false }]
+    for (const seg of segments) {
+      if (this.room !== room) return
+      if (seg.ready && path) {
+        await this.sendDiskRange(room, fileId, path, seg.start, seg.end, target)
+      } else if (remote) {
+        await this.sendRemoteRange(room, fileId, { remote }, seg.start, seg.end, target)
+      } else if (path) {
+        await this.sendDiskRange(room, fileId, path, seg.start, seg.end, target)
+      }
+    }
+  }
+
+  /**
+   * 房主：跟随预读的增量转发。预读按块落盘，这里每 400ms 查一次就绪位图，
+   * 把新就绪的段立刻从盘上转发给成员——成员拿到预读字节的延迟≈一个块的下载时间，
+   * 且与预读共享同一条 CDN 连接（不重复下载、不分摊限速）。
+   * 返回值：转发到的位置；若 15s 无新字节判定预读停滞，返回当前进度由调用方直拉兜底。
+   */
+  private async followPrefetch(
+    room: RoomHandle,
+    fileId: string,
+    info: { path?: string },
+    start: number,
+    end: number,
+    target: string,
+  ): Promise<number> {
+    const path = info.path
+    if (!path) return start
+    let pos = start
+    let lastProgress = Date.now()
+    while (pos < end) {
+      if (this.room !== room) return pos
+      const ready = await this.readyRanges(fileId)
+      const first = splitRangeByReady(pos, end, ready)[0]
+      if (first && first.ready) {
+        await this.sendDiskRange(room, fileId, path, first.start, first.end, target)
+        pos = first.end
+        lastProgress = Date.now()
+        continue
+      }
+      if (Date.now() - lastProgress >= RELAY_FOLLOW_STALL_MS) return pos
+      await new Promise((r) => setTimeout(r, 400))
+    }
+    return pos
+  }
+
+  /**
    * 房主：按成员上报的缺口区间定向补发（流式：只发播放真正需要的字节）。
-   * 严格一份：已落盘区间（本机媒体服务位图）直接读临时文件回发，只有真正缺失的段
-   * 才向远程源站发请求，并把拉到的字节回填本机副本（此后该段可从盘上分发）。
+   * 区间任务按 `${start}-${end}` 去重（成员 200ms 轮询会对未满足缺口重复上报），
+   * 每个区间派发为独立后台任务，不互相阻塞。
    * 参数：fileId 媒体 ID；target 成员 peerId；ranges [起始, 结束) 字节区间（已按块对齐）。
    * 返回值：Promise 本轮补发派发完成（发送在后台继续）。
    */
@@ -1521,8 +1695,6 @@ export class RoomController {
       this.inflightRanges.set(target, set)
     }
     const inflight = set
-    // 就绪位图只对注册过本机媒体服务的远程中继源有效（本地文件源整段直接读源文件）
-    const ready = info.remote && info.path ? await this.readyRanges(fileId) : []
     for (const [rawA, rawB] of ranges) {
       const start = Math.max(0, Math.floor(rawA))
       const end = Math.min(info.size, Math.ceil(rawB))
@@ -1530,47 +1702,9 @@ export class RoomController {
       const key = `${start}-${end}`
       if (inflight.has(key)) continue
       inflight.add(key)
-      const segments = info.remote ? splitRangeByReady(start, end, ready) : [{ start, end, ready: false }]
       void (async () => {
         try {
-          for (const seg of segments) {
-            if (seg.ready && info.path) {
-              // 已落盘段：读本机副本定向回发（不碰源站）
-              for (let off = seg.start; off < seg.end; off += FILE_CHUNK_SIZE) {
-                const len = Math.min(FILE_CHUNK_SIZE, seg.end - off)
-                const buf = await window.p2pApi.readFileChunk(info.path, off, len)
-                if (!buf || buf.byteLength === 0) return
-                await room.sendBinary(buf, { fileId, offset: off }, target)
-              }
-            } else if (info.remote) {
-              // 滚动预读正在朝该段拉（游标未越过段起点）：不并行向源站开第二条连接
-              // （同一 CDN 的并发 Range 会被分摊限速，双方都变慢，成员端可能等超时），
-              // 让预读广播回填本机副本，成员端 pump 会重新上报缺口、下一轮从盘上回发
-              const cursor = this.relayCursor.get(fileId) ?? 0
-              if (this.relayRunning.has(fileId) && seg.start >= cursor) {
-                // 记录成员需求信号：让预读的领先节流让位（成员正靠这次预读回填）
-                this.relayMemberDemand.set(fileId, Date.now())
-                continue
-              }
-              // 缺失段：一次大请求流式转发（小 Range 请求会被 CDN 限速 → 吞吐过低），同时回填本机副本
-              let sent = 0
-              const read = await streamRemoteRange(info.remote, seg.start, seg.end - seg.start, async (data) => {
-                const off = seg.start + sent
-                sent += data.byteLength
-                await this.media.acceptChunk(fileId, off, data)
-                await room.sendBinary(data, { fileId, offset: off }, target)
-                return true
-              })
-              if (read <= 0) p2pLog('remote range empty', seg.start, seg.end - seg.start)
-            } else {
-              for (let off = seg.start; off < seg.end; off += FILE_CHUNK_SIZE) {
-                const len = Math.min(FILE_CHUNK_SIZE, seg.end - off)
-                const buf = await this.readSource(info, off, len)
-                if (!buf || buf.byteLength === 0) break
-                await room.sendBinary(buf, { fileId, offset: off }, target)
-              }
-            }
-          }
+          await this.fillRange(room, fileId, info, start, end, target)
         } catch (e) {
           p2pLog('send range failed', e)
         } finally {
@@ -1606,8 +1740,35 @@ export class RoomController {
   private relayCursor = new Map<string, number>()
   /** 房主：正在滚动预读的 fileId（同一源同时只跑一条） */
   private relayRunning = new Set<string>()
-  /** 房主：成员缺口正由预读代拉的最后信号时间（fileId → ms；让领先节流让位） */
-  private relayMemberDemand = new Map<string, number>()
+
+  /**
+   * 速率表（底部条速度显示）：滑动窗口字节记账，数据停流后自动衰减到 0，无需重置。
+   * pull=房主从源站拉取（网页推流才非零）；push=房主发给成员；load=成员从房主接收。
+   */
+  private pullMeter = new SpeedMeter()
+  private pushMeter = new SpeedMeter()
+  private loadMeter = new SpeedMeter()
+
+  /** 当前共享是否为远程源（网页视频推流）；本地文件源为 false（房主无下载） */
+  get isRemoteShare(): boolean {
+    const info = this.shareFileId ? this.hostFiles.get(this.shareFileId) : undefined
+    return !!info?.remote
+  }
+
+  /** 房主：从源站拉取速率（字节/秒；本地文件源恒为 0） */
+  get pullSpeed(): number {
+    return this.pullMeter.bytesPerSecond()
+  }
+
+  /** 房主：向成员发送速率（字节/秒） */
+  get pushSpeed(): number {
+    return this.pushMeter.bytesPerSecond()
+  }
+
+  /** 成员：从房主接收速率（字节/秒） */
+  get loadSpeed(): number {
+    return this.loadMeter.bytesPerSecond()
+  }
 
   /**
    * 成员：写入一块文件数据（落盘 + 放行阻塞中的 Range 请求）。
@@ -1619,6 +1780,7 @@ export class RoomController {
       (data as Uint8Array).byteOffset,
       (data as Uint8Array).byteOffset + (data as Uint8Array).byteLength,
     ) as ArrayBuffer
+    this.loadMeter.add(bytes.byteLength)
     await this.media.acceptChunk(meta.fileId, meta.offset, bytes)
   }
 
@@ -1666,7 +1828,6 @@ export class RoomController {
     this.directShare = false
     this.relayCursor.clear()
     this.relayRunning.clear()
-    this.relayMemberDemand.clear()
     this.peerReady.clear()
     this.lastReadyReported = null
     this.lastReadySentAt = 0

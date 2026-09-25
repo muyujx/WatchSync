@@ -218,10 +218,38 @@ pub async fn create_temp_media(file_id: String, name: String, size: u64) -> Opti
     crate::media::create_temp_media(&file_id, &name, size)
 }
 
-/// 按偏移写入临时媒体文件一块
+/// 按偏移写入临时媒体一块并放行阻塞中的 Range 读（二进制直传：raw body 承载字节，
+/// fileId/offset 走请求头）。合并「落盘 + 标记就绪」为一次 IPC：原先经 JSON 参数传
+/// Vec<u8> 会被 Tauri 序列化成 number[]（Array.from + JSON.stringify，约 10 倍膨胀），
+/// 且每 256KB 块两次 IPC 往返，直接卡住推流发送主循环。
+/// 写盘走阻塞线程池：接收热路径每秒可达数十次同步文件 IO（杀软实时扫描下单次可达
+/// 数十毫秒），不占用 async 工作线程。
 #[tauri::command]
-pub async fn write_temp_chunk(path: String, offset: u64, data: Vec<u8>) -> bool {
-    crate::media::write_temp_chunk(&path, offset, &data)
+pub async fn write_temp_chunk(request: tauri::ipc::Request<'_>) -> Result<bool, String> {
+    let tauri::ipc::InvokeBody::Raw(data) = request.body() else {
+        return Err("write_temp_chunk 需要二进制请求体".into());
+    };
+    let headers = request.headers();
+    let file_id = headers.get("x-file-id").and_then(|v| v.to_str().ok()).unwrap_or("").to_string();
+    let offset = headers
+        .get("x-offset")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or(0);
+    // 路径由 media_server 按 fileId 反查（避免在请求头里传可能含非 ASCII 的绝对路径）
+    let Some(path) = crate::media_server::path_of(&file_id) else {
+        return Ok(false);
+    };
+    let path = path.to_string_lossy().into_owned();
+    let data = data.clone();
+    let len = data.len() as u64;
+    let written = tauri::async_runtime::spawn_blocking(move || crate::media::write_temp_chunk(&path, offset, &data))
+        .await
+        .unwrap_or(false);
+    if written {
+        crate::media_server::mark_have(&file_id, offset, len);
+    }
+    Ok(written)
 }
 
 /// 注册成员端渐进媒体源（本机 Range 服务），返回可播放 URL
