@@ -12,9 +12,14 @@ use crate::state::state;
 /// 小窗尺寸（逻辑 px；胶囊在透明画布内自适应文本宽度，超出省略）
 const TOAST_W: f64 = 520.0;
 const TOAST_H: f64 = 44.0;
-/// 距主窗口顶部偏移：toast 落在顶部应用 UI 条（页签+工具栏）内垂直居中，
-/// 不压下方网页/视频内容
-const TOP_GAP: f64 = (CHROME_TOP - TOAST_H) / 2.0;
+/// 胶囊实际高度（逻辑 px）；须与 toast.html 中 #tip 的 height 一致。
+/// 胶囊贴小窗底部（bottom:0），故小窗顶部到胶囊顶部留有 (TOAST_H - PILL_H) 的透明留白
+const PILL_H: f64 = 32.0;
+/// 胶囊下沿距顶部应用 UI 条（页签+工具栏）下缘的间距，避免遮挡顶栏按钮
+const BELOW_GAP: f64 = 20.0;
+/// 小窗顶部相对主窗口顶部的偏移：让胶囊整体落在顶部 UI 条下方，
+/// 胶囊顶部 = CHROME_TOP + BELOW_GAP，故需减去小窗内的透明留白
+const TOP_GAP: f64 = CHROME_TOP + BELOW_GAP - (TOAST_H - PILL_H);
 
 /// 获取（或首次创建）Toast 小窗。
 fn ensure_window(app: &tauri::AppHandle) -> tauri::WebviewWindow {

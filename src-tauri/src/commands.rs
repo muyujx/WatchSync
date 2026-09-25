@@ -80,7 +80,7 @@ pub async fn set_video_visible(app: AppHandle, visible: bool) {
 /// 弹出全局提示条
 #[tauri::command]
 pub async fn notify(app: AppHandle, text: String) {
-    toast::show(&app, &text, 4000);
+    toast::show(&app, &text, 3000);
 }
 
 /// 读取用户设置
