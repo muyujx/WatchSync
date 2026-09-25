@@ -86,6 +86,9 @@ async function headSize(url: string): Promise<number> {
   try {
     const r = await fetch(url, { method: 'HEAD', cache: 'no-store', signal: ctrl.signal })
     const n = Number(r.headers.get('content-length') || 0)
+    // 取消响应体：部分服务端（含简易自建服务）会对 HEAD 也下发 body，
+    // 不取消会白拉整片并抢占本已紧张的回源带宽
+    void r.body?.cancel().catch(() => {})
     return Number.isFinite(n) ? n : 0
   } catch {
     return 0
@@ -201,31 +204,39 @@ export async function streamRemoteRange(
   })()
 
   let read = 0
-  let pending = new Uint8Array(0)
+  // 固定累积缓冲：读到的字节先并入，满 SEND_BLOCK 再整体出队。
+  // 旧实现每次 read 都新建「pending+value」合并数组并重拷 pending，读取频繁时是无谓的
+  // O(n) 拷贝与 GC 抖动；这里只在满块出队时拷一次。
+  const acc = new Uint8Array(SEND_BLOCK)
+  let accLen = 0
   try {
     while (!stopped) {
       const { done, value } = await readWithWatchdog()
       if (done) break
       if (!value?.byteLength) continue
       read += value.byteLength
-      const merged = new Uint8Array(pending.byteLength + value.byteLength)
-      merged.set(pending, 0)
-      merged.set(value, pending.byteLength)
       let off = 0
-      while (merged.byteLength - off >= SEND_BLOCK) {
-        if (!(await queue.push(merged.slice(off, off + SEND_BLOCK)))) break
-        off += SEND_BLOCK
-        if (stopped) break
+      while (off < value.byteLength) {
+        const n = Math.min(SEND_BLOCK - accLen, value.byteLength - off)
+        acc.set(value.subarray(off, off + n), accLen)
+        accLen += n
+        off += n
+        if (accLen === SEND_BLOCK) {
+          // 队列需持有独立 buffer，出队时拷出满块
+          if (!(await queue.push(acc.slice(0, SEND_BLOCK)))) break
+          accLen = 0
+          if (stopped) break
+        }
       }
-      pending = merged.slice(off)
+      if (stopped) break
     }
-    if (!stopped && pending.byteLength) await queue.push(pending.slice())
+    if (!stopped && accLen) await queue.push(acc.slice(0, accLen))
   } catch {
     // 连接中断/停滞：只放行整块（半块会让就绪位图标记含零尾巴的块，污染读本机副本的依据）
     void reader.cancel().catch(() => {})
     if (!stopped) {
-      const whole = pending.byteLength - (pending.byteLength % MEDIA_BLOCK)
-      if (whole > 0) await queue.push(pending.slice(0, whole))
+      const whole = accLen - (accLen % MEDIA_BLOCK)
+      if (whole > 0) await queue.push(acc.slice(0, whole))
     }
   }
   queue.close()

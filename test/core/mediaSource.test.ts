@@ -1,12 +1,14 @@
 import { describe, expect, it } from 'vitest'
 import {
   MEDIA_BLOCK,
+  aheadLimitBytes,
   alignRangeToBlock,
   expandRanges,
   isDirectMediaUrl,
   isLoopbackMediaUrl,
   mediaExtension,
   pickWebShareSource,
+  planRequests,
   quantizeRanges,
   splitRangeByReady,
   unreadyRanges,
@@ -144,7 +146,7 @@ describe('expandRanges', () => {
     )
     expect(out).toEqual([[MEDIA_BLOCK, MEDIA_BLOCK * 6]])
     const tail = expandRanges([[size - 10, size]], size, 4 * MEDIA_BLOCK)
-    expect(tail).toEqual([[size - 4 * MEDIA_BLOCK, size]])
+    expect(tail).toEqual([[size - MEDIA_BLOCK, size]])
   })
 
   it('minSpan<=0 时不扩展', () => {
@@ -181,6 +183,74 @@ describe('splitRangeByReady', () => {
       { start: 1000, end: 2500, ready: true },
       { start: 2500, end: 4000, ready: true },
     ])
+  })
+})
+
+describe('aheadLimitBytes', () => {
+  it('按领先秒数与时长比例换算字节', () => {
+    // 4445MB / 6049s ≈ 0.735MB/s；领先 30s ≈ 22MB
+    expect(aheadLimitBytes(4445 * 1024 * 1024, 6049, 30)).toBeCloseTo((30 / 6049) * 4445 * 1024 * 1024, 0)
+    expect(aheadLimitBytes(1000, 100, 30)).toBe(300)
+  })
+
+  it('时长/长度/秒数非正返回 null（调用方退回字节阈值）', () => {
+    expect(aheadLimitBytes(1000, 0, 30)).toBeNull()
+    expect(aheadLimitBytes(0, 100, 30)).toBeNull()
+    expect(aheadLimitBytes(1000, 100, 0)).toBeNull()
+    expect(aheadLimitBytes(Number.NaN, 100, 30)).toBeNull()
+  })
+})
+
+describe('planRequests', () => {
+  const size = 100 * MEDIA_BLOCK
+  const W = 4 * MEDIA_BLOCK
+  const RETRY = 5000
+
+  it('首次把小缺口扩成前读窗口（块对齐）', () => {
+    const { requests, outstanding } = planRequests([[1000, 2000]], [], size, W, 1000, RETRY)
+    expect(requests).toEqual([[0, W]])
+    expect(outstanding).toEqual([{ start: 0, end: W, at: 1000 }])
+  })
+
+  it('缺口仍落在未满足区间内时不重复请求（核心：消除整段重发）', () => {
+    const prev = [{ start: 0, end: W, at: 1000 }]
+    const { requests, outstanding } = planRequests([[1000, 2000]], prev, size, W, 1200, RETRY)
+    expect(requests).toEqual([])
+    expect(outstanding).toEqual(prev)
+  })
+
+  it('播放头越过未满足区间后释放，并对新缺口发起请求', () => {
+    const prev = [{ start: 0, end: W, at: 1000 }]
+    const { requests, outstanding } = planRequests([[W + 100, W + 200]], prev, size, W, 1200, RETRY)
+    expect(requests).toEqual([[W, W * 2]])
+    expect(outstanding).toEqual([{ start: W, end: W * 2, at: 1200 }])
+  })
+
+  it('超过重发阈值仍无进展则释放重发（防丢包永久停摆）', () => {
+    const prev = [{ start: 0, end: W, at: 1000 }]
+    const { requests } = planRequests([[1000, 2000]], prev, size, W, 1000 + RETRY + 1, RETRY)
+    expect(requests).toEqual([[0, W]])
+  })
+
+  it('播放器暂未阻塞（gaps 空）时不发请求，但保留未超时区间', () => {
+    const prev = [{ start: 0, end: W, at: 1000 }]
+    const { requests, outstanding } = planRequests([], prev, size, W, 1200, RETRY)
+    expect(requests).toEqual([])
+    expect(outstanding).toEqual(prev)
+  })
+
+  it('接近 EOF 时夹到文件长度', () => {
+    const { requests } = planRequests([[size - 1000, size]], [], size, W, 1000, RETRY)
+    expect(requests).toEqual([[size - MEDIA_BLOCK, size]])
+  })
+
+  it('多个缺口各自开窗、不相邻则保持两段', () => {
+    const { requests } = planRequests([[0, 10], [MEDIA_BLOCK * 5, MEDIA_BLOCK * 5 + 10]], [], size, W, 1000, RETRY)
+    expect(requests).toEqual([[0, W], [MEDIA_BLOCK * 5, MEDIA_BLOCK * 5 + W]])
+  })
+
+  it('size<=0 安全返回空', () => {
+    expect(planRequests([[0, 100]], [], 0, W, 1000, RETRY)).toEqual({ requests: [], outstanding: [] })
   })
 })
 

@@ -95,14 +95,101 @@ export function quantizeRanges(
 }
 
 /**
- * 中继预取跨度：网页直链对小 Range 请求限速明显（实测 CDN 256KB≈67KB/s、4MB≈232KB/s、
- * 16MB≈364KB/s），故把播放器的小缺口扩展成大跨度请求，服务端按块流式到达、成员边收边播。
- * 取实测吞吐最高的 16MB（再大收益递减且会拉长 seek 响应/增大预读浪费）。
+ * 中继预取跨度（房主向源站的滚动预读跨度）。
+ *
+ * 早期取 16MB，依据是「CDN 对小 Range 请求限速」的单次样本。2026-09 在渲染进程/Node 双端
+ * 重测后该前提不成立：吞吐与 Range 大小**无关**，所有大小都撞同一条**链路带宽上限**
+ * （本机实测下行 ~1.2MB/s：huoshanstatic 128KB–16MB 恒 ~1.14MB/s；zencdn/w3 另加固定
+ * TTFB ~180–220ms，1MB 即到 0.97MB/s，4MB→0.93、16MB→0.91——大小只影响 TTFB 的摊薄）。
+ * 固定 TTFB 在 ~1–2MB 就摊平，16MB 相比 1MB 零收益，只增加内存占用与 seek 延迟，故降到
+ * 4MB（留一倍余量）。既然瓶颈是链路带宽而非单连接速率，开并行连接也无益。
  */
-export const RELAY_PREFETCH_BYTES = 16 * 1024 * 1024
+export const RELAY_PREFETCH_BYTES = 4 * 1024 * 1024
+
+/**
+ * 成员侧单次前读窗口：把播放器报告的阻塞缺口从起点向文件尾部扩这么多字节。
+ * 这是**缓冲/摊平往返**用途（分发对象是房主磁盘，本地 43–627MB/s，无限速问题），
+ * 与房主回源跨度是两件事；调小可让 seek 更快响应、内存更省。
+ */
+export const MEMBER_READAHEAD_BYTES = 4 * 1024 * 1024
+
+/**
+ * 房主预读领先播放头的时间上限（秒）。
+ *
+ * 旧实现按「3 × 预读跨度」的**字节**设上限（16MB 跨度时 48MB、4MB 跨度时 12MB≈16s）。
+ * 链路余量小（如 ~1.6×）时希望攒更厚的缓冲来吸收 VBR 尖峰与抖动，故改为**按时间**：
+ * 始终领先约 30s 的播放量。换算用线性字节估算（VBR 下有误差，够用）。
+ */
+export const RELAY_AHEAD_SECONDS = 30
+
+/**
+ * 把「领先 N 秒」换算成字节（线性估算，VBR 下有误差）。
+ * 参数：size 文件总长；durationSeconds 时长（秒）；aheadSeconds 目标领先秒数。
+ * 返回值：领先字节数；无法换算（时长/长度非正）返回 null，调用方退回字节阈值。
+ */
+export function aheadLimitBytes(size: number, durationSeconds: number, aheadSeconds: number): number | null {
+  if (!(size > 0) || !(durationSeconds > 0) || !(aheadSeconds > 0)) return null
+  return (aheadSeconds / durationSeconds) * size
+}
+
+/** 已发出、尚未确认满足的前读区间（成员侧去重用） */
+export interface OutstandingRange {
+  /** 块对齐起点 */
+  start: number
+  /** 块对齐终点（不含） */
+  end: number
+  /** 发出时间（ms）：超过重发阈值仍未见到进展就释放，防丢包造成永久停摆 */
+  at: number
+}
+
+/**
+ * 成员侧本轮应向房主请求的缺口区间（前读窗口 + 去重）。
+ *
+ * 修复的问题：原实现每 200ms 把每个小缺口 `expandRanges` 成 16MB 重发一遍；房主按「盘上
+ * 已就绪」判断后会把整段从盘上发出去，成员大部分已有 → 实测 ~23 倍冗余流量把 CPU 与
+ * DataChannel 占满，成员真实前进只有码率级别。
+ *
+ * 规则：
+ * - 缺口起点若已被某个**仍未满足**的区间覆盖 → 不重复请求；
+ * - 否则按 `windowBytes` 从缺口起点向文件尾部扩，记为新的未满足区间；
+ * - 播放头已越过（缺口起点 ≥ 区间终点）或超过 `retryMs` 无进展的区间被释放，允许重发。
+ *
+ * 参数：gaps 播放器阻塞缺口（未对齐）；outstanding 已发出未满足区间；size 文件总长；
+ *       windowBytes 单次前读跨度；nowMs 当前时间；retryMs 无进展重发阈值。
+ * 返回值：`requests` 本轮要发的块对齐区间；`outstanding` 更新后的未满足区间。
+ */
+export function planRequests(
+  gaps: ReadonlyArray<readonly [number, number]>,
+  outstanding: readonly OutstandingRange[],
+  size: number,
+  windowBytes: number,
+  nowMs: number,
+  retryMs: number,
+): { requests: Array<[number, number]>; outstanding: OutstandingRange[] } {
+  if (size <= 0) return { requests: [], outstanding: [] }
+  // 有阻塞缺口时，起点已被越过的未满足区间即可释放；无缺口（播放器暂未阻塞）时按超时释放
+  const frontier = gaps.length ? Math.min(...gaps.map(([a]) => a)) : 0
+  const kept = outstanding.filter((o) => o.end > frontier && nowMs - o.at < retryMs)
+  const additions: OutstandingRange[] = []
+  const requests: Array<[number, number]> = []
+  const covered = (start: number): boolean =>
+    kept.some((o) => start >= o.start && start < o.end) || additions.some((o) => start >= o.start && start < o.end)
+  for (const [a] of gaps) {
+    const start = Math.max(0, Math.floor(a / MEDIA_BLOCK) * MEDIA_BLOCK)
+    if (start >= size || covered(start)) continue
+    const end = Math.min(size, start + Math.max(MEDIA_BLOCK, windowBytes))
+    if (end <= start) continue
+    additions.push({ start, end, at: nowMs })
+    requests.push([start, end])
+  }
+  return { requests: quantizeRanges(requests, size), outstanding: [...kept, ...additions] }
+}
 
 /**
  * 把小缺口扩展成至少 minSpan 跨度的请求区间（块对齐 + 合并 + 夹到文件长度）。
+ * 注意：**只向文件尾部方向扩**——接近 EOF 时凑不满 minSpan 就保持短请求。
+ * 若为凑跨度把窗口整体前移，会先下发一批播放器当前不需要的字节：moov-at-end 的
+ * MP4 首帧只需要尾部十几 KB 的元数据，前移后却要等十几 MB 下载完才能起播（初始卡顿）。
  * 参数：ranges 缺口区间；size 文件总长；minSpan 期望最小跨度（<=0 表示不扩展）。
  * 返回值：升序合并后的块对齐区间列表。
  */
@@ -114,13 +201,9 @@ export function expandRanges(
   if (minSpan <= 0) return ranges.map(([a, b]) => [a, b])
   const grown: Array<[number, number]> = []
   for (const [a, b] of ranges) {
-    let start = Math.max(0, Math.floor(a / MEDIA_BLOCK) * MEDIA_BLOCK)
+    const start = Math.max(0, Math.floor(a / MEDIA_BLOCK) * MEDIA_BLOCK)
     const end = Math.min(size, Math.max(b, start + minSpan))
     if (start >= size || end <= start) continue
-    // 接近文件尾部时无法向后扩：把窗口整体前移（按块对齐），保证一次请求的跨度
-    if (end - start < minSpan) {
-      start = Math.max(0, Math.floor((end - minSpan) / MEDIA_BLOCK) * MEDIA_BLOCK)
-    }
     grown.push([start, end])
   }
   return quantizeRanges(grown, size)

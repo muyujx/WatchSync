@@ -8,7 +8,14 @@ import { createRoom, openRealRoom, type FileChunkMeta, type RoomHandle } from '.
 import type { ShareMode, SyncMsg } from '../core/protocol'
 import { MediaStreamReceiver } from './mediaStream'
 import { probeRemoteMedia, readRemoteChunk, streamRemoteRange } from './remoteMedia'
-import { RELAY_PREFETCH_BYTES, isLoopbackMediaUrl, splitRangeByReady, unreadyRanges } from '../core/mediaSource'
+import {
+  RELAY_AHEAD_SECONDS,
+  RELAY_PREFETCH_BYTES,
+  aheadLimitBytes,
+  isLoopbackMediaUrl,
+  splitRangeByReady,
+  unreadyRanges,
+} from '../core/mediaSource'
 import { newFileId, sendFileChunks, FILE_CHUNK_SIZE } from '../core/fileShare'
 import { SpeedMeter } from '../core/speed'
 import { p2pLog } from '../core/log'
@@ -144,6 +151,8 @@ export class RoomController {
   private holdingForMembers = false
   private holdTimer: number | null = null
   private holdStartedAt = 0
+  /** 成员：起播期快速就绪上报定时器（400ms；就绪后自动停） */
+  private readyTimer: number | null = null
   /** 房主：最近一次自动动作（超时续播/看门狗 rekick）时刻，其事件回声不触发保持逻辑 */
   private autoActionAt = 0
   /** 成员：最近一次上报的就绪态与时间（变化即报 + 周期保鲜） */
@@ -557,6 +566,7 @@ export class RoomController {
             return
           }
           navUrl = localUrl
+          this.startReadyWatch()
         }
         void this.onSyncTab?.(navUrl)
       }
@@ -584,6 +594,7 @@ export class RoomController {
         this.shareName = msg.name
         this.shareFileId = msg.fileId
         this.onShareChanged?.()
+        this.startReadyWatch()
       }
       void this.media.attach(msg.fileId, msg.name, msg.size, { mime: msg.mime }).then((url) => {
         if (!msg.asSource || this.role !== 'follower' || !url) return
@@ -1238,6 +1249,31 @@ export class RoomController {
     }
   }
 
+  /**
+   * 成员：起播期快速就绪上报（400ms）。
+   * 跟随循环是 2s 节拍，成员就绪后最多要等 2s 才上报，房主的「等待成员预加载」就白等 ~2s。
+   * 这里用短节拍把「就绪」这一刻尽早送达；一旦就绪立即上报并自停，不影响稳态开销。
+   */
+  private startReadyWatch(): void {
+    if (this.role !== 'follower' || this.readyTimer !== null) return
+    this.readyTimer = window.setInterval(() => {
+      void window.p2pApi
+        .videoStatus()
+        .then((st) => {
+          this.reportBufferState(st)
+          if (st?.hasVideo && st.readyState >= 2) this.clearReadyWatch()
+        })
+        .catch(() => {})
+    }, 400)
+  }
+
+  /** 停止快速就绪上报（幂等） */
+  private clearReadyWatch(): void {
+    if (this.readyTimer === null) return
+    clearInterval(this.readyTimer)
+    this.readyTimer = null
+  }
+
   /** 停止房主轮询（状态心跳 + 事件采样 + 停滞看门狗，重建房间前调用） */
   private stopPolling(): void {
     if (this.pollTimer) {
@@ -1252,6 +1288,7 @@ export class RoomController {
       clearInterval(this.stallTimer)
       this.stallTimer = null
     }
+    this.clearReadyWatch()
     this.draining = false
     this.stallPos = -1
     this.stallSince = 0
@@ -1316,6 +1353,10 @@ export class RoomController {
     // 记下落盘路径：此后所有补发/预读先读本机副本，严格保证每个字节只向源站取一次
     const localPath = this.media.pathFor(fileId)
     if (localPath) this.hostFiles.set(fileId, { remote: url, path: localPath, size: media.size, mime: media.mime || 'video/mp4' })
+    // 立即启动回源预读：与「开回放页签 / 成员首个 fileNeed」并行。
+    // 否则成员可能在预读启动前就上报缺口，走 fillRange 的直拉分支，与预读重复下载同一区间、
+    // 在慢链路上分摊限速（启播更慢）。此时本机媒体源已登记，取到的块直接落盘。
+    if (localPath) void this.relayFetch(fileId, [[0, media.size]])
     // 推流页签独立于同步目标：房主可在「网页页签（进度同步）」与「推流页签（直接推流）」间切换
     if (localUrl) await this.onHostPlaybackTab?.(localUrl)
     this.sendState()
@@ -1419,10 +1460,13 @@ export class RoomController {
         // 注意以推进后的游标为基准检测外部重置——若沿用跨度起点的 moved()，
         // 推进后恒为「已重置」，节流永远不会执行。
         const advanced = this.relayCursor.get(fileId) ?? 0
+        // 领先上限：按时间领先 ~30s 换算成字节（慢链路下攒更厚缓冲，吸收 VBR 尖峰）；
+        // 时长未知时退回「3 × 预读跨度」的字节阈值。
+        const aheadLimit = (await this.relayAheadLimitBytes(fileId)) ?? RELAY_PREFETCH_BYTES * 3
         while (
           this.room &&
           (this.relayCursor.get(fileId) ?? 0) === advanced &&
-          (await this.relayAheadBytes(fileId)) > RELAY_PREFETCH_BYTES * 3
+          (await this.relayAheadBytes(fileId)) > aheadLimit
         ) {
           const played = await this.playedByteOffset(fileId)
           const wanted = await this.mediaWantedPeek(fileId)
@@ -1457,6 +1501,20 @@ export class RoomController {
     const played = await this.playedByteOffset(fileId)
     if (played === null) return 0
     return Math.max(0, (this.relayCursor.get(fileId) ?? 0) - played)
+  }
+
+  /** 房主：预读领先上限（字节）——按「领先 ~30s」换算；时长未知返回 null（退回字节阈值） */
+  private async relayAheadLimitBytes(fileId: string): Promise<number | null> {
+    const info = this.hostFiles.get(fileId)
+    if (!info) return null
+    try {
+      const st = await window.p2pApi.videoStatus()
+      const dur = st?.duration ?? 0
+      if (!st?.hasVideo || dur <= 0) return null
+      return aheadLimitBytes(info.size, dur, RELAY_AHEAD_SECONDS)
+    } catch {
+      return null
+    }
   }
 
   /** 房主：按数据源类型读取一块（本地路径 / 远程直链） */
@@ -1623,22 +1681,23 @@ export class RoomController {
     end: number,
     target: string,
   ): Promise<void> {
-    let pos = start
-    // 段起点落在当前预读跨度 [cursor, cursor+16MB) 内：跟随预读进度转发
-    const cursor = this.relayCursor.get(fileId) ?? 0
-    if (info.remote && info.path && this.relayRunning.has(fileId) && pos >= cursor && pos < cursor + RELAY_PREFETCH_BYTES) {
-      pos = await this.followPrefetch(room, fileId, info, pos, end, target)
-    }
-    if (this.room !== room || pos >= end) return
     // 就绪位图只对注册过本机媒体服务的远程中继源有效（本地文件源整段直接读源文件）
     const remote = info.remote
     const path = info.path
     const ready = remote && path ? await this.readyRanges(fileId) : []
-    const segments = remote && path ? splitRangeByReady(pos, end, ready) : [{ start: pos, end, ready: false }]
+    const segments = remote && path ? splitRangeByReady(start, end, ready) : [{ start, end, ready: false }]
+    // 预读跨度：落在其中的未就绪段跟随预读增量转发——与预读共用同一条 CDN 连接，
+    // 不重复下载、不分摊限速（并发直拉是慢 CDN 下卡顿的主因）；预读停滞才直拉兜底。
+    const cursor = this.relayCursor.get(fileId) ?? 0
+    const spanEnd = cursor + RELAY_PREFETCH_BYTES
     for (const seg of segments) {
       if (this.room !== room) return
       if (seg.ready && path) {
         await this.sendDiskRange(room, fileId, path, seg.start, seg.end, target)
+      } else if (remote && path && this.relayRunning.has(fileId) && seg.start >= cursor && seg.start < spanEnd) {
+        const reached = await this.followPrefetch(room, fileId, info, seg.start, seg.end, target)
+        if (this.room !== room || reached >= seg.end) continue
+        await this.sendRemoteRange(room, fileId, { remote }, reached, seg.end, target)
       } else if (remote) {
         await this.sendRemoteRange(room, fileId, { remote }, seg.start, seg.end, target)
       } else if (path) {

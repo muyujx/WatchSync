@@ -51,6 +51,11 @@ struct State {
     have_bytes: u64,
     /// 阻塞中未满足的缺口（升序合并）
     wanted: Vec<(u64, u64)>,
+    /// 已就绪区间（升序不重叠）缓存：仅在 dirty 时重算，
+    /// 避免房主 400ms 轮询路径每次都 O(总块数) 全扫位图
+    cached_ranges: Vec<(u64, u64)>,
+    /// 位图是否已变更、需要重算 cached_ranges
+    ranges_dirty: bool,
 }
 
 fn registry() -> &'static Mutex<HashMap<String, Arc<Source>>> {
@@ -131,6 +136,8 @@ pub fn publish(file_id: &str, path: &str) -> String {
             bitmap: vec![0u64; (size.div_ceil(BLOCK) as usize).div_ceil(64)],
             have_bytes: 0,
             wanted: Vec::new(),
+            cached_ranges: Vec::new(),
+            ranges_dirty: true,
         }),
         cv: Condvar::new(),
         unpublished: AtomicBool::new(false),
@@ -178,6 +185,9 @@ pub fn mark_have(file_id: &str, offset: u64, len: u64) {
             }
         }
         st.have_bytes = (st.have_bytes + newly * BLOCK).min(src.size);
+        if newly > 0 {
+            st.ranges_dirty = true;
+        }
     }
     src.cv.notify_all();
 }
@@ -223,30 +233,35 @@ pub fn wanted_peek(file_id: &str) -> Vec<(u64, u64)> {
         .collect()
 }
 
-/// 已就绪区间的字节列表（升序、互不重叠），供房主判断缺口能否直接读本机副本
+/// 已就绪区间的字节列表（升序、互不重叠），供房主判断缺口能否直接读本机副本。
+/// 位图未变时直接返回缓存（房主轮询路径高频调用，全扫位图是纯浪费）。
 pub fn ready_ranges(file_id: &str) -> Vec<(u64, u64)> {
     let Some(src) = lookup(file_id) else {
         return Vec::new();
     };
-    let Ok(st) = src.state.lock() else {
+    let Ok(mut st) = src.state.lock() else {
         return Vec::new();
     };
-    let total_blocks = st.bitmap.len() as u64 * 64;
-    let mut out = Vec::new();
-    let mut run_start: Option<u64> = None;
-    for b in 0..total_blocks {
-        if bit_on(&st.bitmap, b) {
-            if run_start.is_none() {
-                run_start = Some(b * BLOCK);
+    if st.ranges_dirty {
+        let total_blocks = st.bitmap.len() as u64 * 64;
+        let mut out = Vec::new();
+        let mut run_start: Option<u64> = None;
+        for b in 0..total_blocks {
+            if bit_on(&st.bitmap, b) {
+                if run_start.is_none() {
+                    run_start = Some(b * BLOCK);
+                }
+            } else if let Some(s) = run_start.take() {
+                out.push((s, b * BLOCK));
             }
-        } else if let Some(s) = run_start.take() {
-            out.push((s, b * BLOCK));
         }
+        if let Some(s) = run_start {
+            out.push((s, src.size));
+        }
+        st.cached_ranges = out;
+        st.ranges_dirty = false;
     }
-    if let Some(s) = run_start {
-        out.push((s, src.size));
-    }
-    out
+    st.cached_ranges.clone()
 }
 
 /// 已就绪字节数 / 总长
@@ -352,122 +367,144 @@ fn respond_unsatisfiable(sock: &mut TcpStream, size: u64) -> std::io::Result<()>
     write_head(sock, &h)
 }
 
-/// 处理一次连接：解析请求 → 定位媒体源 → 按 Range 回写（缺失区间阻塞等待）
+/// 处理连接上的请求：解析 → 定位媒体源 → 按 Range 回写（缺失区间阻塞等待）。
+/// 支持 keep-alive 连接复用：播放器连续发大量 Range 请求，逐请求关闭会造成连接/线程风暴；
+/// 空闲读超时兜底回收线程。发送被截断（闲时/源注销）才关闭连接。
 fn serve(mut sock: TcpStream) -> std::io::Result<()> {
     let _ = sock.set_nodelay(true);
+    // 空闲读超时：keep-alive 复用的连接长时间无新请求时让线程自行退出
+    let _ = sock.set_read_timeout(Some(Duration::from_secs(30)));
     let mut reader = BufReader::new(sock.try_clone()?);
-    let mut line = String::new();
-    if reader.read_line(&mut line)? == 0 {
-        return Ok(());
-    }
-    let mut it = line.split_whitespace();
-    let method = it.next().unwrap_or("").to_ascii_uppercase();
-    let target = it.next().unwrap_or("").to_string();
-    let mut range: Option<(Option<u64>, Option<u64>)> = None;
     loop {
-        let mut h = String::new();
-        if reader.read_line(&mut h)? == 0 || h.trim().is_empty() {
-            break;
+        let mut line = String::new();
+        if reader.read_line(&mut line)? == 0 {
+            return Ok(());
         }
-        let lower = h.to_ascii_lowercase();
-        if let Some(v) = lower.strip_prefix("range:") {
-            range = parse_range(v.trim());
+        if line.trim().is_empty() {
+            continue;
         }
-    }
-    if method == "OPTIONS" {
-        return respond_empty(&mut sock, "204 No Content");
-    }
-    let path = target.split('?').next().unwrap_or("");
-    let Some(id) = path.strip_prefix("/media/").filter(|s| !s.is_empty()) else {
-        return respond_empty(&mut sock, "404 Not Found");
-    };
-    let Some(src) = lookup(id) else {
-        return respond_empty(&mut sock, "404 Not Found");
-    };
-    if src.size == 0 {
-        return respond_empty(&mut sock, "503 Service Unavailable");
-    }
-    let (start, end) = match range {
-        Some((Some(a), Some(b))) => {
-            if a >= src.size {
-                return respond_unsatisfiable(&mut sock, src.size);
-            }
-            (a, (b + 1).min(src.size))
-        }
-        Some((Some(a), None)) => {
-            if a >= src.size {
-                return respond_unsatisfiable(&mut sock, src.size);
-            }
-            (a, src.size)
-        }
-        Some((None, Some(n))) => {
-            let n = n.min(src.size);
-            (src.size - n, src.size)
-        }
-        _ => (0, src.size),
-    };
-    if end <= start {
-        return respond_unsatisfiable(&mut sock, src.size);
-    }
-    let partial = range.is_some();
-    // 首块未就绪时先不发响应头：先发头（承诺 Content-Length）再阻塞等体，等不到断连
-    // 会把连接变成「少发的截断响应」——Chromium 媒体栈收到后不再发任何请求且 load() 无法
-    // 恢复（全房间停摆）。等首块就绪再回 206/200；超时/源已注销回 503 走浏览器标准错误处理。
-    if method != "HEAD" {
-        let deadline = Instant::now() + HEAD_WAIT_LIMIT;
+        let mut it = line.split_whitespace();
+        let method = it.next().unwrap_or("").to_ascii_uppercase();
+        let target = it.next().unwrap_or("").to_string();
+        let mut range: Option<(Option<u64>, Option<u64>)> = None;
+        let mut keep_alive = true;
         loop {
-            if src.unpublished.load(Ordering::Relaxed) {
-                return respond_empty(&mut sock, "503 Service Unavailable");
-            }
-            let avail = match src.state.lock() {
-                Ok(st) => run_len(&st.bitmap, start, src.size),
-                Err(_) => 0,
-            };
-            if avail > 0 {
+            let mut h = String::new();
+            if reader.read_line(&mut h)? == 0 || h.trim().is_empty() {
                 break;
             }
-            if Instant::now() >= deadline {
-                return respond_empty(&mut sock, "503 Service Unavailable");
-            }
-            if let Ok(mut st) = src.state.lock() {
-                let ge = gap_end(&st.bitmap, start, src.size).min(end);
-                push_wanted(&mut st.wanted, start, ge);
-                let _ = src.cv.wait_timeout(st, WAIT_STEP);
-            } else {
-                std::thread::sleep(WAIT_STEP);
+            let lower = h.to_ascii_lowercase();
+            if let Some(v) = lower.strip_prefix("range:") {
+                range = parse_range(v.trim());
+            } else if let Some(v) = lower.strip_prefix("connection:") {
+                if v.contains("close") {
+                    keep_alive = false;
+                }
             }
         }
+        if method == "OPTIONS" {
+            return respond_empty(&mut sock, "204 No Content");
+        }
+        let path = target.split('?').next().unwrap_or("");
+        let Some(id) = path.strip_prefix("/media/").filter(|s| !s.is_empty()) else {
+            return respond_empty(&mut sock, "404 Not Found");
+        };
+        let Some(src) = lookup(id) else {
+            return respond_empty(&mut sock, "404 Not Found");
+        };
+        if src.size == 0 {
+            return respond_empty(&mut sock, "503 Service Unavailable");
+        }
+        let (start, end) = match range {
+            Some((Some(a), Some(b))) => {
+                if a >= src.size {
+                    return respond_unsatisfiable(&mut sock, src.size);
+                }
+                (a, (b + 1).min(src.size))
+            }
+            Some((Some(a), None)) => {
+                if a >= src.size {
+                    return respond_unsatisfiable(&mut sock, src.size);
+                }
+                (a, src.size)
+            }
+            Some((None, Some(n))) => {
+                let n = n.min(src.size);
+                (src.size - n, src.size)
+            }
+            _ => (0, src.size),
+        };
+        if end <= start {
+            return respond_unsatisfiable(&mut sock, src.size);
+        }
+        let partial = range.is_some();
+        // 首块未就绪时先不发响应头：先发头（承诺 Content-Length）再阻塞等体，等不到断连
+        // 会把连接变成「少发的截断响应」——Chromium 媒体栈收到后不再发任何请求且 load() 无法
+        // 恢复（全房间停摆）。等首块就绪再回 206/200；超时/源已注销回 503 走浏览器标准错误处理。
+        if method != "HEAD" {
+            let deadline = Instant::now() + HEAD_WAIT_LIMIT;
+            loop {
+                if src.unpublished.load(Ordering::Relaxed) {
+                    return respond_empty(&mut sock, "503 Service Unavailable");
+                }
+                let avail = match src.state.lock() {
+                    Ok(st) => run_len(&st.bitmap, start, src.size),
+                    Err(_) => 0,
+                };
+                if avail > 0 {
+                    break;
+                }
+                if Instant::now() >= deadline {
+                    return respond_empty(&mut sock, "503 Service Unavailable");
+                }
+                if let Ok(mut st) = src.state.lock() {
+                    let ge = gap_end(&st.bitmap, start, src.size).min(end);
+                    push_wanted(&mut st.wanted, start, ge);
+                    let _ = src.cv.wait_timeout(st, WAIT_STEP);
+                } else {
+                    std::thread::sleep(WAIT_STEP);
+                }
+            }
+        }
+        let mut head = String::new();
+        head.push_str(if partial {
+            "HTTP/1.1 206 Partial Content\r\n"
+        } else {
+            "HTTP/1.1 200 OK\r\n"
+        });
+        head.push_str(&format!("Content-Type: {}\r\n", src.mime));
+        head.push_str(&format!("Content-Length: {}\r\n", end - start));
+        if partial {
+            head.push_str(&format!(
+                "Content-Range: bytes {}-{}/{}\r\n",
+                start,
+                end - 1,
+                src.size
+            ));
+        }
+        head.push_str("Accept-Ranges: bytes\r\n");
+        head.push_str("Access-Control-Allow-Origin: *\r\n");
+        head.push_str("Access-Control-Expose-Headers: Content-Length, Content-Range, Accept-Ranges\r\n");
+        head.push_str("Cache-Control: no-store\r\n");
+        // HTTP/1.1 默认 keep-alive：不写 Connection 头，连接可复用
+        head.push_str("\r\n");
+        write_head(&mut sock, &head)?;
+        if method == "HEAD" {
+            if !keep_alive {
+                return Ok(());
+            }
+            continue;
+        }
+        let completed = stream_body(&src, &mut sock, start, end)?;
+        if !keep_alive || !completed {
+            return Ok(());
+        }
     }
-    let mut head = String::new();
-    head.push_str(if partial {
-        "HTTP/1.1 206 Partial Content\r\n"
-    } else {
-        "HTTP/1.1 200 OK\r\n"
-    });
-    head.push_str(&format!("Content-Type: {}\r\n", src.mime));
-    head.push_str(&format!("Content-Length: {}\r\n", end - start));
-    if partial {
-        head.push_str(&format!(
-            "Content-Range: bytes {}-{}/{}\r\n",
-            start,
-            end - 1,
-            src.size
-        ));
-    }
-    head.push_str("Accept-Ranges: bytes\r\n");
-    head.push_str("Access-Control-Allow-Origin: *\r\n");
-    head.push_str("Access-Control-Expose-Headers: Content-Length, Content-Range, Accept-Ranges\r\n");
-    head.push_str("Cache-Control: no-store\r\n");
-    head.push_str("Connection: close\r\n\r\n");
-    write_head(&mut sock, &head)?;
-    if method == "HEAD" {
-        return Ok(());
-    }
-    stream_body(&src, &mut sock, start, end)
 }
 
-/// 把 [start,end) 逐段写入 socket：就绪段直接写，缺失段等待（并上报缺口）
-fn stream_body(src: &Source, sock: &mut TcpStream, start: u64, end: u64) -> std::io::Result<()> {
+/// 把 [start,end) 逐段写入 socket：就绪段直接写，缺失段等待（并上报缺口）。
+/// 返回值：true=整个区间写完（连接可复用）；false=中途放弃（闲时/源注销，需关闭连接）。
+fn stream_body(src: &Source, sock: &mut TcpStream, start: u64, end: u64) -> std::io::Result<bool> {
     let mut file = std::fs::File::open(&src.path)?;
     let mut buf = vec![0u8; 256 * 1024];
     let mut pos = start;
@@ -479,7 +516,7 @@ fn stream_body(src: &Source, sock: &mut TcpStream, start: u64, end: u64) -> std:
         };
         if avail == 0 {
             if src.unpublished.load(Ordering::Relaxed) || idle.elapsed() > IDLE_LIMIT {
-                return Ok(());
+                return Ok(false);
             }
             if let Ok(mut st) = src.state.lock() {
                 let ge = gap_end(&st.bitmap, pos, src.size).min(end);
@@ -501,5 +538,5 @@ fn stream_body(src: &Source, sock: &mut TcpStream, start: u64, end: u64) -> std:
         sock.flush()?;
         idle = Instant::now();
     }
-    Ok(())
+    Ok(true)
 }

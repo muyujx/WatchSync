@@ -3,16 +3,24 @@
  *
  * 职责：
  * - 收到文件要约 → 建临时文件 + 注册本机 Range 媒体服务（mediaPublish），成员无需等传完即可开播
- * - 轮询播放器阻塞中的缺口（mediaWanted）→ 经 onNeed 回调交给房间层向房主补拉
+ * - 轮询播放器阻塞中的缺口（mediaWanted）→ 前读窗口 + 去重（同一缺口未满足前不重复请求）
+ *   → 经 onNeed 回调交给房间层向房主补拉
  * - 收到数据块 → 落盘并标记就绪（一次二进制 IPC 完成），放行阻塞中的读
  * 与房间/信令解耦：只依赖 p2pApi 的媒体命令 + 注入回调。
  */
-import { expandRanges, mediaExtension, quantizeRanges, RELAY_PREFETCH_BYTES } from '../core/mediaSource'
+import {
+  MEMBER_READAHEAD_BYTES,
+  mediaExtension,
+  planRequests,
+  type OutstandingRange,
+} from '../core/mediaSource'
 
 /** 缺口轮询间隔（毫秒） */
 const PUMP_INTERVAL_MS = 200
 /** 进度上报阈值：变化超过该比例才回调（避免 UI 抖动） */
 const RATIO_EPSILON = 0.005
+/** 未满足区间超过该时长仍无进展就释放重发（防丢包/截断造成永久停摆） */
+const OUTSTANDING_RETRY_MS = 5000
 
 export interface MediaStreamDeps {
   /** 需要补拉的缺口（房间层转成 fileNeed 广播给房主） */
@@ -34,6 +42,8 @@ export class MediaStreamReceiver {
   private pending = new Map<string, Array<{ data: ArrayBuffer; offset: number }>>()
   /** fileId → 最近一次上报的接收比例 */
   private ratios = new Map<string, number>()
+  /** fileId → 已发出、尚未确认满足的前读区间（消除重复请求/重发） */
+  private outstanding = new Map<string, OutstandingRange[]>()
   /** 缺口轮询定时器 */
   private timer: number | null = null
 
@@ -128,6 +138,7 @@ export class MediaStreamReceiver {
       this.paths.delete(id)
       this.pending.delete(id)
       this.ratios.delete(id)
+      this.outstanding.delete(id)
       if (this.activeId === id) {
         this.activeId = ''
         this.stopPump()
@@ -138,6 +149,8 @@ export class MediaStreamReceiver {
   /** 开始轮询播放器缺口 */
   private startPump(fileId: string): void {
     this.stopPump()
+    // 立即跑一次：省去首个 200ms 空窗（启播时成员/房主的首个缺口不必再等一整个节拍）
+    void this.pump(fileId)
     this.timer = window.setInterval(() => {
       void this.pump(fileId)
     }, PUMP_INTERVAL_MS)
@@ -156,13 +169,19 @@ export class MediaStreamReceiver {
     if (this.activeId !== fileId) return
     try {
       const raw = await window.p2pApi.mediaWanted(fileId)
-      if (raw?.length) {
-        // 规范化：块对齐 + 合并；再扩展成大跨度请求（服务端大请求吞吐远高于小请求）
-        const [, total] = await window.p2pApi.mediaProgress(fileId)
-        const size = total || Number.MAX_SAFE_INTEGER
-        const ranges = quantizeRanges(expandRanges(raw, size), size)
-        if (ranges.length) this.deps.onNeed(fileId, ranges)
-      }
+      const [, total] = await window.p2pApi.mediaProgress(fileId)
+      const size = total || Number.MAX_SAFE_INTEGER
+      // 前读窗口 + 去重：同一缺口在未满足前不再重复请求（旧实现每 200ms 整段重发，~23 倍冗余）
+      const planned = planRequests(
+        raw ?? [],
+        this.outstanding.get(fileId) ?? [],
+        size,
+        MEMBER_READAHEAD_BYTES,
+        Date.now(),
+        OUTSTANDING_RETRY_MS,
+      )
+      this.outstanding.set(fileId, planned.outstanding)
+      if (planned.requests.length) this.deps.onNeed(fileId, planned.requests)
       await this.refreshRatio(fileId)
     } catch (e) {
       this.deps.log?.('pump media failed', e)
