@@ -29,6 +29,6 @@ cycani 需要登录账号才能播放，账号在 account.md 中
 - vite dev server 端口 4555，日志 logs/dev-frontend.log；纯前端改动 exe 内 HMR 生效，Rust 改动需重启实例
 - 就绪探测：轮询 `http://127.0.0.1:9222/json/version`（B 用 9223，必须用 127.0.0.1）
 - 联调驱动：`node scripts/e2e/drive.cjs <阶段>`，阶段：`pair-test`（A 建房→B 加入→跟随）| `sync-test`（播放/seek/暂停三步对比）| `check-video` | `inspect-video` | `video-cmd` | `video-eval` | `ui-eval` | `front` | `perf` | `codec`
-- 开发限速（仅 dev，正式构建被摇树移除）：改根目录 `dev.json`（模板 `dev.example.json`）——`p2pKBs`=实例间通信、`sourceKBs`=回源访问网络，单位 KB/s，0=不限；改后重载实例页面即可
-- 限速实现：`src/renderer/devThrottle.ts` 应用层令牌桶（按块 `await` 排队，非浏览器/CDP 限速）；`p2pKBs` 作用于 `room.ts`（sendBlockReliable/onFileChunk 等发送与接收落盘），`sourceKBs` 作用于 `remoteMedia.ts`（streamRemoteRange/readRemoteChunk 回源读取）；dev server 以 `/dev.json` 暴露配置
+- 开发限速（仅 dev，正式构建被摇树移除）：改根目录 `dev.jsonc`（可写注释）——`p2pKBs`=实例间通信、`sourceKBs`=回源访问网络，单位 KB/s，0=不限；改后重载实例页面即可
+- 限速实现：`src/renderer/devThrottle.ts` 应用层令牌桶（按块 `await` 排队，非浏览器/CDP 限速）；`p2pKBs` 作用于 `room.ts`（sendBlockReliable/onFileChunk 等发送与接收落盘），`sourceKBs` 作用于 `remoteMedia.ts`（streamRemoteRange/readRemoteChunk 回源读取）；dev server 剥注释后以 `/dev.jsonc` 暴露配置
 - 截图/操作实例：用 `cdp-a` / `cdp-b` MCP 工具（opencode.json 已配置连接 9222/9223）

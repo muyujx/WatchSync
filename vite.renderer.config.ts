@@ -4,18 +4,70 @@ import { defineConfig, type Plugin } from 'vite'
 import vue from '@vitejs/plugin-vue'
 
 /**
- * 开发期限速配置插件：把仓库根 `dev.json` 以 `/dev.json` 暴露给渲染层（仅 dev）。
- * 文件缺失/非法时返回 `{}`（渲染层按不限速）。生产构建不注册此中间件。
+ * 开发期限速配置插件：把仓库根 `dev.jsonc`（允许 // 与 /* *\/ 注释）剥注释后以
+ * `/dev.jsonc` 暴露给渲染层（仅 dev）。文件缺失/非法时返回 `{}`（渲染层按不限速）。
+ * 生产构建不注册此中间件，也不读取该文件。
  */
+function stripJsonComments(text: string): string {
+  let out = ''
+  let inString = false
+  let inLine = false
+  let inBlock = false
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i]
+    const n = text[i + 1]
+    if (inLine) {
+      if (c === '\n') {
+        inLine = false
+        out += c
+      }
+      continue
+    }
+    if (inBlock) {
+      if (c === '*' && n === '/') {
+        inBlock = false
+        i++
+      }
+      continue
+    }
+    if (inString) {
+      out += c
+      if (c === '\\') {
+        out += n
+        i++
+      } else if (c === '"') {
+        inString = false
+      }
+      continue
+    }
+    if (c === '"') {
+      inString = true
+      out += c
+    } else if (c === '/' && n === '/') {
+      inLine = true
+      i++
+    } else if (c === '/' && n === '*') {
+      inBlock = true
+      i++
+    } else {
+      out += c
+    }
+  }
+  return out
+}
+
 function devConfigPlugin(): Plugin {
   return {
     name: 'watchsync-dev-config',
     configureServer(server) {
-      server.middlewares.use('/dev.json', (_req, res) => {
+      server.middlewares.use('/dev.jsonc', (_req, res) => {
         res.setHeader('Content-Type', 'application/json')
         try {
-          res.end(readFileSync(resolve('dev.json'), 'utf-8'))
-        } catch {
+          const raw = stripJsonComments(readFileSync(resolve('dev.jsonc'), 'utf-8'))
+          JSON.parse(raw) // 校验：非法配置直接退回不限速
+          res.end(raw)
+        } catch (e) {
+          console.warn('[dev.jsonc] 读取/解析失败，按不限速处理：', (e as Error).message)
           res.end('{}')
         }
       })

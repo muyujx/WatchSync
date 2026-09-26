@@ -1,7 +1,8 @@
 /**
  * 开发期网络限速（**仅 dev 生效，生产构建为空操作**）。
  *
- * 配置来源：仓库根 `dev.json`（由 vite dev server 以 `/dev.json` 暴露，仅 dev；不存在按不限速）。
+ * 配置来源：仓库根 `dev.jsonc`（由 vite dev server 剥注释后以 `/dev.jsonc` 暴露，仅 dev；
+ * 不存在按不限速）。
  * 两项网速，单位 KB/s（千字节/秒），0 或省略=不限速：
  * ```json
  * { "p2pKBs": 500, "sourceKBs": 500 }
@@ -72,15 +73,15 @@ export function throttleStatus(): { p2pKBs: number; sourceKBs: number } {
   return { p2pKBs: Math.round(p2p.bps / 1024), sourceKBs: Math.round(source.bps / 1024) }
 }
 
-/** 从 `/dev.json` 载入配置（仅 dev）；失败按不限速 */
+/** 从 `/dev.jsonc` 载入配置（仅 dev，注释由 dev server 剥离）；失败按不限速 */
 export async function loadDevThrottle(): Promise<void> {
   if (!DEV_THROTTLE) return
   let cfg: Record<string, unknown> | null = null
   try {
-    const r = await fetch('/dev.json', { cache: 'no-store' })
+    const r = await fetch('/dev.jsonc', { cache: 'no-store' })
     if (r.ok) cfg = (await r.json()) as Record<string, unknown>
   } catch {
-    // dev.json 不存在/解析失败：保持不限速
+    // dev.jsonc 不存在/解析失败：保持不限速
   }
   applyConfig(cfg)
 }
