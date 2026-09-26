@@ -19,6 +19,7 @@ import {
   unreadyRanges,
 } from '../core/mediaSource'
 import { newFileId, sendFileChunks, FILE_CHUNK_SIZE } from '../core/fileShare'
+import { decideSourceCorrection, type SourceCorrectionState } from '../core/urlSync'
 import { SpeedMeter } from '../core/speed'
 import { p2pLog } from '../core/log'
 import { RttProbe } from './rtt'
@@ -37,6 +38,12 @@ const BRIDGE_WAIT_MS = 8000
 
 /** 成员端 seek 宽限期（ms）：seek 后缓冲到位置需要时间，期间禁止重复 seek/rate，避免打断加载造成卡顿 */
 const SEEK_GRACE_MS = 2000
+
+/** 成员端地址漂移重导航冷却（ms）：重新导航后页面/桥需时间落地，冷却内不重复纠正同一目标 */
+const SOURCE_CORRECT_COOLDOWN_MS = 3000
+
+/** 成员端地址漂移连续纠正上限：达到即停止（防站点强制重定向，如登录墙，造成来回死循环） */
+const SOURCE_CORRECT_MAX_ATTEMPTS = 5
 
 /** 房主事件采样间隔（ms）：视频操作事件即时广播的轮询粒度，决定操作同步延迟上限 */
 const EVENT_POLL_MS = 80
@@ -164,6 +171,8 @@ export class RoomController {
   private joinTimer: number | null = null
   /** 成员端桥就绪标记（视频元素已创建并注入；换页后重置） */
   private bridgeReady = false
+  /** 成员端地址漂移纠正状态（源地址自愈：冷却 + 连续纠正上限，见 core/urlSync） */
+  private sourceCorrection: SourceCorrectionState = { target: '', attempts: 0, lastAt: 0 }
   /** 防止 applySnapshot 并发（等待桥就绪期间可能又收到心跳） */
   private applyingSnapshot = false
   /** 成员端最近一次下发 seek 的时间（0=从未；宽限期内不再重复 seek/rate） */
@@ -785,6 +794,8 @@ export class RoomController {
     this.hostNotReady = false
     this.notReadyCount = 0
     this.lastHostSeekAt = 0
+    // 同步结束：清空地址纠正基准，下次同步从全新序列开始
+    this.sourceCorrection = { target: '', attempts: 0, lastAt: 0 }
     // 先按旧 id 解除跟随守卫，再清空指针：同步已结束，成员可关闭该页签
     if (this.syncTabId != null) void window.p2pApi.setSyncTab(this.syncTabId, false)
     this.syncTabId = null
@@ -805,7 +816,7 @@ export class RoomController {
   }
 
   /**
-   * 成员端应用状态快照：按需建立/导航同步页签，并在桥就绪后对齐位置与播放状态。
+   * 成员端应用状态快照：按需建立/导航同步页签、纠正地址漂移，并在桥就绪后对齐位置与播放状态。
    * 参数：s 快照（null 表示房主未就绪的心跳，仅同步页签地址、不采纳基准不做对齐）；
    *       url 房主当前视频页（空串表示房主尚未打开视频/已关闭同步页签）；
    *       resyncSeek 是否先 seek 到 s.position 再对齐播放（冻结恢复/房主加载完成后的强制对位）。
@@ -843,11 +854,10 @@ export class RoomController {
         // 尚无同步页签（首次收到心跳/同步页签缺失）：由 UI 复用或新建并回填 syncTabId
         await this.onSyncTab?.(url)
       }
-      if (url && url !== this.videoUrl && this.syncTabId != null) {
-        this.videoUrl = url
-        // 房主在同一页签内换视频/换剧集：同步页签原地导航，桥需重建等待播放器创建 video
-        this.bridgeReady = false
-        await window.p2pApi.openVideo(url, this.syncTabId)
+      // 地址漂移自愈：成员可能后退/前进/手输地址/被站点重定向而离开房主观看源。
+      // 每拍心跳比对同步页签当前实际地址，不一致则重新导航回房主地址（暂停同步时不强制）。
+      if (url && this.syncTabId != null && !this.syncPaused) {
+        await this.correctSourceDrift(url)
       }
       // 房主未就绪：只保证页签地址同步，成员已暂停冻结，等就绪心跳再做一次性对齐
       if (!s) return
@@ -888,6 +898,42 @@ export class RoomController {
       this.applyingSnapshot = false
     }
     this.lastSnapshot = s
+  }
+
+  /**
+   * 记录一次由同步驱动的页签导航（成员端 onSyncTab）：刷新地址纠正基准。
+   * 刚下发的导航其 pageUrl 需一拍 tick 才落地，若不记录会被下一拍心跳误判为漂移而重复导航。
+   * 参数：url 本次导航的目标地址。返回值：无。
+   */
+  noteSourceNavigated(url: string): void {
+    this.sourceCorrection = { target: url, attempts: 0, lastAt: Date.now() }
+  }
+
+  /**
+   * 成员：观看源地址漂移纠正。读取同步页签当前实际地址（pageUrl），与房主权威地址比对；
+   * 不一致且已过冷却、未超连续上限时重新导航回房主地址，并重置桥就绪等新页面重建。
+   * 参数：target 房主权威观看源地址（file 模式下为成员本机副本地址）。返回值：Promise。
+   */
+  private async correctSourceDrift(target: string): Promise<void> {
+    const tabId = this.syncTabId
+    if (tabId == null) return
+    const st = await window.p2pApi.videoStatus().catch(() => null)
+    const current = st?.pageUrl ?? ''
+    const decision = decideSourceCorrection({
+      current,
+      target,
+      state: this.sourceCorrection,
+      now: Date.now(),
+      cooldownMs: SOURCE_CORRECT_COOLDOWN_MS,
+      maxAttempts: SOURCE_CORRECT_MAX_ATTEMPTS,
+    })
+    this.sourceCorrection = decision.state
+    if (!decision.correct) return
+    p2pLog('source drift, re-navigate', { current, target })
+    this.videoUrl = target
+    // 换文档：桥需重建等待播放器创建 video，位置对齐交给后续的桥就绪流程
+    this.bridgeReady = false
+    await window.p2pApi.openVideo(target, tabId)
   }
 
   /**

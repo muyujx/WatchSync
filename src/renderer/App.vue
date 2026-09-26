@@ -906,6 +906,8 @@ controller.onSyncTab = async (url) => {
   syncTabId.value = t.id
   controller.syncTabId = t.id
   controller.videoUrl = url
+  // 记录本次同步导航基准：pageUrl 需一拍 tick 才落地，避免被下一拍心跳误判为地址漂移而重复导航
+  controller.noteSourceNavigated(url)
   // 迁移跟随守卫到新同步页签（旧同步页签由主进程自动解除），并跳转显示。
   // 守卫只该给成员（跟随端不采集事件）：房主若被挂守卫，本机 play/pause/seek
   // 会被 harness push() 静默丢弃，事件级同步（含「等待成员预加载」）整体失效
