@@ -6,6 +6,7 @@
  * 成员端完全复用无损文件流管线（落盘 + 本机 Range 媒体服务播放）。
  */
 import { MEDIA_BLOCK } from '../core/mediaSource'
+import { throttleTakeSource } from './devThrottle'
 
 /** 远程媒体元数据 */
 export interface RemoteMedia {
@@ -215,6 +216,8 @@ export async function streamRemoteRange(
       if (done) break
       if (!value?.byteLength) continue
       read += value.byteLength
+      // 开发期限速：限制回源下载速率（配置 dev.json sourceKBs；生产为死分支，零开销）
+      if (import.meta.env.DEV) await throttleTakeSource(value.byteLength)
       let off = 0
       while (off < value.byteLength) {
         const n = Math.min(SEND_BLOCK - accLen, value.byteLength - off)
@@ -267,6 +270,7 @@ export async function readRemoteChunk(
       return null
     }
     const buf = await resp.arrayBuffer()
+    if (buf.byteLength && import.meta.env.DEV) await throttleTakeSource(buf.byteLength)
     return buf.byteLength ? buf : null
   } catch {
     return null

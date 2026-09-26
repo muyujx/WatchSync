@@ -7,6 +7,7 @@ import { buildShareUrl, generateRoomId } from '../core/shareLink'
 import { createRoom, openRealRoom, type FileChunkMeta, type RoomHandle } from '../core/room'
 import type { ShareMode, SyncMsg } from '../core/protocol'
 import { MediaStreamReceiver } from './mediaStream'
+import { throttleTakeP2p } from './devThrottle'
 import { probeRemoteMedia, readRemoteChunk, streamRemoteRange } from './remoteMedia'
 import {
   RELAY_AHEAD_SECONDS,
@@ -14,6 +15,7 @@ import {
   aheadLimitBytes,
   isLoopbackMediaUrl,
   splitRangeByReady,
+  subtractRanges,
   unreadyRanges,
 } from '../core/mediaSource'
 import { newFileId, sendFileChunks, FILE_CHUNK_SIZE } from '../core/fileShare'
@@ -760,6 +762,7 @@ export class RoomController {
     // 滚动预读的唯一依据，删掉后不再发送、预读循环下一轮即退出；
     // 成员已落盘的本地副本不受影响，仍可继续播放/seek。
     if (this.shareFileId) this.hostFiles.delete(this.shareFileId)
+    if (this.shareFileId) this.sourceInflight.delete(this.shareFileId)
     this.shareMode = 'url'
     this.shareFileId = ''
     this.shareName = ''
@@ -1337,6 +1340,7 @@ export class RoomController {
     this.relayName = name
     this.relayCursor.clear()
     this.relayRunning.clear()
+    this.sourceInflight.clear()
     this.hostFiles.set(fileId, { remote: url, size: media.size, mime: media.mime || 'video/mp4' })
     this.shareMode = 'file'
     this.directShare = false
@@ -1390,6 +1394,84 @@ export class RoomController {
   }
 
   /**
+   * 房主：登记一段正在向源站拉取的区间（在途去重用）。
+   * 参数：fileId 媒体 ID；start/end 块对齐区间。
+   */
+  private markSourceInflight(fileId: string, start: number, end: number): void {
+    if (end <= start) return
+    const list = this.sourceInflight.get(fileId) ?? []
+    list.push([start, end])
+    this.sourceInflight.set(fileId, list)
+  }
+
+  /**
+   * 房主：解除一段在途登记（拉取结束/中断）。按精确 token 移除，幂等。
+   * 参数：fileId 媒体 ID；start/end 与登记时一致的区间。
+   */
+  private clearSourceInflight(fileId: string, start: number, end: number): void {
+    const list = this.sourceInflight.get(fileId)
+    if (!list) return
+    const i = list.findIndex(([a, b]) => a === start && b === end)
+    if (i >= 0) list.splice(i, 1)
+    if (!list.length) this.sourceInflight.delete(fileId)
+  }
+
+  /**
+   * 房主：从源站拉取 [start,end) 并**只回填本机副本**（不向成员发送）。
+   * 幂等去重：先扣除已就绪与已在途区间，只拉真正缺失的字节；扣除与登记在同一同步块内
+   * 完成、其间不留 await，故并发的预读/成员补拉不会重复下拉同一区间。
+   * 成员发送统一走「ensureSourcePull + followPrefetch（盘上直发）」，源站连接只此一处。
+   * 参数：room 房间句柄（换房即中止）；fileId 媒体 ID；info 必须含 remote；start/end 区间。
+   * 返回值：Promise 本段拉取结束。
+   */
+  private async sourcePull(
+    room: RoomHandle,
+    fileId: string,
+    info: { remote?: string },
+    start: number,
+    end: number,
+  ): Promise<void> {
+    if (!info.remote) return
+    const ready = await this.readyRanges(fileId)
+    if (this.room !== room) return
+    const plans: Array<[number, number]> = []
+    for (const seg of splitRangeByReady(start, end, ready)) {
+      if (seg.ready) continue
+      for (const part of subtractRanges(seg.start, seg.end, this.sourceInflight.get(fileId) ?? [])) {
+        this.markSourceInflight(fileId, part[0], part[1])
+        plans.push(part)
+      }
+    }
+    try {
+      for (const [a, b] of plans) {
+        if (this.room !== room) return
+        let sent = 0
+        const read = await streamRemoteRange(info.remote, a, b - a, async (data) => {
+          const off = a + sent
+          sent += data.byteLength
+          this.pullMeter.add(data.byteLength)
+          await this.media.acceptChunk(fileId, off, data)
+          return this.room === room
+        })
+        if (read <= 0) p2pLog('source pull empty', fileId, a, b - a)
+      }
+    } finally {
+      for (const [a, b] of plans) this.clearSourceInflight(fileId, a, b)
+    }
+  }
+
+  /**
+   * 房主：确保某成员缺口区间正在从源站拉取（幂等，后台执行，不向成员发送）。
+   * 落在滚动预读在途区间内的会自动被去重跳过，不会重复下拉。
+   * 参数：fileId 媒体 ID；info 含 remote；start/end 缺口区间。
+   */
+  private ensureSourcePull(fileId: string, info: { remote?: string; path?: string }, start: number, end: number): void {
+    if (!info.remote || !this.room) return
+    const room = this.room
+    void this.sourcePull(room, fileId, info, start, end).catch((e) => p2pLog('source pull failed', e))
+  }
+
+  /**
    * 房主：播放器需要某缺口时启动/校正「滚动预读」——连续大块下载并同时喂本机与成员。
    * 参数：fileId 媒体 ID；ranges 缺口区间（块对齐，取最靠前者作为基准）。
    * 返回值：Promise（下载在后台连续进行）。
@@ -1433,22 +1515,34 @@ export class RoomController {
         // 游标被重置（用户拖动）：当前跨度作废，尽快转向新缺口
         const moved = () => (this.relayCursor.get(fileId) ?? 0) !== cur
         p2pLog('relay span', { fileId, from: cur, to: end })
-        // 已落盘段跳过（可能由成员补发回填），只向源站拉缺失段
-        const segments = splitRangeByReady(cur, end, await this.readyRanges(fileId))
+        // 已落盘段跳过（可能由成员补发回填），只向源站拉缺失段。
+        // 同步登记本跨度的在途区间（扣除与登记之间不留 await），避免成员补拉/另一预读
+        // 在竞态窗口内重复下拉同一批字节；未开始/中断的登记在 finally 统一释放。
+        const segments = splitRangeByReady(cur, end, await this.readyRanges(fileId)).filter((s) => !s.ready)
+        const plans: Array<[number, number]> = []
         for (const seg of segments) {
-          if (moved()) break
-          if (seg.ready) continue
-          let sent = 0
-          const read = await streamRemoteRange(info.remote, seg.start, seg.end - seg.start, async (data) => {
-            if (moved()) return false
-            const off = seg.start + sent
-            sent += data.byteLength
-            this.pullMeter.add(data.byteLength)
-            await this.media.acceptChunk(fileId, off, data)
-            return true
-          })
-          if (moved()) break
-          if (read <= 0) return
+          for (const part of subtractRanges(seg.start, seg.end, this.sourceInflight.get(fileId) ?? [])) {
+            this.markSourceInflight(fileId, part[0], part[1])
+            plans.push(part)
+          }
+        }
+        try {
+          for (const [a, b] of plans) {
+            if (moved()) break
+            let sent = 0
+            const read = await streamRemoteRange(info.remote, a, b - a, async (data) => {
+              if (moved()) return false
+              const off = a + sent
+              sent += data.byteLength
+              this.pullMeter.add(data.byteLength)
+              await this.media.acceptChunk(fileId, off, data)
+              return true
+            })
+            if (moved()) break
+            if (read <= 0) return
+          }
+        } finally {
+          for (const [a, b] of plans) this.clearSourceInflight(fileId, a, b)
         }
         // 跨度完成且游标未被外部重置才推进；被重置则保留新游标（下一轮从新位置继续）
         if (!moved()) this.relayCursor.set(fileId, end)
@@ -1576,6 +1670,7 @@ export class RoomController {
         // 重试耗尽直接中止本轮分发（fileDone 不会发出，成员不会拿到残缺副本）
         if (to && !(await this.sendBlockReliable(room, data, meta, to))) throw new Error(`send block failed @${meta.offset}`)
         if (!to) {
+          if (import.meta.env.DEV) await throttleTakeP2p(data.byteLength)
           const delivered = await room.sendBinary(data, meta)
           if (delivered) this.pushMeter.add(data.byteLength)
         }
@@ -1606,6 +1701,8 @@ export class RoomController {
     target: string,
     attempts = 3,
   ): Promise<boolean> {
+    // 开发期限速：按块大小排队，模拟慢链路（配置 dev.json p2pKBs；生产为死分支，零开销）
+    if (import.meta.env.DEV) await throttleTakeP2p(data.byteLength)
     for (let i = 0; i < attempts; i++) {
       if (this.room !== room) return false
       if (await room.sendBinary(data, meta, target)) {
@@ -1668,10 +1765,10 @@ export class RoomController {
 
   /**
    * 房主：满足成员的一个缺口区间（sendFileRanges 派发的单个区间任务）。
-   * 段落分配：预读跨度即将覆盖的段**跟随预读增量转发**（预读每落盘一段就从盘上
-   * 补发一段，不与预读并发开第二条 CDN 连接——慢 CDN 下并发连接分摊限速且重复
-   * 下载同一区间，是推流卡顿的主因）；预读停滞才直拉兜底；已落盘段读本机副本；
-   * 每个字节只向源站取一次。
+   * 统一为「源站只拉一份、成员一律从本机副本读」：已就绪段直接盘上直发；未就绪段先
+   * ensureSourcePull 确保源站正在拉取该段（与滚动预读、其它成员的去重），再
+   * followPrefetch 随落盘增量从盘上转发。不再对成员做「直拉直发」——那会与滚动预读/
+   * 其它成员并发开多条 CDN 连接并重复下载同一区间，是推流卡顿的主因。
    */
   private async fillRange(
     room: RoomHandle,
@@ -1686,19 +1783,16 @@ export class RoomController {
     const path = info.path
     const ready = remote && path ? await this.readyRanges(fileId) : []
     const segments = remote && path ? splitRangeByReady(start, end, ready) : [{ start, end, ready: false }]
-    // 预读跨度：落在其中的未就绪段跟随预读增量转发——与预读共用同一条 CDN 连接，
-    // 不重复下载、不分摊限速（并发直拉是慢 CDN 下卡顿的主因）；预读停滞才直拉兜底。
-    const cursor = this.relayCursor.get(fileId) ?? 0
-    const spanEnd = cursor + RELAY_PREFETCH_BYTES
     for (const seg of segments) {
       if (this.room !== room) return
       if (seg.ready && path) {
         await this.sendDiskRange(room, fileId, path, seg.start, seg.end, target)
-      } else if (remote && path && this.relayRunning.has(fileId) && seg.start >= cursor && seg.start < spanEnd) {
-        const reached = await this.followPrefetch(room, fileId, info, seg.start, seg.end, target)
-        if (this.room !== room || reached >= seg.end) continue
-        await this.sendRemoteRange(room, fileId, { remote }, reached, seg.end, target)
+      } else if (remote && path) {
+        // 幂等确保源站在拉该段（在途去重），再从盘上随落盘转发
+        this.ensureSourcePull(fileId, info, seg.start, seg.end)
+        await this.followPrefetch(room, fileId, info, seg.start, seg.end, target)
       } else if (remote) {
+        // 无本机副本（异常态，如媒体源未注册）：退化为直拉直发
         await this.sendRemoteRange(room, fileId, { remote }, seg.start, seg.end, target)
       } else if (path) {
         await this.sendDiskRange(room, fileId, path, seg.start, seg.end, target)
@@ -1707,10 +1801,11 @@ export class RoomController {
   }
 
   /**
-   * 房主：跟随预读的增量转发。预读按块落盘，这里每 400ms 查一次就绪位图，
-   * 把新就绪的段立刻从盘上转发给成员——成员拿到预读字节的延迟≈一个块的下载时间，
-   * 且与预读共享同一条 CDN 连接（不重复下载、不分摊限速）。
-   * 返回值：转发到的位置；若 15s 无新字节判定预读停滞，返回当前进度由调用方直拉兜底。
+   * 房主：跟随源站拉取的增量转发。源站按块落盘，这里每 400ms 查一次就绪位图，
+   * 把新就绪的段立刻从盘上转发给成员——成员拿到字节的延迟≈一个块的落盘时间，
+   * 且与滚动预读/其它成员共享同一份副本与源站连接（不重复下载、不分摊限速）。
+   * 返回值：转发到的位置；若 15s 无新字节判定拉取停滞，返回当前进度（成员缺口超时后
+   * 会重新上报，届时若副本已补齐则直接盘上直发）。
    */
   private async followPrefetch(
     room: RoomHandle,
@@ -1806,6 +1901,12 @@ export class RoomController {
   private relayCursor = new Map<string, number>()
   /** 房主：正在滚动预读的 fileId（同一源同时只跑一条） */
   private relayRunning = new Set<string>()
+  /**
+   * 房主：fileId → 正在向源站拉取、尚未落盘的字节区间。
+   * 所有源站拉取（滚动预读 / 成员缺口补拉）都先在此登记，别的任务按此扣除在途区间，
+   * 保证**每个字节只向源站取一次**（网页推流重复直拉会并发开多条 CDN 连接、分摊限速）。
+   */
+  private sourceInflight = new Map<string, Array<[number, number]>>()
 
   /**
    * 速率表（底部条速度显示）：滑动窗口字节记账，数据停流后自动衰减到 0，无需重置。
@@ -1847,6 +1948,8 @@ export class RoomController {
       (data as Uint8Array).byteOffset + (data as Uint8Array).byteLength,
     ) as ArrayBuffer
     this.loadMeter.add(bytes.byteLength)
+    // 开发期限速：限制接收落盘节奏，模拟慢链路（配置 dev.json p2pKBs；生产为死分支，零开销）
+    if (import.meta.env.DEV) await throttleTakeP2p(bytes.byteLength)
     await this.media.acceptChunk(meta.fileId, meta.offset, bytes)
   }
 
@@ -1894,6 +1997,7 @@ export class RoomController {
     this.directShare = false
     this.relayCursor.clear()
     this.relayRunning.clear()
+    this.sourceInflight.clear()
     this.peerReady.clear()
     this.lastReadyReported = null
     this.lastReadySentAt = 0

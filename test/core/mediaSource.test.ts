@@ -11,6 +11,7 @@ import {
   planRequests,
   quantizeRanges,
   splitRangeByReady,
+  subtractRanges,
   unreadyRanges,
 } from '../../src/core/mediaSource'
 
@@ -216,7 +217,8 @@ describe('planRequests', () => {
     const prev = [{ start: 0, end: W, at: 1000 }]
     const { requests, outstanding } = planRequests([[1000, 2000]], prev, size, W, 1200, RETRY)
     expect(requests).toEqual([])
-    expect(outstanding).toEqual(prev)
+    // 有进展：保留原区间并把无进展计时刷新到当前时刻
+    expect(outstanding).toEqual([{ start: 0, end: W, at: 1200 }])
   })
 
   it('播放头越过未满足区间后释放，并对新缺口发起请求', () => {
@@ -226,9 +228,17 @@ describe('planRequests', () => {
     expect(outstanding).toEqual([{ start: W, end: W * 2, at: 1200 }])
   })
 
-  it('超过重发阈值仍无进展则释放重发（防丢包永久停摆）', () => {
+  it('缺口起点推进（有进展）时不重发，即使超过重发阈值', () => {
     const prev = [{ start: 0, end: W, at: 1000 }]
-    const { requests } = planRequests([[1000, 2000]], prev, size, W, 1000 + RETRY + 1, RETRY)
+    const { requests, outstanding } = planRequests([[1000, 2000]], prev, size, W, 1000 + RETRY + 1, RETRY)
+    expect(requests).toEqual([])
+    // 有进展 → 保留并刷新计时（避免慢链路把在途发送当卡死反复重发）
+    expect(outstanding).toEqual([{ start: 0, end: W, at: 1000 + RETRY + 1 }])
+  })
+
+  it('缺口起点未推进（无进展）且超过阈值才释放重发', () => {
+    const prev = [{ start: 0, end: W, at: 1000 }]
+    const { requests } = planRequests([[0, 1000]], prev, size, W, 1000 + RETRY + 1, RETRY)
     expect(requests).toEqual([[0, W]])
   })
 
@@ -251,6 +261,41 @@ describe('planRequests', () => {
 
   it('size<=0 安全返回空', () => {
     expect(planRequests([[0, 100]], [], 0, W, 1000, RETRY)).toEqual({ requests: [], outstanding: [] })
+  })
+})
+
+describe('subtractRanges', () => {
+  it('无洞时原样返回', () => {
+    expect(subtractRanges(0, 1000, [])).toEqual([[0, 1000]])
+  })
+
+  it('中间一段在途时拆成两段（幂等去重的核心）', () => {
+    expect(subtractRanges(0, 1000, [[300, 700]])).toEqual([
+      [0, 300],
+      [700, 1000],
+    ])
+  })
+
+  it('洞重叠/乱序也正确合并扣除', () => {
+    expect(subtractRanges(0, 1000, [[600, 800], [200, 400]])).toEqual([
+      [0, 200],
+      [400, 600],
+      [800, 1000],
+    ])
+    expect(subtractRanges(0, 1000, [[200, 400], [300, 500]])).toEqual([
+      [0, 200],
+      [500, 1000],
+    ])
+  })
+
+  it('洞完全覆盖或越界时返回空', () => {
+    expect(subtractRanges(100, 200, [[0, 1000]])).toEqual([])
+    expect(subtractRanges(100, 100, [[0, 1000]])).toEqual([])
+  })
+
+  it('洞夹到区间边界', () => {
+    expect(subtractRanges(100, 500, [[0, 250]])).toEqual([[250, 500]])
+    expect(subtractRanges(100, 500, [[400, 900]])).toEqual([[100, 400]])
   })
 })
 

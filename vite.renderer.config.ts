@@ -1,6 +1,27 @@
 import { resolve } from 'node:path'
-import { defineConfig } from 'vite'
+import { readFileSync } from 'node:fs'
+import { defineConfig, type Plugin } from 'vite'
 import vue from '@vitejs/plugin-vue'
+
+/**
+ * 开发期限速配置插件：把仓库根 `dev.json` 以 `/dev.json` 暴露给渲染层（仅 dev）。
+ * 文件缺失/非法时返回 `{}`（渲染层按不限速）。生产构建不注册此中间件。
+ */
+function devConfigPlugin(): Plugin {
+  return {
+    name: 'watchsync-dev-config',
+    configureServer(server) {
+      server.middlewares.use('/dev.json', (_req, res) => {
+        res.setHeader('Content-Type', 'application/json')
+        try {
+          res.end(readFileSync(resolve('dev.json'), 'utf-8'))
+        } catch {
+          res.end('{}')
+        }
+      })
+    },
+  }
+}
 
 /**
  * Tauri 版渲染层构建配置（与 electron-vite 的 renderer 段等价）：
@@ -10,7 +31,7 @@ import vue from '@vitejs/plugin-vue'
  */
 export default defineConfig({
   root: resolve('src/renderer'),
-  plugins: [vue()],
+  plugins: [vue(), devConfigPlugin()],
   build: {
     outDir: resolve('dist/renderer'),
     emptyOutDir: true,

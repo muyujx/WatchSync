@@ -152,7 +152,11 @@ export interface OutstandingRange {
  * 规则：
  * - 缺口起点若已被某个**仍未满足**的区间覆盖 → 不重复请求；
  * - 否则按 `windowBytes` 从缺口起点向文件尾部扩，记为新的未满足区间；
- * - 播放头已越过（缺口起点 ≥ 区间终点）或超过 `retryMs` 无进展的区间被释放，允许重发。
+ * - 播放头已越过（缺口起点 ≥ 区间终点）的区间被释放；
+ * - 仅当**无进展**（缺口起点未推进到区间内部）且超过 `retryMs` 时才释放重发。
+ *   慢链路上一个大窗口（如 4MB）本就需数十秒才传完，只要缺口起点在持续推进就说明
+ *   数据在到达，绝不能再按固定时长重发：否则每 5s 派生一条与在途任务重叠的新任务，
+ *   同一区间被反复下发，把链路带宽耗在重复字节上（实测唯一字节占比可低至 4 成）。
  *
  * 参数：gaps 播放器阻塞缺口（未对齐）；outstanding 已发出未满足区间；size 文件总长；
  *       windowBytes 单次前读跨度；nowMs 当前时间；retryMs 无进展重发阈值。
@@ -169,7 +173,14 @@ export function planRequests(
   if (size <= 0) return { requests: [], outstanding: [] }
   // 有阻塞缺口时，起点已被越过的未满足区间即可释放；无缺口（播放器暂未阻塞）时按超时释放
   const frontier = gaps.length ? Math.min(...gaps.map(([a]) => a)) : 0
-  const kept = outstanding.filter((o) => o.end > frontier && nowMs - o.at < retryMs)
+  const kept: OutstandingRange[] = []
+  for (const o of outstanding) {
+    if (o.end <= frontier) continue
+    // 缺口起点推进到区间内部 = 有数据到达（有进展）：保留并刷新计时，避免把在途发送当卡死重发
+    if (frontier > o.start) kept.push({ start: o.start, end: o.end, at: nowMs })
+    else if (nowMs - o.at < retryMs) kept.push(o)
+    // 既无进展又超时：释放，允许重发（丢包/截断兜底）
+  }
   const additions: OutstandingRange[] = []
   const requests: Array<[number, number]> = []
   const covered = (start: number): boolean =>
@@ -262,6 +273,34 @@ export function splitRangeByReady(
     if (pos >= end) break
   }
   if (pos < end) out.push({ start: pos, end, ready: false })
+  return out
+}
+
+/**
+ * 从区间 [start,end) 中剔除已被 holes 覆盖的部分，返回升序、互不相邻的未覆盖段。
+ * 用于源站拉取的幂等去重：把「已在途」的区间当作洞减掉，避免同一批字节被重复下载
+ * （网页视频推流下重复直拉会并发开多条 CDN 连接、分摊限速，是卡顿主因）。
+ * 参数：start 起始字节；end 结束字节（不含）；holes 已覆盖区间（会自动排序）。
+ * 返回值：需拉取的区间列表；全部被覆盖返回空数组。
+ */
+export function subtractRanges(
+  start: number,
+  end: number,
+  holes: ReadonlyArray<readonly [number, number]>,
+): Array<[number, number]> {
+  if (!(end > start)) return []
+  const sorted = [...holes].sort((x, y) => x[0] - y[0])
+  const out: Array<[number, number]> = []
+  let pos = start
+  for (const [a, b] of sorted) {
+    if (b <= pos) continue
+    if (a >= end) break
+    const s = Math.max(a, pos)
+    if (s > pos) out.push([pos, s])
+    pos = Math.max(pos, Math.min(b, end))
+    if (pos >= end) break
+  }
+  if (pos < end) out.push([pos, end])
   return out
 }
 
