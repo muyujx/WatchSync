@@ -51,59 +51,8 @@
     @prefetch="onSendFileCopy"
   />
 
-  <!-- 主页：无激活页签时显示（页签可保留在后台）；站点卡片点击新开页签，末尾加号可添加自定义书签 -->
-  <div v-if="activeTabId == null" class="home">
-    <h3 class="home-title">视频网站</h3>
-    <div class="sites">
-      <!-- 站点卡片（div 而非 button：自定义卡片内嵌操作按钮，避免按钮嵌套） -->
-      <div
-        v-for="s in sites"
-        :key="s.url"
-        class="site-card"
-        role="button"
-        tabindex="0"
-        @click="openSite(s)"
-        @keydown.enter="openSite(s)"
-      >
-        <!-- 自定义书签：悬停显示编辑/删除按钮（固定适配站点不可删；确认删除时隐藏避免浮在确认层上方） -->
-        <span v-if="s.custom && !s.confirmDelete" class="card-actions">
-          <button class="card-btn" title="编辑站点" @click.stop="editSite(s)">✎</button>
-          <button class="card-btn danger" title="删除站点" @click.stop="removeSite(s)">✕</button>
-        </span>
-        <img v-if="!s.iconFailed" class="site-icon" :src="s.icon" :alt="s.name" referrerpolicy="no-referrer" @error="s.iconFailed = true" />
-        <span v-else class="site-icon fallback">{{ s.name[0] }}</span>
-        <span class="site-name">{{ s.name }}</span>
-        <span class="site-host">{{ hostOf(s.url) }}</span>
-        <!-- 删除二次确认层：覆盖卡片，防误删 -->
-        <span v-if="s.confirmDelete" class="card-confirm" @click.stop>
-          <span class="card-confirm-text">删除「{{ s.name }}」？</span>
-          <span class="card-confirm-actions">
-            <button class="m-btn" @click.stop="cancelRemove(s)">取消</button>
-            <button class="m-btn danger-fill" @click.stop="confirmRemove(s)">删除</button>
-          </span>
-        </span>
-      </div>
-      <!-- 加号卡片：打开添加站点对话框 -->
-      <button class="site-card add-card" title="添加站点书签" @click="addSite">
-        <span class="site-icon fallback add-icon">＋</span>
-        <span class="site-name">添加站点</span>
-      </button>
-    </div>
-
-    <!-- 本地视频入口：与站点卡片同款式，放在整个站点列表下方（在房且为房主时会自动推流给成员） -->
-    <div class="sites local-sites">
-      <button class="site-card" title="选择本机视频文件播放（在房且为房主时自动推流给成员）" @click="onPickLocal">
-        <span class="site-icon fallback local-icon">
-          <svg viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <rect x="3" y="4.5" width="18" height="15" rx="2" />
-            <path d="M8 4.5v15M16 4.5v15" />
-            <path d="M10.6 9.8 14.4 12l-3.8 2.2z" />
-          </svg>
-        </span>
-        <span class="site-name">打开本地视频</span>
-      </button>
-    </div>
-  </div>
+  <!-- 主页站点卡片（含站点书签增删改对话框与「打开本地视频」入口） -->
+  <HomeSites ref="homeSites" :active="activeTabId == null" @open-site="openSite" @pick-local="onPickLocal" />
 
   <MembersDialog :open="membersOpen" :members="memberList" :i-am-host="isHost" @close="closeMembers" @transfer="onTransferHost" />
   <SettingsDialog
@@ -119,30 +68,33 @@
     @close="closeHistory"
     @open="openHistoryItem"
   />
-  <SiteDialog :open="siteDialogOpen" :site="siteEditing" @close="siteDialogOpen = false" @save="saveSite" />
 </template>
 
 <script setup lang="ts">
 /**
- * 应用根组件：房间/视频流程编排；顶部栏（标签+工具栏）已抽到 components/TopBar.vue。
+ * 应用根组件：房间/视频流程编排。
+ * 具体职责拆分：顶部栏 components/TopBar.vue；主页站点卡片 components/HomeSites.vue；
+ * 主题/书签/历史续播/本地文件共享见 composables/*；联调钩子见 devHooks.ts。
  */
-import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { RoomController } from './room'
 import { buildShareUrl } from '../core/shareLink'
-import { HOME_SITES } from '../core/sites'
 import { setRelaySink, useRelays } from './composables/useRelays'
-import { hostOf } from './format'
 import { isLoopbackMediaUrl } from '../core/mediaSource'
 import TopBar from './components/TopBar.vue'
+import HomeSites from './components/HomeSites.vue'
 import type { TabInfo, TabRole } from './components/TabStrip.vue'
 import MembersDialog, { type MemberItem } from './components/MembersDialog.vue'
 import SettingsDialog from './components/SettingsDialog.vue'
-import SiteDialog from './components/SiteDialog.vue'
 import HistoryPanel from './components/HistoryPanel.vue'
 import ShareBar from './components/ShareBar.vue'
 import { WebShareFeature } from './webShare'
-import type { HistoryRecord } from '../core/history'
 import { RTT_STALE_MS } from './rtt'
+import { notify } from './notify'
+import { useTheme, type Theme } from './composables/useTheme'
+import { useHistoryResume } from './composables/useHistoryResume'
+import { useLocalFileShare } from './composables/useLocalFileShare'
+import { setupDevHooks } from './devHooks'
 
 /** 全部页签（与主进程 VideoViewController 的 tabId 对应；成员端同步页签恒在第一位） */
 const tabs = ref<TabInfo[]>([])
@@ -155,124 +107,6 @@ const closedTabIds = new Set<number>()
 
 /** 页签角色语义（决定同步按钮/徽标渲染）：房内房主=可切换同步；房内成员=只读徽标；其余=普通 */
 const tabRole = computed<TabRole>(() => (roomId.value ? (isHost.value ? 'host' : 'follower') : 'none'))
-
-/** 首页站点卡片条目：固定适配站点 + 用户自定义书签（custom 为 true 的可编辑/删除） */
-interface SiteCard {
-  /** 展示名 */
-  name: string
-  /** 主页地址（点击卡片打开） */
-  url: string
-  /** 卡片图标地址 */
-  icon: string
-  /** 本地图标加载失败标记（失败后显示首字母） */
-  iconFailed: boolean
-  /** 是否用户自定义书签（固定适配站点为 false，不可编辑/删除） */
-  custom: boolean
-  /** 删除二次确认层显隐标记 */
-  confirmDelete: boolean
-}
-
-/** 首页站点卡片列表：启动时先渲染固定站点，设置读取后补自定义书签 */
-const sites = reactive<SiteCard[]>([])
-
-/**
- * 重建站点卡片列表：固定适配站点在前，后接自定义书签。
- * 参数：custom 用户自定义书签数据（来自设置）。
- */
-function rebuildSites(custom: { name: string; url: string }[]): void {
-  const fixed: SiteCard[] = HOME_SITES.map((s) => ({ ...s, iconFailed: false, custom: false, confirmDelete: false }))
-  const customCards: SiteCard[] = custom.map((s) => ({
-    name: s.name,
-    url: s.url,
-    icon: new URL(s.url).origin + '/favicon.ico',
-    iconFailed: false,
-    custom: true,
-    confirmDelete: false,
-  }))
-  sites.splice(0, sites.length, ...fixed, ...customCards)
-}
-
-/** 从当前卡片提取自定义书签数据（作为增删改操作的基准列表） */
-function customSitesOf(): { name: string; url: string }[] {
-  return sites.filter((s) => s.custom).map(({ name, url }) => ({ name, url }))
-}
-
-/** 保存自定义书签到设置并重建卡片列表 */
-async function persistSites(list: { name: string; url: string }[]): Promise<void> {
-  const saved = await window.p2pApi.setSettings({ customSites: list })
-  rebuildSites(saved.customSites)
-}
-
-/** ===== 站点书签增删改 ===== */
-/** 站点对话框显隐标记 */
-const siteDialogOpen = ref(false)
-/** 站点对话框编辑目标（null = 添加模式） */
-const siteEditing = ref<{ name: string; url: string } | null>(null)
-
-/** 打开添加站点对话框 */
-function addSite(): void {
-  siteEditing.value = null
-  siteDialogOpen.value = true
-}
-
-/**
- * 打开编辑站点对话框（回填目标书签）。
- * 参数：s 待编辑的卡片条目。
- */
-function editSite(s: SiteCard): void {
-  siteEditing.value = { name: s.name, url: s.url }
-  siteDialogOpen.value = true
-}
-
-/**
- * 保存站点（SiteDialog save 事件）：编辑模式按原 URL 定位替换；添加模式查重后追加。
- * 参数：site 对话框提交的书签（name/url 已规范化）。
- */
-async function saveSite(site: { name: string; url: string }): Promise<void> {
-  const list = customSitesOf()
-  if (siteEditing.value) {
-    // 编辑：按原 URL 定位替换（URL 也允许被修改）
-    const i = list.findIndex((x) => x.url === siteEditing.value!.url)
-    if (i >= 0) list[i] = site
-  } else {
-    // 添加：同地址查重，避免重复卡片
-    if (list.some((x) => x.url === site.url)) {
-      notify('该站点已存在')
-      return
-    }
-    list.push(site)
-  }
-  await persistSites(list)
-  const wasEditing = !!siteEditing.value
-  siteDialogOpen.value = false
-  siteEditing.value = null
-  notify(wasEditing ? '站点已更新' : '站点已添加')
-}
-
-/**
- * 请求删除自定义站点：显示卡片上的二次确认层（防误删）。
- * 参数：s 待删除的卡片条目。
- */
-function removeSite(s: SiteCard): void {
-  s.confirmDelete = true
-}
-
-/**
- * 取消删除：隐藏确认层。
- * 参数：s 取消删除的卡片条目。
- */
-function cancelRemove(s: SiteCard): void {
-  s.confirmDelete = false
-}
-
-/**
- * 确认删除：从设置移除该书签并重建卡片。
- * 参数：s 待删除的卡片条目。
- */
-async function confirmRemove(s: SiteCard): Promise<void> {
-  await persistSites(customSitesOf().filter((x) => x.url !== s.url))
-  notify('站点已删除')
-}
 
 /** 窗口最大化状态（控制按钮图标切换） */
 const isMax = ref(false)
@@ -308,7 +142,7 @@ function win(action: string): void {
 /** 工具栏导航按钮（作用于激活页签） */
 async function nav(action: string): Promise<void> {
   // 用户主动导航：作废进行中的历史续播轮询（防 seek 把旧记录进度打进原地导航后的新文档）
-  resumeToken++
+  invalidateResume()
   // 导航类入口统一先关面板恢复画面（对齐 activateTab/goHome 钩子）
   if (historyOpen.value) void closeHistory()
   await window.p2pApi.videoNav(action)
@@ -342,7 +176,7 @@ async function goHome(): Promise<void> {
  */
 async function openInTab(raw: string): Promise<void> {
   // 用户主动导航：作废进行中的历史续播轮询（防 seek 把旧记录进度打进原地导航后的新文档）
-  resumeToken++
+  invalidateResume()
   raw = raw.trim()
   if (!raw) return
   const url = /^[a-z][a-z0-9+.-]*:\/\//i.test(raw) ? raw : 'https://' + raw
@@ -507,11 +341,6 @@ function tabTitleOf(t: { id: number; url: string }): string {
   return ''
 }
 
-/** 状态提示：走主进程 Toast 小窗（独立透明窗口，显示于视频画面顶部 UI 区正下方居中，4 秒自动消失） */
-function notify(text: string): void {
-  void window.p2pApi.notify(text)
-}
-
 /** 点击站点卡片：填入地址并打开（无激活页签时新开页签；房内房主自动进入同步流程） */
 async function openSite(s: { url: string }): Promise<void> {
   videoUrl.value = s.url
@@ -530,15 +359,32 @@ const connectionLost = ref(false)
 const syncPaused = ref(false)
 const controller = new RoomController()
 
+/** ===== 主题 ===== */
+const { theme, persistedTheme, applyTheme } = useTheme()
+
+/** ===== 播放记录与续播 ===== */
+const { historyOpen, openHistory, closeHistory, toggleHistory, openHistoryItem, invalidateResume } = useHistoryResume({
+  videoUrl,
+  activeTabId,
+  ensureTab,
+  activateTab,
+  afterTabNavigated,
+})
+
 /** ===== 本地文件 / 共享 ===== */
-/** 最近一次选择的本地视频（供「预取整份」） */
-const localFile = ref<{ path: string; url: string; name: string; size: number } | null>(null)
-/** 本地文件作为观看源时的共享 ID（回选本地文件页签时判断是否需要重新广播） */
-const localFileId = ref('')
-/** 是否正在发送整份副本 */
-const fileCopying = ref(false)
-/** 整份副本传输进度 0~1 */
-const fileCopyRatio = ref(0)
+const { localFile, localFileId, fileCopying, fileCopyRatio, openSharedLocalFile, onPickLocal, onSendFileCopy } =
+  useLocalFileShare({
+    controller,
+    videoUrl,
+    roomId,
+    isHost,
+    syncTabId,
+    ensureTab,
+    activateTab,
+    afterTabNavigated,
+    setSyncTab,
+  })
+
 /** 共享展示名 */
 const shareName = ref('')
 
@@ -661,91 +507,14 @@ controller.onShareChanged = () => {
   }
 }
 
-/**
- * 打开本地视频并作为本机播放页签；在房且为房主时立即作为共享源同步给成员（成员马上能看）。
- * 关键：必须把该本地页签切为同步目标。否则房主心跳仍读取旧同步页签（如网页）的播放进度与
- * 就绪态，成员虽被 fileOffer 切到无损文件流，却会因「房主未就绪」被冻结——表现为打开本地
- * 视频后成员不同步/停在原地。
- * 参数：info 本地文件元数据。返回值：本地视频页签 ID。
- */
-async function openSharedLocalFile(info: { path: string; url: string; name: string; size: number }): Promise<number> {
-  localFile.value = info
-  videoUrl.value = info.url
-  const id = await window.p2pApi.openVideo(info.url)
-  ensureTab(id, info.url)
-  await activateTab(id)
-  await afterTabNavigated(id, info.url)
-  if (roomId.value && isHost.value) {
-    // 先切同步目标（清空 localFileId 以免 setSyncTab 的本地文件分支重复补发要约），
-    // 再广播文件要约：成员收到时房主已从本地页签上报进度
-    if (syncTabId.value !== id) {
-      localFileId.value = ''
-      await setSyncTab(id)
-    }
-    // 本地源走无损文件流：成员边收边播（画质/音轨与源文件一致），不再抓屏推流
-    await controller.hostShareLocalFile(info, { asSource: true })
-    localFileId.value = controller.shareFileId
-  }
-  return id
-}
-
-/**
- * 打开本地视频：系统对话框选文件 → 本机 file:// 播放；若在房且是房主则立即推流同步（成员马上能看）。
- * 返回值：Promise。
- */
-async function onPickLocal(): Promise<void> {
-  const info = await window.p2pApi.pickVideoFile()
-  if (!info) return
-  await openSharedLocalFile(info)
-}
-
-/**
- * 房主：把完整本地文件副本发给成员（可选无损路径，不打断当前推流）。
- * 返回值：Promise。
- */
-async function onSendFileCopy(): Promise<void> {
-  const info = localFile.value
-  if (!info || !roomId.value || !isHost.value) return
-  fileCopying.value = true
-  fileCopyRatio.value = 0
-  await controller.hostShareLocalFile(info)
-  notify('开始整份预取给成员')
-}
-
 /** ===== 用户设置 ===== */
 const settingsOpen = ref(false)
-/** ===== 播放记录面板 ===== */
-const historyOpen = ref(false)
-/** 续播轮询代际令牌（新一次续播即作废旧轮询） */
-let resumeToken = 0
 /** 我的昵称（进入应用时从设置读取） */
 const myName = ref('')
-/** 界面主题（'light' | 'dark'；含设置里未保存的预览值） */
-type Theme = 'light' | 'dark'
-const theme = ref<Theme>('light')
-/** 已持久化主题：打开设置时快照，取消/关闭时回退到它 */
-const persistedTheme = ref<Theme>('light')
 
 /** 地址栏是否聚焦（顶部栏抽离后按 class 判定，聚焦时不被视频页 URL 覆盖） */
 function isOmniboxFocused(): boolean {
   return document.activeElement?.classList.contains('omnibox') ?? false
-}
-
-/**
- * 应用主题：切换 <html class="dark"> 并同步 localStorage 缓存
- * （缓存供下次启动 index.html 首帧前预置，避免闪浅色；settings.json 才是权威来源）。
- * 参数：t 目标主题。
- */
-function applyTheme(t: Theme): void {
-  theme.value = t
-  document.documentElement.classList.toggle('dark', t === 'dark')
-  try {
-    localStorage.setItem('ws-theme', t)
-  } catch {
-    /* 存储不可用（隐私模式等）时静默降级为仅内存 */
-  }
-  // 联动：原生底色 + 视频页签 prefers-color-scheme 跟随（预览/取消回退同样生效，失败静默）
-  void window.p2pApi.setUiTheme(t).catch(() => {})
 }
 
 /** 打开设置对话框（先隐藏视频画面，避免原生视图遮挡对话框；下层为主题底色） */
@@ -762,57 +531,6 @@ async function closeSettings(): Promise<void> {
   applyTheme(persistedTheme.value)
   settingsOpen.value = false
   await window.p2pApi.setVideoVisible(true)
-}
-
-/** ===== 播放记录 ===== */
-/** 打开播放记录：先隐藏视频画面（原生视图会遮挡面板），顶栏与面板保持可见 */
-async function openHistory(): Promise<void> {
-  await window.p2pApi.setVideoVisible(false)
-  historyOpen.value = true
-}
-
-/** 关闭播放记录并恢复视频画面 */
-async function closeHistory(): Promise<void> {
-  historyOpen.value = false
-  await window.p2pApi.setVideoVisible(true)
-}
-
-/** 工具栏时钟按钮：切换播放记录面板 */
-function toggleHistory(): void {
-  void (historyOpen.value ? closeHistory() : openHistory())
-}
-
-/**
- * 点开一条播放记录：spec §5 要求落在**新开页签**（openVideo 不带 tabId；
- * 原地导航当前页签会残留 ≤300ms 在途 tick 把旧页 duration 插回，导致续播轮询
- * 提前下发 seek 打进未就绪的新文档而静默失败），地址栏/房内联动与常规导航一致；
- * 有进度则轮询该页签状态，桥就绪后 seek 一次续播（不调速、失败静默、不重试）。
- * 参数：r 被点击的记录。
- */
-async function openHistoryItem(r: HistoryRecord): Promise<void> {
-  const token = ++resumeToken
-  historyOpen.value = false
-  await window.p2pApi.setVideoVisible(true)
-  videoUrl.value = r.url
-  // 新开页签（等价 openInTab 的主页分支：ensureTab → activateTab → afterTabNavigated）
-  const tabId = await window.p2pApi.openVideo(r.url)
-  ensureTab(tabId, r.url)
-  await activateTab(tabId)
-  await afterTabNavigated(tabId, r.url)
-  if (r.position == null) return
-  // 每 500ms 轮询，最长 30s；被新续播取代 / 切走页签即放弃；tabStatus 为 null 属正常等待；
-  // 就绪（非 null 且 duration>0）下发一次 seek 后立即结束
-  for (let i = 0; i < 60; i++) {
-    await new Promise((res) => setTimeout(res, 500))
-    if (token !== resumeToken || activeTabId.value !== tabId) return
-    const s = await window.p2pApi.tabStatus(tabId)
-    // seek 前复核：IPC 在途期间可能被新续播覆盖/切走页签
-    if (token !== resumeToken || activeTabId.value !== tabId) return
-    if (s && s.duration > 0) {
-      await window.p2pApi.seekTab(tabId, r.position)
-      return
-    }
-  }
 }
 
 /**
@@ -837,6 +555,25 @@ const { customRelays, refreshRelays, initCustom } = useRelays()
 setRelaySink((urls) => {
   controller.relayUrls = urls
   void window.p2pApi.setSettings({ reachableRelays: urls, relayCheckedAt: Date.now() })
+})
+
+/** ===== 联调/诊断钩子（drive.cjs） ===== */
+const { syncDebug } = setupDevHooks({
+  roomId: () => roomId.value,
+  isHost: () => isHost.value,
+  myName: () => myName.value,
+  activeTabId: () => activeTabId.value,
+  syncTabId: () => syncTabId.value,
+  relayTabId: () => relayTabId.value,
+  tabs: () => tabs.value,
+  controller,
+  joinInput,
+  onHost,
+  onJoinLink,
+  openSharedLocalFile,
+  onShareWeb,
+  onDirectRelay,
+  onPickLocal,
 })
 
 /** ===== 成员展示（昵称 + RTT） ===== */
@@ -1038,50 +775,6 @@ function toggleSyncPause(): void {
   }
 }
 
-/** 调试状态暴露（drive.cjs 联调用）：实时 getter，页签/房间状态变化无需手动刷新 */
-function syncDebug(): void {
-  Object.defineProperty(window as unknown as object, '__p2pDebug', {
-    configurable: true,
-    get: () => ({
-      roomId: roomId.value,
-      isHost: isHost.value,
-      myName: myName.value,
-      activeTabId: activeTabId.value,
-      syncTabId: syncTabId.value,
-      tabs: tabs.value.map((t) => ({ id: t.id, url: t.url, title: t.title, active: t.id === activeTabId.value, sync: t.id === syncTabId.value })),
-    }),
-  })
-}
-
-/**
- * 连接诊断快照：房间/连接/中继状态（drive.cjs debug 命令读取）。
- * 返回值：含 selfId、各中继 readyState、peers/RTT 的快照对象。
- */
-async function diagSnapshot(): Promise<unknown> {
-  const { getRelaySockets, selfId } = await import('@trystero-p2p/nostr')
-  const sockets = (getRelaySockets?.() ?? {}) as Record<string, WebSocket | undefined>
-  return {
-    roomId: roomId.value,
-    isHost: isHost.value,
-    myName: myName.value,
-    activeTabId: activeTabId.value,
-    syncTabId: syncTabId.value,
-    tabs: tabs.value.map((t) => ({ id: t.id, url: t.url, title: t.title, active: t.id === activeTabId.value, sync: t.id === syncTabId.value })),
-    selfId,
-    hostConnected: controller.hostConnected,
-    followerFrozen: controller.isFollowerFrozen,
-    hostPeerId: controller.hostPeerId,
-    peers: [...controller.peers],
-    peerNames: Object.fromEntries(controller.peerNames),
-    peerRtt: Object.fromEntries(controller.peerRtt),
-    relays: Object.entries(sockets).map(([url, ws]) => ({ url, readyState: ws?.readyState ?? -1 })),
-    // 媒体共享状态（联调共享/文件分发用）
-    shareMode: controller.shareMode,
-    shareName: controller.shareName,
-    shareFileId: controller.shareFileId,
-  }
-}
-
 /** 房主：创建房间并复制邀请链接（不依赖视频地址；有地址则顺带打开并注入桥） */
 async function onHost(): Promise<void> {
   busy.value = 'hosting'
@@ -1192,31 +885,10 @@ async function exitRoom(): Promise<void> {
   notify(wasHost ? '房间已解散' : '已退出房间')
 }
 
+/** 主页站点卡片实例（设置读取后重建卡片列表用） */
+const homeSites = ref<InstanceType<typeof HomeSites> | null>(null)
+
 onMounted(() => {
-  // 暴露诊断快照给联调脚本（drive.cjs debug）
-  ;(window as unknown as { __p2pDiag: () => Promise<unknown> }).__p2pDiag = diagSnapshot
-  // 联调：E2E 入口（建房/加入/按路径共享本地视频）
-  ;(window as unknown as { __p2pE2e?: unknown }).__p2pE2e = {
-    host: () => onHost(),
-    join: (url: string) => {
-      joinInput.value = url
-      return onJoinLink()
-    },
-    shareLocalPath: async (path: string) => {
-      const name = path.split(/[\\/]/).pop() || 'video.mp4'
-      const size = await window.p2pApi.fileSize(path)
-      const url = path.startsWith('file:') ? path : 'file:///' + path.replace(/\\/g, '/')
-      // 与「打开本地视频」同一条路径：房主本机开页签 → 切同步目标 → 以文件为观看源分发
-      await openSharedLocalFile({ path, url, name, size })
-      return { path, url, name, size }
-    },
-    shareUrl: () => buildShareUrl(roomId.value),
-    shareWeb: () => onShareWeb(),
-    shareRelay: () => onDirectRelay(),
-    webShareMode: () => (syncTabId.value === relayTabId.value ? 'relay' : 'progress'),
-    diag: diagSnapshot,
-    openLocalPick: () => onPickLocal(),
-  }
   // 读取用户设置（首次启动生成默认昵称）；装载自定义中继并后台重新探测；回填自定义站点书签
   window.p2pApi.getSettings().then((s) => {
     // settings.json 为权威主题来源（覆盖启动时的 localStorage 预置值）
@@ -1227,7 +899,7 @@ onMounted(() => {
     initCustom(s.customRelays)
     controller.relayUrls = s.reachableRelays
     void refreshRelays()
-    rebuildSites(s.customSites)
+    homeSites.value?.rebuild(s.customSites)
   })
   // 系统唤起（second-instance/open-url）传来的邀请链接自动加入
   window.p2pApi.onProtocolUrl(async (url) => {

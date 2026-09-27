@@ -14,8 +14,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
-/// 位图粒度：就绪判定与缺口上报的最小单位
-pub const BLOCK: u64 = 64 * 1024;
+use crate::media_bitmap::{bit_on, gap_end, parse_range, push_wanted, run_len};
+
+/// 位图粒度：就绪判定与缺口上报的最小单位（实现在 media_bitmap）
+pub use crate::media_bitmap::BLOCK;
+
 /// 单次向 socket 写出的上限
 const WRITE_CHUNK: u64 = 512 * 1024;
 /// 等待缺口的单次超时
@@ -24,8 +27,6 @@ const WAIT_STEP: Duration = Duration::from_millis(200);
 const IDLE_LIMIT: Duration = Duration::from_secs(45);
 /// 响应头等待上限：请求起点未就绪时先不发响应头（见 serve），超过则回 503
 const HEAD_WAIT_LIMIT: Duration = Duration::from_secs(45);
-/// wanted 队列上限（保留偏移最小的若干条，播放头附近更紧急）
-const WANTED_MAX: usize = 32;
 
 static PORT: OnceLock<u16> = OnceLock::new();
 
@@ -272,79 +273,6 @@ pub fn progress(file_id: &str) -> (u64, u64) {
             (have, src.size)
         }
         None => (0, 0),
-    }
-}
-
-fn bit_on(bits: &[u64], i: u64) -> bool {
-    let w = (i / 64) as usize;
-    w < bits.len() && (bits[w] >> (i % 64)) & 1 == 1
-}
-
-/// 自 from 起连续就绪的字节数（不超过 size）
-fn run_len(bits: &[u64], from: u64, size: u64) -> u64 {
-    if from >= size || !bit_on(bits, from / BLOCK) {
-        return 0;
-    }
-    let mut end = (from / BLOCK + 1) * BLOCK;
-    while end < size && bit_on(bits, end / BLOCK) {
-        end += BLOCK;
-    }
-    end.min(size) - from
-}
-
-/// 自 pos 起第一个缺失块的末边界（用于上报缺口）
-fn gap_end(bits: &[u64], pos: u64, size: u64) -> u64 {
-    let total = size.div_ceil(BLOCK);
-    let mut b = pos / BLOCK;
-    while b < total && bit_on(bits, b) {
-        b += 1;
-    }
-    if b >= total {
-        return size;
-    }
-    ((b + 1) * BLOCK).min(size)
-}
-
-/// 缺口入队（合并相邻/重叠，保留偏移最小的若干条）
-fn push_wanted(list: &mut Vec<(u64, u64)>, start: u64, end: u64) {
-    if end <= start {
-        return;
-    }
-    let (mut s, mut e) = (start, end);
-    list.retain(|&(a, b)| {
-        if b < s || a > e {
-            true
-        } else {
-            s = s.min(a);
-            e = e.max(b);
-            false
-        }
-    });
-    let idx = list.partition_point(|&(a, _)| a < s);
-    list.insert(idx, (s, e));
-    if list.len() > WANTED_MAX {
-        list.truncate(WANTED_MAX);
-    }
-}
-
-/// 解析 `Range: bytes=a-b` / `bytes=a-` / `bytes=-n`（多区间只取第一个）
-fn parse_range(v: &str) -> Option<(Option<u64>, Option<u64>)> {
-    let spec = v.strip_prefix("bytes=")?;
-    let first = spec.split(',').next()?.trim();
-    let (a, b) = first.split_once('-')?;
-    let (a, b) = (a.trim(), b.trim());
-    if a.is_empty() {
-        Some((None, Some(b.parse::<u64>().ok()?)))
-    } else {
-        let start = a.parse::<u64>().ok()?;
-        Some((
-            Some(start),
-            if b.is_empty() {
-                None
-            } else {
-                Some(b.parse::<u64>().ok()?)
-            },
-        ))
     }
 }
 

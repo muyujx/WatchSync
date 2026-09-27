@@ -12,6 +12,7 @@ mod bridge;
 mod commands;
 mod history;
 mod media;
+mod media_bitmap;
 mod media_server;
 mod settings;
 mod state;
