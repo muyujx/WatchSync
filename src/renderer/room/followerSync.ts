@@ -287,7 +287,7 @@ export class FollowerSync {
       const st = await videoBus.videoStatus().catch(() => null)
       // 向房主上报本机缓冲就绪态（房主「等待成员预加载」的决策依据；
       // 暂停同步期间也要上报——房主加载跟随期正是成员在缓冲的时刻）
-      this.reportBufferState(st)
+      void this.reportBufferState(st)
       if (!this.lastSnapshot) return
       // 暂停同步：不做校准与状态对齐（本地自由控制）
       if (this.syncPaused) return
@@ -321,27 +321,45 @@ export class FollowerSync {
    * 暂停同步时始终按就绪上报——自由观看的成员不应拖住房主的「等待预加载」。
    * 参数：st 本机视频快照（可能为 null：无桥/无视频按未就绪上报）。
    */
-  private reportBufferState(st: (VideoSnapshot & { pageUrl: string; hasVideo: boolean }) | null): void {
-    if (this.c.role !== 'follower' || !this.c.connected) return
-    const ready = this.syncPaused || this.bufferReady(st)
-    if (ready === this.lastReadyReported && Date.now() - this.lastReadySentAt < MEMBER_REPORT_INTERVAL_MS) return
+  private async reportBufferState(st: (VideoSnapshot & { pageUrl: string; hasVideo: boolean }) | null): Promise<boolean | undefined> {
+    if (this.c.role !== 'follower' || !this.c.connected) return undefined
+    const ready = this.syncPaused || (await this.bufferReady(st))
+    if (ready === this.lastReadyReported && Date.now() - this.lastReadySentAt < MEMBER_REPORT_INTERVAL_MS) return ready
     this.lastReadyReported = ready
     this.lastReadySentAt = Date.now()
     this.sendToHost({ t: 'mready', ready })
+    return ready
   }
 
   /**
-   * 成员「加载完成」判定（mready 的 ready 依据，房主据此放行「等待成员预加载」）：
-   * 同步位置之后缓冲满 MEMBER_READY_BUFFER_AHEAD_S 秒（或已缓冲到片尾）才算就绪。
-   * readyState>=2 只代表能解当前帧——成员刚开副本缓冲一两秒就会误报就绪，
-   * 房主直接续播会让成员几秒后数据耗尽卡住。网页桥不报 bufferedEnd，退回旧口径。
+   * 成员「加载完成」判定（mready 的 ready 依据，房主据此放行「等待成员预加载」）。
+   * readyState>=2 只代表能解当前帧，刚开副本就会误报就绪；且暂停期 Chromium 会回收
+   * media-server 播放面的 buffered 区间（恒空），元素缓冲不可作唯一依据。三条路径任一满足：
+   * - 元素缓冲提前量达标（播放中 buffered 有效时最准确）
+   * - 本地副本落盘字节折算的内容秒数达标（mediaProgress；开副本等待期的主判据）
+   * - 整份副本已落盘
+   * 网页桥不报 bufferedEnd（url 模式本就不参与 hold），退回 readyState>=2 旧口径。
    */
-  private bufferReady(st: (VideoSnapshot & { pageUrl: string; hasVideo: boolean }) | null): boolean {
+  private async bufferReady(st: (VideoSnapshot & { pageUrl: string; hasVideo: boolean }) | null): Promise<boolean> {
     if (!st?.hasVideo) return false
+    if (st.readyState < 2) return false
     const end = st.bufferedEnd
-    if (end === undefined) return st.readyState >= 2
+    if (end === undefined) return true
     if (st.duration > 0 && end >= st.duration - 1) return true
-    return end - st.position >= MEMBER_READY_BUFFER_AHEAD_S
+    if (end - st.position >= MEMBER_READY_BUFFER_AHEAD_S) return true
+    // 本地副本（本机回环媒体 /media/<fileId>）：按落盘进度折算
+    const fileId = st.src.split('/media/')[1]
+    if (!fileId) return false
+    try {
+      const [readyBytes, totalBytes] = await window.p2pApi.mediaProgress(fileId)
+      if (totalBytes <= 0) return false
+      if (readyBytes >= totalBytes) return true
+      if (st.duration <= 0) return false
+      // 平均码率折算：落盘字节 ÷ 字节每秒 ≥ 提前量秒数
+      return (readyBytes / totalBytes) * st.duration >= MEMBER_READY_BUFFER_AHEAD_S
+    } catch {
+      return false
+    }
   }
 
   /** 成员：定向发送给房主（房主身份未知时退化为全员广播，仅房主消费） */
@@ -361,9 +379,8 @@ export class FollowerSync {
     this.readyTimer = window.setInterval(() => {
       void videoBus
         .videoStatus()
-        .then((st) => {
-          this.reportBufferState(st)
-          if (this.bufferReady(st)) this.clearReadyWatch()
+        .then(async (st) => {
+          if (await this.reportBufferState(st)) this.clearReadyWatch()
         })
         .catch(() => {})
     }, 400)
