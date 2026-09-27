@@ -109,7 +109,10 @@
     @open-site                   点站点卡片 → 填地址并打开页签
     @pick-local                  点「打开本地视频」→ 系统对话框选文件 → 打开并共享
   -->
-  <HomeSites ref="homeSites" :active="activeTabId == null" @open-site="openSite" @pick-local="onPickLocal" />
+  <HomeSites ref="homeSites" 
+    :active="activeTabId == null" 
+    @open-site="openSite" 
+    @pick-local="onPickLocal" />
 
   <!--
     成员面板（注释与绑定行同序）
@@ -119,7 +122,12 @@
     @close                       关闭面板
     @transfer                    把房主转让给该成员
   -->
-  <MembersDialog :open="membersOpen" :members="memberList" :i-am-host="isHost" @close="closeMembers" @transfer="onTransferHost" />
+  <MembersDialog 
+    :open="membersOpen" 
+    :members="memberList" 
+    :i-am-host="isHost" 
+    @close="closeMembers" 
+    @transfer="onTransferHost" />
 
   <!--
     设置面板（注释与绑定行同序）
