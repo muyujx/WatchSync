@@ -8,6 +8,7 @@ import type { RoomController } from '../room'
 import { isLoopbackMediaUrl } from '../../core/mediaSource'
 import type { TabInfo } from '../components/TabStrip.vue'
 import type { WebShareFeature } from '../webShare'
+import * as videoBus from '../videoBus'
 import { notify } from '../notify'
 
 /** 直接推流依赖（由 App 提供） */
@@ -61,7 +62,7 @@ export function useDirectRelay(deps: UseDirectRelayDeps) {
     if (rid == null) return
     deps.syncTabId.value = rid
     controller.syncTabId = rid
-    await window.p2pApi.setSyncTab(rid, false)
+    await videoBus.setSyncTab(rid, false)
     notify('已切换到直接推流')
   }
 
@@ -105,7 +106,7 @@ export function useDirectRelay(deps: UseDirectRelayDeps) {
         if (!deps.roomId.value || !deps.isHost.value || deps.activeTabId.value == null) return
         const t = deps.tabs.value.find((x) => x.id === deps.activeTabId.value)
         if (!t || t.url.startsWith('file:') || isLoopbackMediaUrl(t.url)) return
-        const st = await window.p2pApi.tabStatus(t.id)
+        const st = await videoBus.tabStatus(t.id)
         const src = st?.src ?? ''
         if (src && src !== relayProbeSrc) {
           relayProbeSrc = src

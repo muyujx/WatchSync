@@ -53,8 +53,13 @@ import { parseShareUrl } from '../core/shareLink'
     closeVideo: (tabId: number) => invoke('close_video', { tabId }),
     /** 显示/隐藏视频画面 */
     setVideoVisible: (visible: boolean) => invoke('set_video_visible', { visible }),
-    /** 弹出全局提示条 */
-    notify: (text: string) => invoke('notify', { text }),
+    /** UI 壳上报内容区留白（逻辑 px：顶栏高度/底部预留；布局唯一权威在 UI，Rust 按当前窗口尺寸套用） */
+    setTabInsets: (top: number, bottom: number) => invoke('set_tab_insets', { top, bottom }),
+    /** 本地媒体播放 tick 入账播放历史（Vue 页签无桥，等价桥 tick 的 history 行为） */
+    mediaTick: (title: string, url: string, status: VideoSnapshot | null) =>
+      invoke('media_tick', { title, url, status }),
+    /** 向激活网页页签透传提示文本（页内注入脚本渲染，见 tabs::INJECT_TMPL __p2pToast） */
+    pageToast: (text: string) => invoke('page_toast', { text }),
     /** 订阅标签页标题变化 */
     onPageTitle: (cb: (info: { tabId: number; title: string; url: string }) => void) => {
       void listen('page-title', (e: { payload: { tabId: number; title: string; url: string } }) => cb(e.payload))

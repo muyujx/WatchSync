@@ -1,5 +1,9 @@
-//! 视频页签管理：多页签 WebView 的生命周期、布局、注入与指令通道。
+//! 视频页签管理：多页签 WebView 的生命周期、注入与指令通道。
 //! 对应 Electron 版 videoView.ts（WebContentsView → Tauri 子 WebView）。
+//!
+//! 布局权威在 UI 壳（Vue）：本模块不持有任何几何常量，页签 webview 的内容区
+//! 留白由 UI 经 set_tab_insets 上报，这里只按当前窗口尺寸套用。
+//! 本地媒体页签（file:// / 本机回环媒体地址）不创建 webview：播放面由 UI 壳渲染。
 //!
 //! 与 Electron 版的机制性差异：
 //! - JS 执行：webview.eval() 无返回值 → 桥执行结果由页面主动上报（bridge.rs）
@@ -12,16 +16,6 @@ use serde_json::json;
 use tauri::{Emitter, LogicalPosition, LogicalSize, Manager, WebviewBuilder, WebviewUrl};
 
 use crate::state::{state, TabEntry};
-
-/// Chrome 式标签行高度（px）；UI 侧 CSS 须保持一致（App.vue .tabstrip）
-pub const TAB_HEIGHT: f64 = 36.0;
-/// Chrome 式地址工具栏高度（px）；UI 侧 CSS 须保持一致（App.vue .toolbar）
-pub const TOOLBAR_HEIGHT: f64 = 44.0;
-/// 网页内容区顶部偏移 = 标签行 + 工具栏
-pub const CHROME_TOP: f64 = TAB_HEIGHT + TOOLBAR_HEIGHT;
-/// 播放页底部控制栏高度（px）= 视频区下方常驻控件条；UI 侧 CSS 须保持一致（App.vue .streambar）
-/// 仅在「有激活视频页签且未 HTML 全屏」时占位：视频不再铺满整窗，全屏时归零让视频铺满
-pub const CHROME_BOTTOM: f64 = 48.0;
 
 /// 跟随守卫开启脚本：写全局标记，并同步已安装桥的 setFollow（否则只改 flag 不会开关采集）
 pub const GUARD_ON: &str =
@@ -75,6 +69,29 @@ __SCRIPT__
         ;(document.head || document.documentElement).appendChild(st)
       }
     } catch (e) {}
+  }
+  // 页内提示条：网页页签盖住 UI 壳，应用 Toast 由 Rust 经 page_toast 命令投递到这里渲染
+  // （纯信息传递；Vue 本地媒体页签由 UI 壳直接渲染，不经过此助手）
+  if (!window.__p2pToast) {
+    let toastTimer = null
+    window.__p2pToast = (text) => {
+      try {
+        let tip = document.getElementById('__ws-toast')
+        if (!tip) {
+          tip = document.createElement('div')
+          tip.id = '__ws-toast'
+          tip.style.cssText = 'position:fixed;top:16px;left:50%;transform:translateX(-50%);z-index:2147483647;' +
+            'max-width:70vw;padding:8px 18px;border-radius:17px;background:rgba(32,33,36,.88);color:#fff;' +
+            'font:13px/1.5 system-ui,sans-serif;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;' +
+            'pointer-events:none;transition:opacity .25s;opacity:0'
+          ;(document.body || document.documentElement).appendChild(tip)
+        }
+        tip.textContent = text
+        tip.style.opacity = '1'
+        if (toastTimer) clearTimeout(toastTimer)
+        toastTimer = setTimeout(() => { tip.style.opacity = '0' }, 3000)
+      } catch (e) {}
+    }
   }
   window.__p2pReporter = setInterval(() => {
     const b = window.__p2pBridge
@@ -132,6 +149,41 @@ pub fn main_window(app: &tauri::AppHandle) -> tauri::Window {
     app.get_window("main").expect("主窗口不存在")
 }
 
+/// 是否为本地媒体页签（Vue 壳内渲染，不建 webview）：
+/// 本地文件（file://）与本机回环媒体服务地址（推流回放/成员收流）。
+/// 判定须与 UI 侧 core/mediaSource 的 isVuePlaybackUrl 保持一致。
+pub fn is_local_media_tab(url: &str) -> bool {
+    if url.starts_with("file:") {
+        return true;
+    }
+    let port = crate::media_server::port();
+    port > 0 && url.starts_with(&format!("http://127.0.0.1:{port}/media/"))
+}
+
+/// UI 壳上报内容区留白（逻辑 px：(顶栏高度, 底部预留)）并重排激活页签。
+/// 这是页签 webview 布局的唯一权威来源；UI 壳在挂载/尺寸变化/全屏切换时调用。
+pub fn set_tab_insets(app: &tauri::AppHandle, top: f64, bottom: f64) {
+    *state(app).tab_insets.lock().unwrap() = Some((top, bottom));
+    resize_active(app);
+}
+
+/// 激活页签 webview 的内容区（逻辑坐标）：按 UI 上报的留白与当前窗口尺寸计算。
+/// UI 尚未上报留白时返回 None（调用方应保持 webview 隐藏）。
+fn content_bounds(app: &tauri::AppHandle) -> Option<(LogicalPosition<f64>, LogicalSize<f64>)> {
+    let st = state(app);
+    let Some((top, bottom)) = *st.tab_insets.lock().unwrap() else {
+        return None;
+    };
+    let win = main_window(app);
+    let scale = win.scale_factor().unwrap_or(1.0);
+    let sz = win.inner_size().unwrap_or_default();
+    let (w, h) = (sz.width as f64 / scale, sz.height as f64 / scale);
+    Some((
+        LogicalPosition::new(0.0, top),
+        LogicalSize::new(w, (h - top - bottom).max(0.0)),
+    ))
+}
+
 /// 拼装注入脚本（幂等：adapter/guard/视频元素均未变则由脚本内判断跳过）。
 /// __SCRIPT__ 前后加分号：站点脚本结尾 `})()` 无分号时避免与相邻 IIFE 粘连成函数调用。
 fn build_inject_script(tab_id: i64, adapter_id: &str, inject_script: &str, guard: bool) -> String {
@@ -140,61 +192,6 @@ fn build_inject_script(tab_id: i64, adapter_id: &str, inject_script: &str, guard
         .replace("__ADAPTER__", &serde_json::to_string(adapter_id).unwrap())
         .replace("__TAB__", &tab_id.to_string())
         .replace("__SCRIPT__", &format!(";{};", inject_script))
-}
-
-/// 是否需要底部控制条：本地视频播放页（file://）与推流回放/成员收流页
-/// （本机媒体服务回环地址，成员边收边播时同样要露出速度/状态条）
-fn needs_bottom_inset(url: &str) -> bool {
-    if url.starts_with("file:") {
-        return true;
-    }
-    let port = crate::media_server::port();
-    port > 0 && url.starts_with(&format!("http://127.0.0.1:{port}/media/"))
-}
-
-/// 底部预留高度：本地播放页与推流/收流页需要视频下方的操作/速度条；
-/// 其他网页页视频铺到窗口底部（各页面相互独立）
-fn bottom_inset(url: &str) -> f64 {
-    if needs_bottom_inset(url) {
-        CHROME_BOTTOM
-    } else {
-        0.0
-    }
-}
-
-/// 激活页签的布局（逻辑坐标）：HTML 全屏铺满整窗，否则顶部预留 UI 区；
-/// 底部预留见 bottom_inset（本地播放页/推流收流页），其他网页页视频铺到窗口底部
-/// 参数：app 句柄。
-/// 返回值：(位置, 尺寸)，均为逻辑坐标；全屏时 top=0 且高度为整窗高度。
-fn active_bounds(app: &tauri::AppHandle) -> (LogicalPosition<f64>, LogicalSize<f64>) {
-    let fullscreen = state(app).html_fullscreen.lock().unwrap().clone();
-    let win = main_window(app);
-    let scale = win.scale_factor().unwrap_or(1.0);
-    let sz = win.inner_size().unwrap_or_default();
-    let (mut w, mut h) = (sz.width as f64 / scale, sz.height as f64 / scale);
-    // 全屏时与显示器逻辑尺寸取较大：最大化→全屏过渡中 inner_size 可能仍是工作区旧值
-    if fullscreen {
-        if let Ok(Some(mon)) = win.current_monitor() {
-            let ms = mon.size();
-            w = w.max(ms.width as f64 / scale);
-            h = h.max(ms.height as f64 / scale);
-        }
-    }
-    let url = {
-        let active = state(app).active_id.lock().unwrap().clone();
-        active
-            .and_then(|id| state(app).tabs.lock().unwrap().get(&id).map(|t| t.page_url.clone()))
-            .unwrap_or_default()
-    };
-    let (top, bottom) = if fullscreen {
-        (0.0, 0.0)
-    } else {
-        (CHROME_TOP, bottom_inset(&url))
-    };
-    (
-        LogicalPosition::new(0.0, top),
-        LogicalSize::new(w, (h - top - bottom).max(0.0)),
-    )
 }
 
 /// 将主窗口切入/切出 OS 级全屏，并强制铺满当前显示器。
@@ -240,12 +237,16 @@ pub fn schedule_resize(app: &tauri::AppHandle) {
 
 /// 设置指定页签 webview 的可见性（隐藏后 JS/媒体照常运行，与 Electron setVisible 语义一致）
 fn set_tab_visible(app: &tauri::AppHandle, tab_id: i64, visible: bool) {
-    let label = state(app).tabs.lock().unwrap().get(&tab_id).map(|t| t.label.clone());
-    let Some(label) = label else { return };
-    let Some(wv) = app.get_webview(&label) else { return };
+    let Some(entry) = state(app).tabs.lock().unwrap().get(&tab_id).cloned() else {
+        return;
+    };
+    if entry.is_vue() {
+        return; // Vue 本地媒体页签：无 webview，显隐由 UI 布局层处理
+    }
+    let Some(wv) = app.get_webview(&entry.label) else { return };
     if visible {
+        let Some((pos, size)) = content_bounds(app) else { return };
         let _ = wv.show();
-        let (pos, size) = active_bounds(app);
         let _ = wv.set_bounds(tauri::Rect { position: pos.into(), size: size.into() });
     } else {
         let _ = wv.hide();
@@ -280,24 +281,72 @@ pub fn browser_args(cdp_port: u16) -> String {
     )
 }
 
-/// 创建视频页签 webview 并激活。
+/// 创建视频页签 webview（隐藏创建；激活时由 set_tab_visible 显示并套用内容区）。
+fn create_webview(app: &tauri::AppHandle, tab_id: i64, url: &str, args: &str) -> String {
+    let label = format!("video-{tab_id}");
+    let parsed: tauri::Url = url.parse().unwrap_or_else(|_| "about:blank".parse().unwrap());
+    let builder = WebviewBuilder::new(&label, WebviewUrl::External(parsed))
+        .additional_browser_args(args)
+        .data_directory(crate::webview_data_dir(app));
+    // UI 未上报留白时以 1x1 占位创建（正常流程 Vue 先挂载上报，不会走到）
+    let (pos, size) = content_bounds(app)
+        .unwrap_or_else(|| (LogicalPosition::new(0.0, 0.0), LogicalSize::new(1.0, 1.0)));
+    main_window(app)
+        .add_child(builder, pos, size)
+        .expect("创建视频页签 webview 失败");
+    label
+}
+
+/// 创建视频页签并激活。本地媒体页签（file:// / 本机回环媒体）不建 webview——
+/// 播放面由 UI 壳渲染；其余创建子 webview。复用页签且类型（本地/网页）变化时转换承载方式。
 /// 参数：app 句柄；url 目标地址；tab_id 指定页签复用（原地导航），None 新建。
 /// 返回值：实际承载页面的页签 id。
 pub fn open(app: &tauri::AppHandle, url: &str, tab_id: Option<i64>, args: &str) -> i64 {
     let st = state(app);
     // 复用既有页签：原地导航（地址栏当前页导航 / 成员端跟随换剧集）
     if let Some(id) = tab_id {
-        let exists = st.tabs.lock().unwrap().contains_key(&id);
-        if exists {
-            let label = st.tabs.lock().unwrap().get(&id).map(|t| t.label.clone());
-            if let Some(label) = label {
-                if let Some(wv) = app.get_webview(&label) {
-                    let js = format!("location.href = {}", serde_json::to_string(url).unwrap());
-                    let _ = wv.eval(&js);
-                    // 原地导航：清掉旧页状态缓存，防止新文档未就绪期间被调用方当成就绪（续播提前 seek 会静默失败）；
-                    // 残余 ≤300ms 的在途 tick 无法根除，但窗口已最小——续播方仍须新开页签（见 spec §5）
-                    st.tab_status.lock().unwrap().remove(&id);
+        let entry = st.tabs.lock().unwrap().get(&id).cloned();
+        if let Some(entry) = entry {
+            let target_vue = is_local_media_tab(url);
+            if entry.is_vue() && !target_vue {
+                // 本地媒体页签 → 网页页签：补建 webview 承载
+                let label = create_webview(app, id, url, args);
+                {
+                    let mut tabs = st.tabs.lock().unwrap();
+                    if let Some(e) = tabs.get_mut(&id) {
+                        e.label = label;
+                        e.adapter_id = String::new();
+                        e.guard = false;
+                        e.page_url = url.to_string();
+                    }
                 }
+                st.tab_status.lock().unwrap().remove(&id);
+            } else if !entry.is_vue() && target_vue {
+                // 网页页签 → 本地媒体页签：销毁 webview，改由 UI 壳渲染
+                if let Some(wv) = app.get_webview(&entry.label) {
+                    let _ = wv.close();
+                }
+                {
+                    let mut tabs = st.tabs.lock().unwrap();
+                    if let Some(e) = tabs.get_mut(&id) {
+                        e.label = String::new();
+                        e.adapter_id = String::from("vue");
+                        e.guard = false;
+                        e.page_url = url.to_string();
+                    }
+                }
+                st.tab_status.lock().unwrap().remove(&id);
+            } else if entry.is_vue() {
+                // 本地媒体页签原地导航：仅更新登记地址（UI 壳响应页签 url 变化换源）
+                if let Some(e) = st.tabs.lock().unwrap().get_mut(&id) {
+                    e.page_url = url.to_string();
+                }
+            } else if let Some(wv) = app.get_webview(&entry.label) {
+                let js = format!("location.href = {}", serde_json::to_string(url).unwrap());
+                let _ = wv.eval(&js);
+                // 原地导航：清掉旧页状态缓存，防止新文档未就绪期间被调用方当成就绪（续播提前 seek 会静默失败）；
+                // 残余 ≤300ms 的在途 tick 无法根除，但窗口已最小——续播方仍须新开页签（见 spec §5）
+                st.tab_status.lock().unwrap().remove(&id);
             }
             drop(st);
             set_active(app, Some(id));
@@ -305,26 +354,17 @@ pub fn open(app: &tauri::AppHandle, url: &str, tab_id: Option<i64>, args: &str) 
         }
     }
     let id = crate::state::seq_next(&st.next_id);
-    let label = format!("video-{id}");
-    let parsed: tauri::Url = url.parse().unwrap_or_else(|_| "about:blank".parse().unwrap());
-    let win = main_window(app);
-    let sz = win.inner_size().unwrap_or_default();
-    let scale = win.scale_factor().unwrap_or(1.0);
-    let (w, h) = (sz.width as f64 / scale, sz.height as f64 / scale);
-    let builder = WebviewBuilder::new(&label, WebviewUrl::External(parsed))
-        .additional_browser_args(args)
-        .data_directory(crate::webview_data_dir(app));
-    win.add_child(
-        builder,
-        LogicalPosition::new(0.0, CHROME_TOP),
-        LogicalSize::new(w, (h - CHROME_TOP - bottom_inset(url)).max(0.0)),
-    )
-    .expect("创建视频页签 webview 失败");
+    let (label, adapter) = if is_local_media_tab(url) {
+        // 本地媒体页签：登记后直接激活，播放面由 UI 壳按页签 url 渲染
+        (String::new(), String::from("vue"))
+    } else {
+        (create_webview(app, id, url, args), String::new())
+    };
     st.tabs.lock().unwrap().insert(
         id,
         TabEntry {
-            label: label.clone(),
-            adapter_id: String::new(),
+            label,
+            adapter_id: adapter,
             guard: false,
             page_url: url.to_string(),
         },
@@ -401,14 +441,16 @@ pub fn set_sync_tab(app: &tauri::AppHandle, tab_id: Option<i64>, guard: bool) {
     st.events.lock().unwrap().clear();
     *st.last_status.lock().unwrap() = None;
     if let Some(id) = tab_id {
-        let label = st.tabs.lock().unwrap().get(&id).map(|t| t.label.clone());
-        if let Some(label) = label {
-            if let Some(wv) = app.get_webview(&label) {
-                // 显式写守卫标记：guard=false 也复位，避免残留
-                let _ = wv.eval(if guard { GUARD_ON } else { GUARD_OFF });
-                if let Some(e) = st.tabs.lock().unwrap().get_mut(&id) {
-                    e.guard = guard;
+        let entry = st.tabs.lock().unwrap().get(&id).cloned();
+        if let Some(entry) = entry {
+            if !entry.is_vue() {
+                if let Some(wv) = app.get_webview(&entry.label) {
+                    // 显式写守卫标记：guard=false 也复位，避免残留
+                    let _ = wv.eval(if guard { GUARD_ON } else { GUARD_OFF });
                 }
+            }
+            if let Some(e) = st.tabs.lock().unwrap().get_mut(&id) {
+                e.guard = guard;
             }
         }
     }
@@ -444,6 +486,9 @@ pub fn close(app: &tauri::AppHandle, tab_id: i64) {
     // 关页签即落盘：页签存活期间的播放进度立即持久化（不等 10s 节流）
     crate::history::flush(app, true);
     if let Some(label) = label {
+        if label.is_empty() {
+            return; // Vue 本地媒体页签：无 webview 可销毁
+        }
         if let Some(wv) = app.get_webview(&label) {
             // close：从窗口移除并销毁 webview
             let _ = wv.close();
@@ -454,13 +499,12 @@ pub fn close(app: &tauri::AppHandle, tab_id: i64) {
 /// 对单个页签执行一次"确保注入"（幂等脚本，站点变化自动重装）。
 pub fn ensure_inject_one(app: &tauri::AppHandle, tab_id: i64) {
     let st = state(app);
-    let (label, cur_adapter, guard) = {
-        let tabs = st.tabs.lock().unwrap();
-        match tabs.get(&tab_id) {
-            Some(e) => (e.label.clone(), e.adapter_id.clone(), e.guard),
-            None => return,
-        }
-    };
+    let entry = st.tabs.lock().unwrap().get(&tab_id).cloned();
+    let Some(entry) = entry else { return };
+    if entry.is_vue() {
+        return; // Vue 本地媒体页签：无 webview 无桥
+    }
+    let (label, cur_adapter, guard) = (entry.label.clone(), entry.adapter_id.clone(), entry.guard);
     let Some(wv) = app.get_webview(&label) else { return };
     let url = st.tabs.lock().unwrap().get(&tab_id).map(|t| t.page_url.clone()).unwrap_or_default();
     let adapter = crate::state::select_adapter(&url);
@@ -502,6 +546,25 @@ pub fn inject_sync(app: &tauri::AppHandle, guard: bool) -> String {
     let _ = wv.eval(if guard { GUARD_ON } else { GUARD_OFF });
     let _ = wv.eval(&build_inject_script(id, &adapter.id, &adapter.inject_script, guard));
     String::from("ok")
+}
+
+/// 向激活网页页签下发提示文本（页面内 __p2pToast 渲染；Vue 本地媒体页签无 webview，跳过——
+/// 其 Toast 由 UI 壳直接渲染）
+pub fn page_toast(app: &tauri::AppHandle, text: &str) {
+    let st = state(app);
+    let active = st.active_id.lock().unwrap().clone();
+    let Some(id) = active else { return };
+    let entry = st.tabs.lock().unwrap().get(&id).cloned();
+    let Some(entry) = entry else { return };
+    if entry.is_vue() {
+        return;
+    }
+    let Some(wv) = app.get_webview(&entry.label) else { return };
+    let script = format!(
+        "window.__p2pToast && window.__p2pToast({})",
+        serde_json::to_string(text).unwrap()
+    );
+    let _ = wv.eval(&script);
 }
 
 /// 向同步页签下发指令：action = play|pause|seek|rate（eval fire-and-forget）。
@@ -593,21 +656,12 @@ pub fn video_status(app: &tauri::AppHandle) -> Option<crate::state::VideoStatusF
 pub fn on_tab_tick(app: &tauri::AppHandle, tab_id: i64, title: &str, url: &str) {
     static LAST: OnceLock<Mutex<std::collections::HashMap<i64, String>>> = OnceLock::new();
     let last = LAST.get_or_init(|| Mutex::new(std::collections::HashMap::new()));
-    let mut relayout = false;
     {
         let st = state(app);
-        let active = st.active_id.lock().unwrap().clone();
         let mut tabs = st.tabs.lock().unwrap();
         if let Some(e) = tabs.get_mut(&tab_id) {
-            // 激活页签在「需要底部控制条」（本地播放页/推流收流页）与其它页之间切换时重排布局
-            if active == Some(tab_id) && needs_bottom_inset(&e.page_url) != needs_bottom_inset(url) {
-                relayout = true;
-            }
             e.page_url = url.to_string();
         }
-    }
-    if relayout {
-        resize_active(app);
     }
     let changed = {
         let mut m = last.lock().unwrap();

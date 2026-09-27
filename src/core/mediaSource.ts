@@ -45,6 +45,17 @@ export function isLoopbackMediaUrl(url: string): boolean {
 }
 
 /**
+ * 本地媒体播放页判定（Vue 壳内渲染的页签，不建子 webview）：
+ * 本地文件（file://）与本机回环媒体服务地址（推流回放/成员收流）。
+ * 判定须与 src-tauri/src/tabs.rs 的 is_local_media_tab 保持一致。
+ * 参数：url 页签地址。返回值：true=由 UI 壳直接渲染播放。
+ */
+export function isVuePlaybackUrl(url: string): boolean {
+  if (url.startsWith('file:')) return true
+  return isLoopbackMediaUrl(url) && url.includes('/media/')
+}
+
+/**
  * 选择网页视频的共享源：能拿到直链就直链共享，否则退回页面地址。
  * 参数：pageUrl 页签地址；mediaUrl 页面 video 的 currentSrc（可能为空）。
  * 返回值：成员应打开的地址与类型；两者都为空时 url 为空串。

@@ -5,6 +5,7 @@
  */
 import { computed, ref, type Ref } from 'vue'
 import type { RoomController } from '../room'
+import * as videoBus from '../videoBus'
 import { buildShareUrl } from '../../core/shareLink'
 import type { MemberItem } from '../components/MembersDialog.vue'
 import { RTT_STALE_MS } from '../rtt'
@@ -242,7 +243,7 @@ export function useRoomSession(deps: UseRoomSessionDeps) {
     deps.relayTabId.value = null
     deps.localFileId.value = ''
     deps.syncPaused.value = false
-    void window.p2pApi.setSyncTab(null, false)
+    void videoBus.setSyncTab(null, false)
     deps.syncDebug()
   }
 

@@ -17,7 +17,6 @@ mod media_server;
 mod settings;
 mod state;
 mod tabs;
-mod toast;
 
 use std::sync::OnceLock;
 use tauri::{Emitter, Manager, WebviewBuilder, WebviewUrl};
@@ -106,7 +105,9 @@ fn main() {
             commands::video_nav,
             commands::close_video,
             commands::set_video_visible,
-            commands::notify,
+            commands::set_tab_insets,
+            commands::media_tick,
+            commands::page_toast,
             commands::get_settings,
             commands::set_settings,
             commands::set_ui_theme,
@@ -176,7 +177,7 @@ fn main() {
             // 壳 webview 默认背景为白，按主题同色覆盖（首屏加载期间与窗口底色一致）
             ui.set_background_color(Some(bg.into()))?;
 
-            // ---- 窗口事件：缩放/移动 → 视频页签重排 + Toast 跟随；最大化状态 → UI ----
+            // ---- 窗口事件：缩放 → 视频页签重排；最大化状态 → UI ----
             let handle = app.handle().clone();
             let last_max = std::sync::atomic::AtomicI8::new(-1); // -1 未初始化，0/1 非最大化/最大化
             win.on_window_event(move |e| match e {
@@ -192,7 +193,6 @@ fn main() {
                         });
                     }
                     tabs::resize_active(&handle);
-                    toast::reposition(&handle);
                     // 最大化状态变化推送 UI（自定义按钮切换图标）
                     let maximized = handle.get_window("main").and_then(|w| w.is_maximized().ok());
                     if let Some(m) = maximized {
@@ -202,9 +202,6 @@ fn main() {
                             let _ = handle.emit_to("ui", "win-state", m);
                         }
                     }
-                }
-                tauri::WindowEvent::Moved(_) => {
-                    toast::reposition(&handle);
                 }
                 tauri::WindowEvent::Destroyed => {
                     // 主窗口关闭 → 退出应用（对齐 window-all-closed）；先落盘播放历史

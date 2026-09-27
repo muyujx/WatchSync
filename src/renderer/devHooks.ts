@@ -28,6 +28,10 @@ export interface DevHooksDeps {
   onShareWeb(): void
   onDirectRelay(): Promise<void>
   onPickLocal(): Promise<void>
+  /** 查询同步页签视频状态（按页签类型路由：Vue 本地页签走本地面，网页页签走桥） */
+  videoStatus(): Promise<unknown>
+  /** 向同步页签下发播放指令（同上路由） */
+  videoCmd(action: string, arg?: number): Promise<void>
 }
 
 /**
@@ -102,6 +106,9 @@ export function setupDevHooks(deps: DevHooksDeps): { syncDebug(): void } {
     webShareMode: () => (deps.syncTabId() === deps.relayTabId() ? 'relay' : 'progress'),
     diag: diagSnapshot,
     openLocalPick: () => deps.onPickLocal(),
+    // 本地视频（Vue 页签）联调：同步页签的状态/指令（网页页签仍可用 CDP 直连桥）
+    videoStatus: () => deps.videoStatus(),
+    videoCmd: (action: string, arg?: number) => deps.videoCmd(action, arg),
   }
 
   return { syncDebug }

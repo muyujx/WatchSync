@@ -4,9 +4,10 @@
  * 房间与同步语义通过依赖注入（锁定判定、关闭联动）回连，本模块只管页签域。
  */
 import { computed, ref, type Ref } from 'vue'
-import { isLoopbackMediaUrl } from '../../core/mediaSource'
+import { isLoopbackMediaUrl, isVuePlaybackUrl } from '../../core/mediaSource'
 import type { TabInfo } from '../components/TabStrip.vue'
 import { notify } from '../notify'
+import * as videoBus from '../videoBus'
 
 /** 页签域依赖（由 App 提供；房间/同步相关的钩子可为晚绑定包装） */
 export interface UseTabsDeps {
@@ -62,6 +63,13 @@ export function useTabs(deps: UseTabsDeps) {
     deps.invalidateResume()
     // 导航类入口统一先关面板恢复画面（对齐 activateTab/goHome 钩子）
     if (deps.historyOpen()) void deps.closeHistory()
+    // Vue 本地媒体页签：无 webview、无地址历史。reload 等价重建媒体管线（video.load），
+    // back/forward 无意义（本地媒体页地址固定，浏览器历史为空）
+    const t = activeTabId.value != null ? tabs.value.find((x) => x.id === activeTabId.value) : null
+    if (t && isVuePlaybackUrl(t.url)) {
+      if (action === 'reload') videoBus.cmdTab(t.id, 'reload')
+      return
+    }
     await window.p2pApi.videoNav(action)
   }
 

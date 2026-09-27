@@ -2,7 +2,7 @@
 //! 对应 Electron 版 videoView.ts 的内存状态 + settings 载入。
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{Mutex, OnceLock};
 
 use serde::{Deserialize, Serialize};
@@ -50,7 +50,7 @@ pub struct VideoStatusFull {
 /// 单个视频页签元数据（webview 句柄按 label 动态获取，不长期持有）
 #[derive(Debug, Clone)]
 pub struct TabEntry {
-    /// webview label = video-{id}
+    /// webview label = video-{id}；空串 = Vue 本地媒体页签（无 webview，播放面在 UI 壳内）
     pub label: String,
     /// 当前已注入适配器 id（站点变化时强制重装）
     pub adapter_id: String,
@@ -58,6 +58,13 @@ pub struct TabEntry {
     pub guard: bool,
     /// 页面实时地址（桥 tick 上报，SPA 路由同步）
     pub page_url: String,
+}
+
+impl TabEntry {
+    /// 是否为 Vue 本地媒体页签（file:// 或本机回环媒体地址；播放面由 UI 壳渲染，Rust 不建 webview）
+    pub fn is_vue(&self) -> bool {
+        self.label.is_empty()
+    }
 }
 
 /// 全局状态（tauri manage）
@@ -78,8 +85,9 @@ pub struct AppState {
     pub html_fullscreen: Mutex<bool>,
     /// 进入 OS 全屏前窗口是否最大化（退出时恢复，见 tabs::apply_window_fullscreen）
     pub was_maximized_before_fs: Mutex<bool>,
-    /// toast 显示序号（防旧定时器隐藏新提示）
-    pub toast_seq: AtomicU64,
+    /// UI 壳上报的内容区留白（逻辑 px：(顶栏高度, 底部预留)）；布局唯一权威是 UI，
+    /// Rust 只按当前窗口尺寸套用，None = UI 尚未上报（页签 webview 先创建后隐藏）
+    pub tab_insets: Mutex<Option<(f64, f64)>>,
     /// 播放历史内存态（见 history.rs；启动时由 main.rs setup 调 history::load 填充）
     pub history: Mutex<crate::history::HistoryState>,
     /// 每页签视频状态缓存（桥 tick 维护；续播轮询 tabStatus 用，无桥/无视频即移除）
@@ -97,7 +105,7 @@ impl AppState {
             last_status: Mutex::new(None),
             html_fullscreen: Mutex::new(false),
             was_maximized_before_fs: Mutex::new(false),
-            toast_seq: AtomicU64::new(0),
+            tab_insets: Mutex::new(None),
             history: Mutex::new(crate::history::HistoryState::default()),
             tab_status: Mutex::new(HashMap::new()),
         }

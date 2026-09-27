@@ -15,6 +15,7 @@ import { createRoom, openRealRoom, type RoomHandle } from '../../core/room'
 import type { ShareMode, SyncMsg } from '../../core/protocol'
 import { MediaStreamReceiver } from '../mediaStream'
 import { p2pLog } from '../../core/log'
+import * as videoBus from '../videoBus'
 import { RttProbe } from '../rtt'
 import { FollowerSync } from './followerSync'
 import { HostSync } from './hostSync'
@@ -395,7 +396,7 @@ export class RoomController {
     this.follower.resetSyncBasis()
     this.hostSync.start()
     // 房主可自由操作视频：解除同步页签跟随守卫（syncTabId 为空时调用无副作用）
-    void window.p2pApi.setSyncTab(this.syncTabId, false)
+    void videoBus.setSyncTab(this.syncTabId, false)
     // 广播新的角色标记，供其他成员更新房主标识
     this.announceProfile()
     this.onRoleChanged?.(true)
@@ -417,7 +418,7 @@ export class RoomController {
     // 清空同步基准并重置断线状态，等待新房主心跳重建
     this.follower.resetSyncBasis()
     // 成员端禁止本地操作：把跟随守卫挂回当前同步页签（尚未建立同步时为 null，由后续 state/syncTab 流程建立）
-    void window.p2pApi.setSyncTab(this.syncTabId, true)
+    void videoBus.setSyncTab(this.syncTabId, true)
     this.follower.start()
     // 广播角色变化（host:false）
     this.announceProfile()
@@ -676,7 +677,7 @@ export class RoomController {
     this.rtt.clear()
     this.clearJoinWatchdog()
     // 解除跟随守卫并清空同步页签指针（页签保留，UI 端随后解锁为普通页签可关闭）
-    void window.p2pApi.setSyncTab(null, false)
+    void videoBus.setSyncTab(null, false)
     this.syncTabId = null
     this.shareMode = 'url'
     this.shareFileId = ''

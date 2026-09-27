@@ -8,6 +8,7 @@ import type { RoomController } from '../room'
 import { isLoopbackMediaUrl } from '../../core/mediaSource'
 import type { TabInfo } from '../components/TabStrip.vue'
 import type { WebShareFeature } from '../webShare'
+import * as videoBus from '../videoBus'
 import { notify } from '../notify'
 import type { LocalFileInfo } from './useLocalFileShare'
 
@@ -63,7 +64,7 @@ export function useSyncFlow(deps: UseSyncFlowDeps) {
     const firstSync = syncTabId.value == null
     const url = t.url
     syncTabId.value = id
-    await window.p2pApi.setSyncTab(id, false)
+    await videoBus.setSyncTab(id, false)
     controller.syncTabId = id
     controller.videoUrl = url
     // 「页签即模式」：本地播放页=文件流、推流页签=直接推流、网页页签=进度同步
@@ -113,7 +114,7 @@ export function useSyncFlow(deps: UseSyncFlowDeps) {
     if (syncTabId.value !== id) return
     syncTabId.value = null
     controller.syncTabId = null
-    await window.p2pApi.setSyncTab(null, false)
+    await videoBus.setSyncTab(null, false)
     if (deps.roomId.value && deps.isHost.value) {
       controller.endShare()
     }
@@ -153,7 +154,7 @@ export function useSyncFlow(deps: UseSyncFlowDeps) {
       // 迁移跟随守卫到新同步页签（旧同步页签由主进程自动解除），并跳转显示。
       // 守卫只该给成员（跟随端不采集事件）：房主若被挂守卫，本机 play/pause/seek
       // 会被 harness push() 静默丢弃，事件级同步（含「等待成员预加载」）整体失效
-      await window.p2pApi.setSyncTab(t.id, isFollower())
+      await videoBus.setSyncTab(t.id, isFollower())
       await deps.activateTab(t.id)
     }
     const promise = run()

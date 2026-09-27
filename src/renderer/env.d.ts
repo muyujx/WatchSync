@@ -54,8 +54,12 @@ declare global {
       closeVideo(tabId: number): Promise<void>
       /** 显示/隐藏视频画面（打开 UI 弹窗时用，避免原生视图遮挡界面） */
       setVideoVisible(visible: boolean): Promise<void>
-      /** 弹出全局提示条（独立透明小窗，显示于视频画面顶部 UI 区正下方居中，4 秒自动消失） */
-      notify(text: string): Promise<void>
+      /** UI 壳上报页签内容区留白（逻辑 px：顶栏高度、底部预留；布局唯一权威在 UI） */
+      setTabInsets(top: number, bottom: number): Promise<void>
+      /** UI 壳上报本地媒体播放 tick（Vue 页签无桥，播放历史由本命令入账） */
+      mediaTick(title: string, url: string, status: VideoSnapshot | null): Promise<void>
+      /** 向激活网页页签投递提示文本（页面内注入脚本渲染；Vue 页签的提示由 UI 壳直接渲染） */
+      pageToast(text: string): Promise<void>
       /** 订阅标签页标题变化（tabId + title + url） */
       onPageTitle(cb: (info: { tabId: number; title: string; url: string }) => void): void
       /** 订阅网页 HTML 全屏状态变化（全屏时 UI 隐藏顶部栏，让视频铺满整窗） */

@@ -1,56 +1,72 @@
 <template>
-  <TopBar
-    v-show="!videoFullscreen"
-    v-model:url="videoUrl"
-    v-model:join-input="joinInput"
-    :tabs="tabs"
-    :active-id="activeTabId"
-    :sync-id="syncTabId"
-    :role="tabRole"
-    :sync-paused="syncPaused"
-    :is-max="isMax"
-    :title-of="tabTitleOf"
-    :room-id="roomId"
-    :is-host="isHost"
-    :busy="busy"
-    :connection-lost="connectionLost"
-    :show-direct-relay="showDirectRelay"
-    :member-count="memberList.length"
-    :history-open="historyOpen"
-    @activate="activateTab"
-    @set-sync="setSyncTab"
-    @close="closeTab"
-    @home="goHome"
-    @win="win"
-    @nav="nav"
-    @open="onOpen"
-    @host="onHost"
-    @copy-link="onCopyLink"
-    @direct-relay="onDirectRelay"
-    @open-members="openMembers"
-    @toggle-sync-pause="toggleSyncPause"
-    @exit-room="exitRoom"
-    @join-link="onJoinLink"
-    @cancel-join="onCancelJoin"
-    @toggle-history="toggleHistory"
-    @open-settings="openSettings"
-  />
+  <div ref="chromeEl">
+    <TopBar
+      v-show="!anyFullscreen"
+      v-model:url="videoUrl"
+      v-model:join-input="joinInput"
+      :tabs="tabs"
+      :active-id="activeTabId"
+      :sync-id="syncTabId"
+      :role="tabRole"
+      :sync-paused="syncPaused"
+      :is-max="isMax"
+      :title-of="tabTitleOf"
+      :room-id="roomId"
+      :is-host="isHost"
+      :busy="busy"
+      :connection-lost="connectionLost"
+      :show-direct-relay="showDirectRelay"
+      :member-count="memberList.length"
+      :history-open="historyOpen"
+      @activate="activateTab"
+      @set-sync="setSyncTab"
+      @close="closeTab"
+      @home="goHome"
+      @win="win"
+      @nav="nav"
+      @open="onOpen"
+      @host="onHost"
+      @copy-link="onCopyLink"
+      @direct-relay="onDirectRelay"
+      @open-members="openMembers"
+      @toggle-sync-pause="toggleSyncPause"
+      @exit-room="exitRoom"
+      @join-link="onJoinLink"
+      @cancel-join="onCancelJoin"
+      @toggle-history="toggleHistory"
+      @open-settings="openSettings"
+    />
+  </div>
 
-  <!-- 播放页底部操作区（本地文件页：路径/预取；网页页：共享给成员；高度与 Rust tabs::CHROME_BOTTOM 一致） -->
+  <!-- 本地视频播放面层（Vue 本地媒体页签：file:// / 推流回放与成员收流；
+       网页页签仍为 Rust 托管 webview，按 useChromeLayout 上报的留白摆放） -->
+  <div class="stage-layer" :style="{ top: stageTop }">
+    <LocalVideoStage
+      v-for="t in vueTabs"
+      :key="t.id"
+      :tab-id="t.id"
+      :url="t.url"
+      :active="t.id === activeTabId"
+      :bottom-inset="t.id === activeTabId && streamBarVisible ? STREAMBAR_HEIGHT : 0"
+    />
+  </div>
+
+  <!-- 本地视频播放页底部操作区（本地文件页：路径/预取；推流回放/成员收流页：共享状态与速度） -->
   <ShareBar
-    :visible="streamBarVisible"
+    v-if="streamBarVisible"
     :share-mode="shareBarMode"
     :share-name="shareName"
-    :can-share-web="!!(roomId && isHost && !onLocalFilePage && !onLoopbackMediaPage && syncTabId != null)"
     :can-prefetch="!!(roomId && isHost && onLocalFilePage && localFile)"
     :prefetch-ratio="fileCopying ? fileCopyRatio : -1"
     :file-path="onLocalFilePage ? (localFile?.path ?? '') : ''"
     :download-speed="shareSpeeds.download"
     :upload-speed="shareSpeeds.upload"
     :load-speed="shareSpeeds.load"
-    @share-web="onShareWeb"
     @prefetch="onSendFileCopy"
   />
+
+  <!-- 全局提示条：UI 壳渲染；网页页签激活时由 ToastHost 镜像到页内 -->
+  <ToastHost :active-url="activeTabUrl" :chrome-h="chromeH" />
 
   <!-- 主页站点卡片（含站点书签增删改对话框与「打开本地视频」入口） -->
   <HomeSites ref="homeSites" :active="activeTabId == null" @open-site="openSite" @pick-local="onPickLocal" />
@@ -75,7 +91,7 @@
 /**
  * 应用根组件（组装根）：持有跨域共享的「脊柱」状态并按依赖顺序装配各功能域 composables。
  * 具体职责拆分：页签导航 composables/useTabs.ts；同步目标编排 useSyncFlow.ts；
- * 直接推流 useDirectRelay.ts；底部共享条 useShareBar.ts；设置 useSettings.ts；
+ * 直接推流 useDirectRelay.ts；底部共享条（本地视频播放页）useShareBar.ts；设置 useSettings.ts；
  * 房间会话 useRoomSession.ts；主题/书签/历史续播/本地文件共享见 composables/*；
  * 顶部栏 components/TopBar.vue；主页站点卡片 components/HomeSites.vue；联调钩子见 devHooks.ts。
  */
@@ -90,8 +106,12 @@ import MembersDialog from './components/MembersDialog.vue'
 import SettingsDialog from './components/SettingsDialog.vue'
 import HistoryPanel from './components/HistoryPanel.vue'
 import ShareBar from './components/ShareBar.vue'
+import LocalVideoStage from './components/LocalVideoStage.vue'
+import ToastHost from './components/ToastHost.vue'
 import { WebShareFeature } from './webShare'
 import { notify } from './notify'
+import * as videoBus from './videoBus'
+import { isVuePlaybackUrl } from '../core/mediaSource'
 import { useTheme } from './composables/useTheme'
 import { useTabs } from './composables/useTabs'
 import { useHistoryResume } from './composables/useHistoryResume'
@@ -100,6 +120,7 @@ import { useLocalFileShare } from './composables/useLocalFileShare'
 import { useSyncFlow } from './composables/useSyncFlow'
 import { useDirectRelay } from './composables/useDirectRelay'
 import { useShareBar } from './composables/useShareBar'
+import { useChromeLayout } from './composables/useChromeLayout'
 import { useRoomSession } from './composables/useRoomSession'
 import { setupDevHooks } from './devHooks'
 
@@ -123,8 +144,14 @@ const syncPaused = ref(false)
 const syncTabId = ref<number | null>(null)
 /** 窗口最大化状态（控制按钮图标切换） */
 const isMax = ref(false)
-/** 网页视频 HTML 全屏状态（全屏时隐藏自绘顶部栏，让原生视频视图铺满整窗） */
+/** 网页视频 HTML 全屏状态（web 页签内全屏：Rust 事件驱动，全屏时隐藏自绘顶部栏） */
 const videoFullscreen = ref(false)
+/** 本地视频元素全屏（Vue 本地媒体页签；Fullscreen API，元素级，与 web 全屏互斥场景） */
+const localFullscreen = ref(false)
+/** 任意播放面全屏（驱动顶栏/底部条隐藏） */
+const anyFullscreen = computed(() => videoFullscreen.value || localFullscreen.value)
+/** 底部操作区高度（ShareBar .streambar，与 styles/toolbar.css 保持一致） */
+const STREAMBAR_HEIGHT = 48
 
 /** 页签角色语义（决定同步按钮/徽标渲染）：房内房主=可切换同步；房内成员=只读徽标；其余=普通 */
 const tabRole = computed<TabRole>(() => (roomId.value ? (isHost.value ? 'host' : 'follower') : 'none'))
@@ -139,7 +166,6 @@ const {
   tabs,
   activeTabId,
   onLocalFilePage,
-  onLoopbackMediaPage,
   streamBarVisible,
   nav,
   activateTab,
@@ -150,13 +176,31 @@ const {
   isTabClosed,
 } = useTabs({
   videoUrl,
-  videoFullscreen,
+  videoFullscreen: anyFullscreen,
   historyOpen: () => historyApi.historyOpen.value,
   closeHistory: () => historyApi.closeHistory(),
   invalidateResume: () => historyApi.invalidateResume(),
   isTabSyncLocked: (id) => syncApi.isSyncLocked(id),
   onTabClosed,
   afterTabNavigated: (id, url) => syncApi.afterTabNavigated(id, url),
+})
+
+/** ===== 布局上报与本地视频播放面 ===== */
+const chromeEl = ref<HTMLElement | null>(null)
+const { chromeH } = useChromeLayout({
+  chromeEl,
+  // web 页签 HTML 全屏时视频铺满整窗（顶部留白归零）；本地元素全屏不影响 web 页签布局
+  videoFullscreen,
+  streamBarVisible,
+})
+/** 本地媒体页签（file:// / 本机回环媒体；播放面由 UI 壳渲染） */
+const vueTabs = computed(() => tabs.value.filter((t) => isVuePlaybackUrl(t.url)))
+/** 播放面层顶部偏移（顶栏高度；web 全屏时铺满整窗） */
+const stageTop = computed(() => (videoFullscreen.value ? '0px' : `${chromeH.value}px`))
+/** 激活页签地址（ToastHost 判断是否镜像到网页页签） */
+const activeTabUrl = computed(() => {
+  if (activeTabId.value == null) return null
+  return tabs.value.find((x) => x.id === activeTabId.value)?.url ?? null
 })
 
 /** ===== 播放记录与续播 ===== */
@@ -202,14 +246,14 @@ const { localFile, localFileId, fileCopying, fileCopyRatio, openSharedLocalFile,
 
 /** 网页视频共享特性（同步进度 / 直接推流；详见 src/renderer/webShare.ts） */
 const webShare = new WebShareFeature({
-  tabStatus: (tabId) => window.p2pApi.tabStatus(tabId),
+  tabStatus: (tabId) => videoBus.tabStatus(tabId),
   shareDirect: (url, name) => controller.hostShareDirectUrl(url, name),
   sharePage: (url) => {
     controller.videoUrl = url
     controller.broadcastSyncTab(url)
   },
   shareRelay: (url, name) => controller.hostShareRemote(url, name),
-  pauseSourceTab: () => void window.p2pApi.videoCmd('pause'),
+  pauseSourceTab: () => void videoBus.videoCmd('pause'),
   notify: (msg) => notify(msg),
   syncTabId: () => syncTabId.value,
   activeTabId: () => activeTabId.value,
@@ -245,7 +289,7 @@ const { relayTabId, showDirectRelay, onDirectRelay, clearTab: clearRelayTab } = 
   webShare,
 })
 
-/** ===== 底部共享条 ===== */
+/** ===== 底部共享条（只在本地视频播放页挂载） ===== */
 const { shareName, shareBarMode, shareSpeeds, onShareWeb, tabTitleOf } = useShareBar({
   controller,
   roomId,
@@ -253,8 +297,6 @@ const { shareName, shareBarMode, shareSpeeds, onShareWeb, tabTitleOf } = useShar
   syncTabId,
   activeTabId,
   relayTabId,
-  onLocalFilePage,
-  onLoopbackMediaPage,
   webShare,
   fileCopying,
   fileCopyRatio,
@@ -309,6 +351,8 @@ const devHooks = setupDevHooks({
   onShareWeb,
   onDirectRelay,
   onPickLocal,
+  videoStatus: () => videoBus.videoStatus(),
+  videoCmd: (action: string, arg?: number) => videoBus.videoCmd(action, arg),
 })
 
 /** ===== 跨域胶水 ===== */
@@ -338,25 +382,25 @@ async function openSite(s: { url: string }): Promise<void> {
   await onOpen()
 }
 
-/** 地址栏回车：邀请链接直接加入；其余按视频网页打开（激活页签内导航，主页时新开页签） */
-async function onOpen(): Promise<void> {
-  if (!videoUrl.value) return
-  const raw = videoUrl.value.trim()
-  // 粘进来的是邀请链接（watchsync://join?room=...）时按「加入房间」处理，
-  // 否则会被当成视频地址去打开、看起来像「粘贴没反应」
-  const parsed = await window.p2pApi.parseLink(raw)
-  if (parsed) {
-    if (roomId.value) {
-      notify('已在房间中，请先「退出房间」再加入')
+  /** 地址栏回车：邀请链接直接加入；其余按视频网页打开（激活页签内导航，主页时新开页签） */
+  async function onOpen(): Promise<void> {
+    if (!videoUrl.value) return
+    const raw = videoUrl.value.trim()
+    // 粘进来的是邀请链接（watchsync://join?room=...）时按「加入房间」处理，
+    // 否则会被当成视频地址去打开、看起来像「粘贴没反应」
+    const parsed = await window.p2pApi.parseLink(raw)
+    if (parsed) {
+      if (roomId.value) {
+        notify('已在房间中，请先「退出房间」再加入')
+        return
+      }
+      joinInput.value = raw
+      videoUrl.value = ''
+      await onJoinLink()
       return
     }
-    joinInput.value = raw
-    videoUrl.value = ''
-    await onJoinLink()
-    return
+    await openInTab(raw)
   }
-  await openInTab(raw)
-}
 
 /** 主页站点卡片实例（设置读取后重建卡片列表用） */
 const homeSites = ref<InstanceType<typeof HomeSites> | null>(null)
@@ -383,6 +427,10 @@ onMounted(() => {
   window.p2pApi.onWinState((m) => (isMax.value = m))
   // 网页播放器全屏状态订阅：全屏时隐藏顶部栏，退出后恢复
   window.p2pApi.onVideoFullscreen((f) => (videoFullscreen.value = f))
+  // 本地视频元素全屏（Fullscreen API）：同样隐藏顶部栏，退出后恢复
+  document.addEventListener('fullscreenchange', () => {
+    localFullscreen.value = !!document.fullscreenElement
+  })
   // 页签标题实时更新（按 tabId 路由）；激活页签地址同步地址栏（聚焦时不覆盖输入）
   window.p2pApi.onPageTitle((info) => {
     // 迟到的标题事件不重建已关闭页签
@@ -409,3 +457,18 @@ onMounted(() => {
   })
 })
 </script>
+
+<style>
+/* 本地视频播放面层：覆盖顶栏以下区域；pointer-events 由激活的 stage 自己接管 */
+.stage-layer {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  pointer-events: none;
+  z-index: 1;
+}
+.stage-layer > * {
+  pointer-events: auto;
+}
+</style>

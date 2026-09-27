@@ -14,6 +14,7 @@ import { decideSourceCorrection, type SourceCorrectionState } from '../../core/u
 import type { ShareMode, SyncMsg } from '../../core/protocol'
 import type { RoomHandle } from '../../core/room'
 import { p2pLog } from '../../core/log'
+import * as videoBus from '../videoBus'
 import type { MediaStreamReceiver } from '../mediaStream'
 import {
   BRIDGE_WAIT_MS,
@@ -120,7 +121,7 @@ export class FollowerSync {
     this.syncPaused = true
     p2pLog('pause sync')
     // 解除守卫：本地可自由控制；事件仍可能入队，但 handleMsg 短路后不会被应用到本地对齐
-    if (this.c.syncTabId != null) void window.p2pApi.setSyncTab(this.c.syncTabId, false)
+    if (this.c.syncTabId != null) void videoBus.setSyncTab(this.c.syncTabId, false)
   }
 
   /**
@@ -131,7 +132,7 @@ export class FollowerSync {
     if (this.c.role !== 'follower' || !this.syncPaused) return
     this.syncPaused = false
     p2pLog('resume sync')
-    if (this.c.syncTabId != null) void window.p2pApi.setSyncTab(this.c.syncTabId, true)
+    if (this.c.syncTabId != null) void videoBus.setSyncTab(this.c.syncTabId, true)
     const s = this.lastSnapshot
     if (s && this.lastStateAt > 0) {
       // 按当前房主状态强制对齐；标记 wasFrozen 让 applySnapshot 先 seek 再定播放
@@ -191,7 +192,7 @@ export class FollowerSync {
           this.hostNotReady = true
           p2pLog('host not ready, freeze follower', { afterSeek, need })
           // 边沿触发仅暂停一次；成员停在哪由冻结前的基准决定，偏差不再扩大
-          void window.p2pApi.videoCmd('pause')
+          void videoBus.videoCmd('pause')
         }
         // 未就绪心跳仍驱动页签地址同步（换视频/换剧集能跟上），但不采纳基准
         void this.applySnapshot(null, msg.url)
@@ -208,13 +209,13 @@ export class FollowerSync {
       // 关键：同步更新本地基准，避免 followTimer 用旧快照（playing=false）把刚起播又暂停
       this.lastSnapshot = { position: msg.position, playing: true, at: msg.at }
       this.markAlive()
-      window.p2pApi.videoCmd('play')
+      videoBus.videoCmd('play')
     } else if (msg.t === 'pause') {
       if (this.hostNotReady) return
       // pause 消息无 at：暂停时不做位置推算，基准位置即房主暂停点
       this.lastSnapshot = { position: msg.position, playing: false, at: Date.now() }
       this.markAlive()
-      window.p2pApi.videoCmd('pause')
+      videoBus.videoCmd('pause')
     } else if (msg.t === 'seek') {
       this.markAlive()
       this.lastSeekAt = Date.now()
@@ -222,7 +223,7 @@ export class FollowerSync {
       // 先更新基准再下发，避免同轮 followTimer 按旧位置反向校正
       this.lastSnapshot = { position: msg.position, playing: msg.playing, at: msg.at }
       // 成员跳到目标进度（即便房主仍在加载），加载完成后与房主位置一致
-      window.p2pApi.videoCmd('seek', msg.position)
+      videoBus.videoCmd('seek', msg.position)
       // 房主拖进度后仍在缓冲：成员停住等 ready，禁止起播（成员先加载完也不抢跑）
       if (msg.ready === false) {
         if (!this.hostNotReady) {
@@ -230,7 +231,7 @@ export class FollowerSync {
           this.notReadyCount = 0
           p2pLog('host seek not ready, freeze follower')
         }
-        window.p2pApi.videoCmd('pause')
+        videoBus.videoCmd('pause')
         return
       }
       // 冻结中收到已就绪的 seek：解除冻结并按 playing 对齐
@@ -238,7 +239,7 @@ export class FollowerSync {
         this.hostNotReady = false
         this.notReadyCount = 0
       }
-      if (msg.playing) window.p2pApi.videoCmd('play')
+      if (msg.playing) videoBus.videoCmd('play')
     }
   }
 
@@ -249,7 +250,7 @@ export class FollowerSync {
       this.connectionLost = false
       // 断线期间已解除守卫：重连后重新挂上，避免成员本地操作与同步指令互抢
       if (this.c.role === 'follower' && this.c.syncTabId != null) {
-        void window.p2pApi.setSyncTab(this.c.syncTabId, true)
+        void videoBus.setSyncTab(this.c.syncTabId, true)
       }
       this.c.onConnectionRestored?.()
     }
@@ -269,7 +270,7 @@ export class FollowerSync {
     // 同步结束：清空地址纠正基准，下次同步从全新序列开始
     this.sourceCorrection = { target: '', attempts: 0, lastAt: 0 }
     // 先按旧 id 解除跟随守卫，再清空指针：同步已结束，成员可关闭该页签
-    if (this.c.syncTabId != null) void window.p2pApi.setSyncTab(this.c.syncTabId, false)
+    if (this.c.syncTabId != null) void videoBus.setSyncTab(this.c.syncTabId, false)
     this.c.syncTabId = null
     this.c.onSyncUnlocked?.()
   }
@@ -284,7 +285,7 @@ export class FollowerSync {
     p2pLog('release local control', reason)
     this.syncPaused = false
     this.unlockSyncTab(reason)
-    void window.p2pApi.videoCmd('pause')
+    void videoBus.videoCmd('pause')
   }
 
   /** 房主变更通知（收到 hostChange）：重置同步基准与断线状态，等待新房主心跳重建 */
@@ -357,7 +358,7 @@ export class FollowerSync {
         this.c.onConnectionLost?.()
         return
       }
-      const st = await window.p2pApi.videoStatus().catch(() => null)
+      const st = await videoBus.videoStatus().catch(() => null)
       // 向房主上报本机缓冲就绪态（房主「等待成员预加载」的决策依据；
       // 冻结/暂停同步期间也要上报——冻结期正是成员在缓冲的时刻）
       this.reportBufferState(st)
@@ -371,11 +372,11 @@ export class FollowerSync {
       // 播放状态优先对齐：房主在播而本地暂停（或反之）直接下发，位置校正留到下一轮
       const pb = decidePlayback(this.lastSnapshot.playing, st.paused)
       if (pb !== 'none') {
-        await window.p2pApi.videoCmd(pb)
+        await videoBus.videoCmd(pb)
         // 暂停兜底：立即复查；player API 空转/按钮未跟上时再补一发（仍播才点）
         if (pb === 'pause') {
-          const st2 = await window.p2pApi.videoStatus()
-          if (st2?.hasVideo && !st2.paused) await window.p2pApi.videoCmd('pause')
+          const st2 = await videoBus.videoStatus()
+          if (st2?.hasVideo && !st2.paused) await videoBus.videoCmd('pause')
         }
         return
       }
@@ -386,7 +387,7 @@ export class FollowerSync {
       const c = decideCorrection(target, st.position)
       if (c.kind === 'seek') {
         this.lastSeekAt = Date.now()
-        await window.p2pApi.videoCmd('seek', c.position)
+        await videoBus.videoCmd('seek', c.position)
       }
     }, 2000)
   }
@@ -419,7 +420,7 @@ export class FollowerSync {
   startReadyWatch(): void {
     if (this.c.role !== 'follower' || this.readyTimer !== null) return
     this.readyTimer = window.setInterval(() => {
-      void window.p2pApi
+      void videoBus
         .videoStatus()
         .then((st) => {
           this.reportBufferState(st)
@@ -451,7 +452,7 @@ export class FollowerSync {
     }
     let st: (VideoSnapshot & { pageUrl: string; hasVideo: boolean }) | null = null
     try {
-      st = await window.p2pApi.videoStatus()
+      st = await videoBus.videoStatus()
     } catch {
       return
     }
@@ -474,9 +475,9 @@ export class FollowerSync {
       : this.lastSnapshot.position
     p2pLog('follower stalled, reload and realign', { pos: st.position, target })
     try {
-      await window.p2pApi.videoCmd('reload')
-      await window.p2pApi.videoCmd('seek', target)
-      if (this.lastSnapshot.playing) await window.p2pApi.videoCmd('play')
+      await videoBus.videoCmd('reload')
+      await videoBus.videoCmd('seek', target)
+      if (this.lastSnapshot.playing) await videoBus.videoCmd('play')
     } catch {
       // 同步页签可能已关闭
     }
@@ -532,11 +533,11 @@ export class FollowerSync {
       if (url && !this.bridgeReady) {
         this.bridgeReady = await this.waitForBridge(BRIDGE_WAIT_MS)
         if (this.bridgeReady) {
-          await window.p2pApi.inject(true)
+          await videoBus.injectSync(true)
           // 初次对齐同样进入 seek 宽限期，避免跟随循环在其缓冲期间重复 seek
           this.lastSeekAt = Date.now()
-          await window.p2pApi.videoCmd('seek', s.position)
-          await window.p2pApi.videoCmd(s.playing ? 'play' : 'pause')
+          await videoBus.videoCmd('seek', s.position)
+          await videoBus.videoCmd(s.playing ? 'play' : 'pause')
         } else {
           // 超时未就绪：保留 bridgeReady=false，下一轮心跳重试（页面过慢/桥未装上时兜底）
           p2pLog('bridge wait timeout', { url, position: s.position, playing: s.playing })
@@ -545,18 +546,18 @@ export class FollowerSync {
         // 冻结恢复/房主加载完成：先 seek 到权威进度，再对齐播放（否则可能先播在旧位置）
         if (resyncSeek) {
           this.lastSeekAt = Date.now()
-          await window.p2pApi.videoCmd('seek', s.position)
+          await videoBus.videoCmd('seek', s.position)
         }
         // 桥已就绪：每次心跳立即对齐播放状态，不再只依赖 2s 周期的 followTimer 兜底
-        const st = await window.p2pApi.videoStatus()
+        const st = await videoBus.videoStatus()
         if (st?.hasVideo) {
           const pb = decidePlayback(s.playing, st.paused)
           if (pb !== 'none') {
-            await window.p2pApi.videoCmd(pb)
+            await videoBus.videoCmd(pb)
             // 暂停兜底：与 follow 循环一致，未停住立即再试一次
             if (pb === 'pause') {
-              const st2 = await window.p2pApi.videoStatus()
-              if (st2?.hasVideo && !st2.paused) await window.p2pApi.videoCmd('pause')
+              const st2 = await videoBus.videoStatus()
+              if (st2?.hasVideo && !st2.paused) await videoBus.videoCmd('pause')
             }
           }
         }
@@ -575,7 +576,7 @@ export class FollowerSync {
   private async correctSourceDrift(target: string): Promise<void> {
     const tabId = this.c.syncTabId
     if (tabId == null) return
-    const st = await window.p2pApi.videoStatus().catch(() => null)
+    const st = await videoBus.videoStatus().catch(() => null)
     const current = st?.pageUrl ?? ''
     const decision = decideSourceCorrection({
       current,
@@ -607,7 +608,7 @@ export class FollowerSync {
   private async waitForBridge(timeoutMs: number): Promise<boolean> {
     const deadline = Date.now() + timeoutMs
     while (Date.now() < deadline) {
-      const st = await window.p2pApi.videoStatus()
+      const st = await videoBus.videoStatus()
       if (st?.hasVideo) return true
       await new Promise((r) => setTimeout(r, 300))
     }

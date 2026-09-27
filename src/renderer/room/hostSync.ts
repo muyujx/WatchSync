@@ -11,6 +11,8 @@
 import type { RoomHandle } from '../../core/room'
 import type { SyncMsg } from '../../core/protocol'
 import { p2pLog } from '../../core/log'
+import { notify } from '../notify'
+import * as videoBus from '../videoBus'
 import type { HostFileEntry } from './relayPrefetch'
 import {
   AUTO_ACTION_QUIET_MS,
@@ -130,7 +132,7 @@ export class HostSync {
     if (this.draining) return
     this.draining = true
     try {
-      for (const ev of await window.p2pApi.drainEvents()) {
+      for (const ev of await videoBus.drainEvents()) {
         if (ev.ev === 'play') {
           // 自动续播（超时/看门狗）的事件回声：不参与保持判定，否则续播会立刻重新触发
           // 「等待成员预加载」形成 hold↔看门狗无限震荡
@@ -148,7 +150,7 @@ export class HostSync {
           }
           this.c.room()?.broadcast({ t: 'pause', position: ev.position })
         } else if (ev.ev === 'seek') {
-          const st = await window.p2pApi.videoStatus()
+          const st = await videoBus.videoStatus()
           this.c.room()?.broadcast({
             t: 'seek',
             position: ev.position,
@@ -199,7 +201,7 @@ export class HostSync {
     }
     let st: (VideoSnapshot & { pageUrl: string; hasVideo: boolean }) | null = null
     try {
-      st = await window.p2pApi.videoStatus()
+      st = await videoBus.videoStatus()
     } catch {
       return
     }
@@ -227,12 +229,12 @@ export class HostSync {
     this.autoActionAt = Date.now()
     try {
       if (kick >= 2) {
-        await window.p2pApi.videoCmd('reload')
-        await window.p2pApi.videoCmd('seek', pos)
-        if (wasPlaying) await window.p2pApi.videoCmd('play')
+        await videoBus.videoCmd('reload')
+        await videoBus.videoCmd('seek', pos)
+        if (wasPlaying) await videoBus.videoCmd('play')
       } else {
         // 首拍原地 seek：重建请求即可自愈，代价最小
-        await window.p2pApi.videoCmd('seek', pos)
+        await videoBus.videoCmd('seek', pos)
       }
     } catch {
       // 同步页签可能已关闭
@@ -241,7 +243,7 @@ export class HostSync {
 
   /** 房主：广播全量状态（url 取视频页实时地址，覆盖 SPA 站内跳转/切换剧集） */
   sendState(): void {
-    window.p2pApi.videoStatus().then((st) => {
+    videoBus.videoStatus().then((st) => {
       const room = this.c.room()
       if (!room) return
       // 地址优先取视频页实时 pageUrl（含无视频/加载中的换页），退回 UI 地址栏输入值（空串让成员等待）
@@ -286,7 +288,7 @@ export class HostSync {
     if (!this.c.shareFileId || !this.c.hostFiles.has(this.c.shareFileId)) return
     let st: (VideoSnapshot & { pageUrl: string; hasVideo: boolean }) | null = null
     try {
-      st = await window.p2pApi.videoStatus()
+      st = await videoBus.videoStatus()
     } catch {
       return
     }
@@ -296,8 +298,8 @@ export class HostSync {
     this.holdingForMembers = true
     this.holdStartedAt = Date.now()
     p2pLog('hold for member preload', reason, { peers: this.c.peers.size })
-    window.p2pApi.notify('已暂停，等待成员预加载…')
-    window.p2pApi.videoCmd('pause')
+    notify('已暂停，等待成员预加载…')
+    videoBus.videoCmd('pause')
     const deadline = Date.now() + MEMBER_WAIT_TIMEOUT_MS
     this.holdTimer = window.setInterval(() => {
       if (this.c.peers.size === 0 || this.membersAllReady() || Date.now() >= deadline) {
@@ -311,11 +313,11 @@ export class HostSync {
     this.clearHoldTimer()
     this.holdingForMembers = false
     p2pLog('hold finished', { timedOut })
-    window.p2pApi.notify(timedOut ? '等待成员预加载超时，继续播放' : '成员已就绪，继续播放')
+    notify(timedOut ? '等待成员预加载超时，继续播放' : '成员已就绪，继续播放')
     // 续播的 play 回声不触发新一轮保持（否则超时→续播→重等会无限震荡）
     this.autoActionAt = Date.now()
-    void window.p2pApi.videoStatus().then((s) => {
-      if (s?.hasVideo && s.paused) window.p2pApi.videoCmd('play')
+    void videoBus.videoStatus().then((s) => {
+      if (s?.hasVideo && s.paused) videoBus.videoCmd('play')
     })
   }
 

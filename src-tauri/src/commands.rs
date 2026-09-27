@@ -5,11 +5,12 @@
 //! 避免在 IPC 消息处理器中同步创建/操作 WebView2 触发消息重入死锁。
 
 use tauri::AppHandle;
+use tauri_plugin_clipboard_manager::ClipboardExt;
 
 use crate::history;
 use crate::settings::{self, Settings};
 use crate::state::state;
-use crate::{tabs, toast};
+use crate::tabs;
 
 /// 打开视频页：tab_id 缺省新建页签（自动激活），指定则在该页签内导航；返回页签 id。
 #[tauri::command]
@@ -77,10 +78,29 @@ pub async fn set_video_visible(app: AppHandle, visible: bool) {
     tabs::set_visible(&app, visible);
 }
 
-/// 弹出全局提示条
+/// UI 壳上报页签内容区留白（布局唯一权威在 UI；Rust 按当前窗口尺寸套用）
 #[tauri::command]
-pub async fn notify(app: AppHandle, text: String) {
-    toast::show(&app, &text, 3000);
+pub async fn set_tab_insets(app: AppHandle, top: f64, bottom: f64) {
+    tabs::set_tab_insets(&app, top, bottom);
+}
+
+/// UI 壳上报本地媒体播放 tick（Vue 页签无桥，播放历史由 UI 侧适配器上报；
+/// 仅 http(s) 地址入账，与桥 tick 的 history 行为一致）
+#[tauri::command]
+pub async fn media_tick(
+    app: AppHandle,
+    title: String,
+    url: String,
+    status: Option<crate::state::BridgeStatus>,
+) {
+    history::on_tick(&app, &title, &url, status.as_ref(), None);
+}
+
+/// 向激活网页页签下发提示文本（网页页签盖住 UI 壳，Toast 须由页面内的
+/// 注入脚本渲染；纯信息传递，页面侧 UI 见 tabs::INJECT_TMPL 的 __p2pToast）
+#[tauri::command]
+pub async fn page_toast(app: AppHandle, text: String) {
+    tabs::page_toast(&app, &text);
 }
 
 /// 读取用户设置
@@ -138,10 +158,10 @@ pub async fn win_control(app: AppHandle, action: String) {
     }
 }
 
-/// 写剪贴板
+/// 写剪贴板（委托 clipboard-manager 插件）
 #[tauri::command]
 pub async fn copy_text(app: AppHandle, text: String) {
-    toast::copy_text(&app, &text);
+    let _ = app.clipboard().write_text(&text);
 }
 
 /// 打开微软商店产品页（缺失视频编解码器的引导安装）。

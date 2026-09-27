@@ -6,6 +6,7 @@
 import { ref, type Ref } from 'vue'
 import type { TabInfo } from '../components/TabStrip.vue'
 import type { HistoryRecord } from '../../core/history'
+import * as videoBus from '../videoBus'
 
 /** 续播依赖的页签编排函数（由 App 提供，语义与常规导航一致） */
 export interface HistoryResumeDeps {
@@ -72,11 +73,11 @@ export function useHistoryResume(deps: HistoryResumeDeps) {
     for (let i = 0; i < 60; i++) {
       await new Promise((res) => setTimeout(res, 500))
       if (token !== resumeToken || deps.activeTabId.value !== tabId) return
-      const s = await window.p2pApi.tabStatus(tabId)
+      const s = await videoBus.tabStatus(tabId)
       // seek 前复核：IPC 在途期间可能被新续播覆盖/切走页签
       if (token !== resumeToken || deps.activeTabId.value !== tabId) return
       if (s && s.duration > 0) {
-        await window.p2pApi.seekTab(tabId, r.position)
+        await videoBus.seekTab(tabId, r.position)
         return
       }
     }

@@ -1,6 +1,7 @@
 /**
  * 底部共享条（composable）：共享模式/共享源名称/传输速率的展示逻辑，
- * 「共享给成员」按钮行为，以及共享源页签的展示名覆盖（tabTitleOf）。
+ * 手动重发进度共享（联调钩子入口），以及共享源页签的展示名覆盖（tabTitleOf）。
+ * 底部条只在本地视频播放页挂载（App.vue 按 streamBarVisible v-if），故这里无网页页分支。
  */
 import { computed, onMounted, onUnmounted, ref, type Ref } from 'vue'
 import { isLoopbackMediaUrl } from '../../core/mediaSource'
@@ -13,16 +14,12 @@ export interface UseShareBarDeps {
   controller: RoomController
   roomId: Ref<string>
   isHost: Ref<boolean>
-  /** 同步目标页签（「共享给成员」缺省目标） */
+  /** 同步目标页签（手动重发进度共享与成员文件流页签命名的缺省目标） */
   syncTabId: Ref<number | null>
-  /** 当前激活页签（「共享给成员」兜底目标） */
+  /** 当前激活页签（手动重发进度共享的兜底目标） */
   activeTabId: Ref<number | null>
   /** 房主直接推流页签（其展示名套用共享源名称） */
   relayTabId: Ref<number | null>
-  /** 激活页签是否为本地文件播放页（决定共享条模式） */
-  onLocalFilePage: Ref<boolean>
-  /** 激活页签是否为本机回环媒体页（推流回放/成员收流） */
-  onLoopbackMediaPage: Ref<boolean>
   /** 网页视频共享特性（重发进度共享） */
   webShare: WebShareFeature
   /** 是否正在发送整份副本（进度联动） */
@@ -64,17 +61,13 @@ export function useShareBar(deps: UseShareBarDeps) {
   const shareModeR = ref<typeof controller.shareMode>(controller.shareMode)
 
   /**
-   * 底部条展示的共享模式。
-   * 房主：本地文件状态只在本地播放页显示；推流回放页（回环媒体页）显示推流状态；网页页只在 url 共享时显示。
-   * 成员：只在收流页（file 共享模式）显示状态与加载速度，其余页面留白。
+   * 底部条展示的共享模式。组件只在本地视频播放页挂载（本地文件页/回环媒体页），
+   * 这些页面只可能处于「无损文件流」共享（本地分发、网页推流、成员收流同为 file 模式），
+   * url 模式（原画直链）只存在于网页页签、不会到达这里。
    */
-  const shareBarMode = computed<typeof controller.shareMode | 'none'>(() => {
-    if (!deps.roomId.value) return 'none'
-    if (deps.onLoopbackMediaPage.value) return shareModeR.value === 'file' ? 'file' : 'none'
-    if (!deps.isHost.value) return 'none'
-    if (shareModeR.value === 'file' && !deps.onLocalFilePage.value) return 'none'
-    return shareModeR.value
-  })
+  const shareBarMode = computed<'file' | 'none'>(() =>
+    deps.roomId.value && shareModeR.value === 'file' ? 'file' : 'none',
+  )
 
   /** 速度显示每秒刷新（SpeedMeter 是滑窗计算，非响应式；仅在房间里才有意义） */
   const speedTick = ref(0)
@@ -119,7 +112,10 @@ export function useShareBar(deps: UseShareBarDeps) {
     }
   }
 
-  /** 底部条「共享给成员」：按当前同步页签重发进度共享（本地文件页不显示该按钮，保留兜底） */
+  /**
+   * 手动重发进度共享（原底部条「共享给成员」按钮行为；按钮已随底部条收敛为本地视频页而移除，
+   * 此入口保留给联调钩子 __p2pE2e.shareWeb）：按当前同步页签强制重发一次进度共享。
+   */
   function onShareWeb(): void {
     const id = deps.syncTabId.value ?? deps.activeTabId.value
     if (id == null) {

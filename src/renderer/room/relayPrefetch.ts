@@ -18,6 +18,7 @@ import {
 import { readRemoteChunk, streamRemoteRange } from '../remoteMedia'
 import { SpeedMeter } from '../../core/speed'
 import { p2pLog } from '../../core/log'
+import * as videoBus from '../videoBus'
 import type { MediaStreamReceiver } from '../mediaStream'
 import type { Role } from './constants'
 
@@ -266,7 +267,7 @@ export class RelayPrefetch {
     const info = this.c.hostFiles.get(fileId)
     if (!info) return null
     try {
-      const st = await window.p2pApi.videoStatus()
+      const st = await videoBus.videoStatus()
       const dur = st?.duration ?? 0
       if (!st?.hasVideo || dur <= 0) return null
       return (st.position / dur) * info.size
@@ -287,7 +288,7 @@ export class RelayPrefetch {
     const info = this.c.hostFiles.get(fileId)
     if (!info) return null
     try {
-      const st = await window.p2pApi.videoStatus()
+      const st = await videoBus.videoStatus()
       const dur = st?.duration ?? 0
       if (!st?.hasVideo || dur <= 0) return null
       return aheadLimitBytes(info.size, dur, RELAY_AHEAD_SECONDS)

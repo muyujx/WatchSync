@@ -1,6 +1,6 @@
 <!--
   应用顶部栏（固定 chrome）：标签行 + 工具栏（导航 + 地址栏 + 房间操作 + 播放记录/设置）。
-  从 App.vue 抽离，保持高度与 Rust tabs::CHROME_TOP（36+44=80px）一致。
+  从 App.vue 抽离；实际高度由 UI 测量后经 setTabInsets 上报给 Rust（布局唯一权威在 UI）。
   纯展示/转发：状态由 App 持有，交互通过事件上报。
 -->
 <script setup lang="ts">
