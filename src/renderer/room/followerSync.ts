@@ -4,7 +4,7 @@
  * 职责：
  * - 应用房主播放指令（state/play/pause/seek）：含来源过滤、暂停同步短路、
  *   房主未就绪（readyState<2）冻结门控
- * - 校准循环 start（2s 对表：断线判定/播放状态对齐/位置偏差 seek）+ 独立停滞看门狗
+ * - 校准循环 start（2s 对表：断线判定/播放状态对齐/位置偏差 seek）
  * - 就绪上报（mready：变化即报 + 400ms 起播快报 + 周期保鲜）
  * - 观看源地址漂移自愈（correctSourceDrift）与桥就绪等待（waitForBridge）
  * - 暂停/恢复同步（pauseSync/resumeSync）与同步页签解锁（unlockSyncTab）
@@ -19,7 +19,6 @@ import type { MediaStreamReceiver } from '../mediaStream'
 import {
   BRIDGE_WAIT_MS,
   HOST_SEEK_FAST_WINDOW_MS,
-  HOST_STALL_RESEEK_MS,
   MEMBER_REPORT_INTERVAL_MS,
   NOT_READY_CONFIRMATIONS,
   SEEK_GRACE_MS,
@@ -45,7 +44,7 @@ export interface FollowerSyncCtx {
   readonly shareMode: ShareMode
   /** 当前共享媒体 ID（file 模式） */
   readonly shareFileId: string
-  /** 是否已与房主建立数据连接（看门狗/就绪上报的前置条件） */
+  /** 是否已与房主建立数据连接（就绪上报的前置条件） */
   readonly connected: boolean
   /** 本机渐进媒体源（file 模式取本地副本 URL） */
   readonly media: MediaStreamReceiver
@@ -93,11 +92,6 @@ export class FollowerSync {
   /** 最近一次上报的就绪态与时间（变化即报 + 周期保鲜） */
   private lastReadyReported: boolean | null = null
   private lastReadySentAt = 0
-  /** 停滞看门狗定时器（1s 观测播放位置进展；成员侧独立计时） */
-  private stallTimer: number | null = null
-  /** 看门狗观测：最近一次播放位置、该位置首次出现的时间 */
-  private stallPos = -1
-  private stallSince = 0
 
   constructor(private c: FollowerSyncCtx) {}
 
@@ -312,19 +306,13 @@ export class FollowerSync {
     this.lastReadySentAt = 0
   }
 
-  /** 停止全部成员侧定时器（校准循环/快速就绪上报/停滞看门狗；幂等） */
+  /** 停止全部成员侧定时器（校准循环/快速就绪上报；幂等） */
   stop(): void {
     if (this.followTimer) {
       clearInterval(this.followTimer)
       this.followTimer = null
     }
     this.clearReadyWatch()
-    if (this.stallTimer) {
-      clearInterval(this.stallTimer)
-      this.stallTimer = null
-    }
-    this.stallPos = -1
-    this.stallSince = 0
   }
 
   /** 完整重置（加入/离开房间时调用）：停止定时器并清空全部成员侧状态（含桥/漂移纠正） */
@@ -337,18 +325,9 @@ export class FollowerSync {
     this.sourceCorrection = { target: '', attempts: 0, lastAt: 0 }
   }
 
-  /** 启动停滞看门狗（幂等） */
-  private ensureStallTimer(): void {
-    if (this.stallTimer) return
-    this.stallTimer = window.setInterval(() => {
-      void this.followerStallWatchdog()
-    }, 1000)
-  }
-
-  /** 成员：开启校准循环（每 2s 对表，超过阈值 seek）+ 就绪上报 + 停滞看门狗 */
+  /** 成员：开启校准循环（每 2s 对表，超过阈值 seek）+ 就绪上报 */
   start(): void {
     if (this.followTimer) return
-    this.ensureStallTimer()
     this.followTimer = window.setInterval(async () => {
       // 断线看门狗：曾与房主建立同步后长时间无心跳 → 判定连接断开并交还本地控制权
       if (!this.connectionLost && isConnectionLost(this.lastStateAt, Date.now(), STATE_TIMEOUT_MS)) {
@@ -435,52 +414,6 @@ export class FollowerSync {
     if (this.readyTimer === null) return
     clearInterval(this.readyTimer)
     this.readyTimer = null
-  }
-
-  /**
-   * 成员停滞看门狗：元素因等待数据超时（媒体服务回 503）进入 error 态后，
-   * follow 循环的 readyState<2 跳过逻辑会让它永远停摆（解冻后的 seek 对 error
-   * 元素无效）。房主已就绪而本机位置持续无进展时，reload 重建资源管线再按
-   * 房主基准对齐——数据通常已在房主推送下落盘，重建后立即从本机副本续播。
-   */
-  private async followerStallWatchdog(): Promise<void> {
-    // 房主未就绪冻结/暂停同步/尚无基准：不动作（冻结期停滞是设计内等待）
-    if (this.c.role !== 'follower' || !this.c.connected || this.hostNotReady || this.syncPaused || !this.lastSnapshot) {
-      this.stallPos = -1
-      this.stallSince = 0
-      return
-    }
-    let st: (VideoSnapshot & { pageUrl: string; hasVideo: boolean }) | null = null
-    try {
-      st = await videoBus.videoStatus()
-    } catch {
-      return
-    }
-    if (!st?.hasVideo || st.readyState >= 2) {
-      this.stallPos = -1
-      this.stallSince = 0
-      return
-    }
-    const now = Date.now()
-    if (st.position !== this.stallPos) {
-      this.stallPos = st.position
-      this.stallSince = now
-      return
-    }
-    if (!this.stallSince) this.stallSince = now
-    if (now - this.stallSince < HOST_STALL_RESEEK_MS) return
-    this.stallSince = now
-    const target = this.lastSnapshot.playing
-      ? computeTargetPosition(this.lastSnapshot, now)
-      : this.lastSnapshot.position
-    p2pLog('follower stalled, reload and realign', { pos: st.position, target })
-    try {
-      await videoBus.videoCmd('reload')
-      await videoBus.videoCmd('seek', target)
-      if (this.lastSnapshot.playing) await videoBus.videoCmd('play')
-    } catch {
-      // 同步页签可能已关闭
-    }
   }
 
   /**

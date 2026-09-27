@@ -5,7 +5,6 @@
  * - 周期心跳 sendState（2s 全量对表兜底：地址同步/新成员对齐/存活判定）
  * - 事件推送消费（本机 play/pause/seek 发生即广播：web 页签经 Rust sync-events 推送、
  *   Vue 本地播放面由 videoBus 直推，无轮询）
- * - 停滞看门狗 hostStallWatchdog（播放位置无进展时原地重 seek / reload 自愈）
  * - 「等待成员预加载」hold（发现成员缺口时暂停自己，全员就绪或超时后统一续播）
  * - 成员就绪表 peerReady（mready 上报的新鲜度维护）
  */
@@ -17,7 +16,6 @@ import * as videoBus from '../videoBus'
 import type { HostFileEntry } from './relayPrefetch'
 import {
   AUTO_ACTION_QUIET_MS,
-  HOST_STALL_RESEEK_MS,
   MEMBER_READY_FRESH_MS,
   MEMBER_WAIT_TIMEOUT_MS,
   SELF_ACTION_WINDOW_MS,
@@ -31,7 +29,7 @@ export interface HostSyncCtx {
   room(): RoomHandle | null
   /** 成员 ID 集合（hold 判定/seek 失效遍历用） */
   readonly peers: Set<string>
-  /** 当前共享媒体 ID（file 模式/推流共享；hold 与看门狗仅文件/推流共享时生效） */
+  /** 当前共享媒体 ID（file 模式/推流共享；hold 仅文件/推流共享时生效） */
   readonly shareFileId: string
   /** 当前共享模式（sendState 心跳携带） */
   readonly shareMode: 'url' | 'file'
@@ -50,31 +48,24 @@ export class HostSync {
   private pollTimer: number | null = null
   /** 事件处理链（批间串行化：seek 分支内 await 查询状态，防两批交错乱序执行） */
   private processing: Promise<void> = Promise.resolve()
-  /** 停滞看门狗定时器（1s 观测播放位置进展；房主侧独立计时） */
-  private stallTimer: number | null = null
-  /** 看门狗观测：最近一次播放位置、该位置首次出现的时间、同段停滞内已重试次数 */
-  private stallPos = -1
-  private stallSince = 0
-  private stallKicks = 0
   /** 成员缓冲就绪上报（peerId → { ready, at }），驱动「等待成员预加载」 */
   private peerReady = new Map<string, { ready: boolean; at: number }>()
   /** 是否正为成员预加载保持暂停 */
   private holdingForMembers = false
   private holdTimer: number | null = null
   private holdStartedAt = 0
-  /** 最近一次自动动作（超时续播/看门狗 rekick）时刻，其事件回声不触发保持逻辑 */
+  /** 最近一次自动动作（超时续播）时刻，其事件回声不触发保持逻辑 */
   private autoActionAt = 0
 
   constructor(private c: HostSyncCtx) {}
 
-  /** 房主：开启周期心跳（2s 全量对表兜底）+ 订阅事件推送（操作即时广播）+ 停滞看门狗 */
+  /** 房主：开启周期心跳（2s 全量对表兜底）+ 订阅事件推送（操作即时广播） */
   start(): void {
     this.stop()
     // 状态心跳：全量快照兜底，负责地址同步、新成员对齐与存活判定
     this.pollTimer = window.setInterval(() => this.sendState(), 2000)
     // 事件即推即播：订阅同步页签视频事件（web 页签 Rust sync-events 推送、本地播放面直推），无轮询
     videoBus.setSyncEventsHandler(this.onEvents)
-    this.ensureStallTimer()
   }
 
   /** 停止房主侧全部轮询与保持状态（角色切换/离开房间前调用；幂等） */
@@ -84,13 +75,6 @@ export class HostSync {
       this.pollTimer = null
     }
     videoBus.setSyncEventsHandler(null)
-    if (this.stallTimer) {
-      clearInterval(this.stallTimer)
-      this.stallTimer = null
-    }
-    this.stallPos = -1
-    this.stallSince = 0
-    this.stallKicks = 0
     this.clearHoldTimer()
     this.holdingForMembers = false
   }
@@ -110,14 +94,6 @@ export class HostSync {
     this.peerReady.set(peerId, { ready, at: Date.now() })
   }
 
-  /** 启动停滞看门狗（幂等） */
-  private ensureStallTimer(): void {
-    if (this.stallTimer) return
-    this.stallTimer = window.setInterval(() => {
-      void this.hostStallWatchdog()
-    }, 1000)
-  }
-
   /** 房主：接收同步页签推送的本机视频事件（追加到处理链尾，批间保序执行） */
   private readonly onEvents = (events: Array<{ ev: string; position: number; paused: boolean }>): void => {
     if (!events.length) return
@@ -131,8 +107,8 @@ export class HostSync {
   private async processEvents(events: Array<{ ev: string; position: number; paused: boolean }>): Promise<void> {
     for (const ev of events) {
       if (ev.ev === 'play') {
-        // 自动续播（超时/看门狗）的事件回声：不参与保持判定，否则续播会立刻重新触发
-        // 「等待成员预加载」形成 hold↔看门狗无限震荡
+        // 自动续播（hold 超时）的事件回声：不参与保持判定，否则续播会立刻重新触发
+        // 「等待成员预加载」形成超时续播→hold 的无限震荡
         const autoEcho = Date.now() - this.autoActionAt < AUTO_ACTION_QUIET_MS
         // 等待期间用户自己按了播放：尊重用户意图，取消保持（成员自行追赶）
         if (!autoEcho && this.holdingForMembers && Date.now() - this.holdStartedAt > SELF_ACTION_WINDOW_MS) {
@@ -156,82 +132,15 @@ export class HostSync {
           // 拖进度时房主是否已缓冲就绪；false → 成员暂停等待，避免成员先加载完抢跑
           ready: Boolean(st?.hasVideo && st.readyState >= 2),
         })
-        // 看门狗原地重 seek 的事件回声：位置未变，失效/重等只会无限推迟就绪判定
-        if (Date.now() - this.autoActionAt >= AUTO_ACTION_QUIET_MS) {
-          // 成员数据落盘晚于房主：拖动后等成员预加载到位再继续同步。
-          // seek 使成员旧的就绪态全部失效——它们的「就绪」针对的是旧位置，
-          // 新目标要等成员 seek 后重新上报（slow 网成员会晚好几秒）
-          for (const p of this.c.peers) {
-            const r = this.peerReady.get(p)
-            if (r) r.ready = false
-          }
-          void this.maybeHoldForMembers('seek')
+        // 成员数据落盘晚于房主：拖动后等成员预加载到位再继续同步。
+        // seek 使成员旧的就绪态全部失效——它们的「就绪」针对的是旧位置，
+        // 新目标要等成员 seek 后重新上报（slow 网成员会晚好几秒）
+        for (const p of this.c.peers) {
+          const r = this.peerReady.get(p)
+          if (r) r.ready = false
         }
+        void this.maybeHoldForMembers('seek')
       }
-    }
-  }
-
-  /**
-   * 房主停滞看门狗：本机回放源（file/stream 共享）请求到未就绪区间时，播放可能停滞——
-   * 位置无进展且 readyState<2 持续超过阈值时原地重 seek 一次重建媒体栈请求（实测有效），
-   * 同时保持缺口需求上报（mediaWanted → relayFetch）不中断。
-   * 连续两拍仍未恢复则视为元素已进入 error 态（如响应截断后 MEDIA_ERR_NETWORK，
-   * 此时 seek 不再发请求）：reload 重建资源管线再对齐位置，播放意图不变。
-   */
-  private async hostStallWatchdog(): Promise<void> {
-    if (this.c.role !== 'host' || !this.c.shareFileId || !this.c.hostFiles.has(this.c.shareFileId)) {
-      this.stallPos = -1
-      this.stallSince = 0
-      this.stallKicks = 0
-      return
-    }
-    // 等待成员预加载的暂停是有意的：位置停滞属预期，不看重门狗，否则其
-    // reload+play 升级会在成员就绪前强行续播，破坏 hold 语义
-    if (this.holdingForMembers) {
-      this.stallPos = -1
-      this.stallSince = 0
-      this.stallKicks = 0
-      return
-    }
-    let st: (VideoSnapshot & { pageUrl: string; hasVideo: boolean }) | null = null
-    try {
-      st = await videoBus.videoStatus()
-    } catch {
-      return
-    }
-    // 位置在动或已缓冲就绪：无停滞
-    if (!st?.hasVideo || st.readyState >= 2) {
-      this.stallPos = -1
-      this.stallSince = 0
-      this.stallKicks = 0
-      return
-    }
-    const now = Date.now()
-    if (st.position !== this.stallPos) {
-      this.stallPos = st.position
-      this.stallSince = now
-      return
-    }
-    if (!this.stallSince) this.stallSince = now
-    if (now - this.stallSince < HOST_STALL_RESEEK_MS) return
-    this.stallSince = now
-    const kick = ++this.stallKicks
-    const pos = st.position
-    const wasPlaying = !st.paused
-    p2pLog('host stalled, rekick media stack', { pos, kick, wasPlaying })
-    // rekick 产生的 play/seek 回声不触发「等待成员预加载」（自愈动作，非用户意图）
-    this.autoActionAt = Date.now()
-    try {
-      if (kick >= 2) {
-        await videoBus.videoCmd('reload')
-        await videoBus.videoCmd('seek', pos)
-        if (wasPlaying) await videoBus.videoCmd('play')
-      } else {
-        // 首拍原地 seek：重建请求即可自愈，代价最小
-        await videoBus.videoCmd('seek', pos)
-      }
-    } catch {
-      // 同步页签可能已关闭
     }
   }
 
@@ -302,7 +211,7 @@ export class HostSync {
     }, 500)
   }
 
-  /** 结束成员等待：统一续播（超时也继续，成员端自愈路径兜底） */
+  /** 结束成员等待：统一续播（超时也继续，成员靠校准循环追平） */
   private finishHold(timedOut: boolean): void {
     this.clearHoldTimer()
     this.holdingForMembers = false

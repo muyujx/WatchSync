@@ -33,10 +33,7 @@ export const SEEK_NOT_READY_CONFIRMATIONS = 1
 /** 房主 seek 后多少 ms 内的未就绪心跳用更快确认（覆盖 state 心跳间隔） */
 export const HOST_SEEK_FAST_WINDOW_MS = 6000
 
-/** 房主播放停滞自愈阈值（ms）：位置无进展且未就绪持续该时长 → 原地重 seek 重建媒体栈请求 */
-export const HOST_STALL_RESEEK_MS = 8000
-
-/** 房主等待成员预加载的超时（ms）：超时后不再等，直接继续（成员端自愈路径兜底） */
+/** 房主等待成员预加载的超时（ms）：超时后不再等，直接继续（成员靠校准循环追平） */
 export const MEMBER_WAIT_TIMEOUT_MS = 30000
 
 /** 预读跟随停滞判定（ms）：成员缺口落在预读跨度内时跟随预读增量转发，
@@ -53,8 +50,8 @@ export const MEMBER_REPORT_INTERVAL_MS = 5000
 export const SELF_ACTION_WINDOW_MS = 1500
 
 /**
- * 房主自动动作回声静默窗（ms）：超时续播、看门狗 rekick 等自动 play/seek 产生的事件
- * 回声在窗口内不触发「等待成员预加载」/取消判定——否则超时续播→play 事件→重新 hold→
- * 再超时会与停滞看门狗形成无限震荡，永远到不了真正的用户意图分支
+ * 房主自动动作回声静默窗（ms）：超时续播等自动 play 产生的事件回声在窗口内
+ * 不触发「等待成员预加载」/取消判定——否则超时续播→play 事件→重新 hold→再超时
+ * 会无限震荡，永远到不了真正的用户意图分支
  */
 export const AUTO_ACTION_QUIET_MS = 3000
