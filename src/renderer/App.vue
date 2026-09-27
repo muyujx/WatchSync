@@ -662,12 +662,13 @@ controller.onShareChanged = () => {
 }
 
 /**
- * 打开本地视频：系统对话框选文件 → 本机 file:// 播放；若在房且是房主则立即推流同步（成员马上能看）。
- * 返回值：Promise。
+ * 打开本地视频并作为本机播放页签；在房且为房主时立即作为共享源同步给成员（成员马上能看）。
+ * 关键：必须把该本地页签切为同步目标。否则房主心跳仍读取旧同步页签（如网页）的播放进度与
+ * 就绪态，成员虽被 fileOffer 切到无损文件流，却会因「房主未就绪」被冻结——表现为打开本地
+ * 视频后成员不同步/停在原地。
+ * 参数：info 本地文件元数据。返回值：本地视频页签 ID。
  */
-async function onPickLocal(): Promise<void> {
-  const info = await window.p2pApi.pickVideoFile()
-  if (!info) return
+async function openSharedLocalFile(info: { path: string; url: string; name: string; size: number }): Promise<number> {
   localFile.value = info
   videoUrl.value = info.url
   const id = await window.p2pApi.openVideo(info.url)
@@ -675,10 +676,27 @@ async function onPickLocal(): Promise<void> {
   await activateTab(id)
   await afterTabNavigated(id, info.url)
   if (roomId.value && isHost.value) {
+    // 先切同步目标（清空 localFileId 以免 setSyncTab 的本地文件分支重复补发要约），
+    // 再广播文件要约：成员收到时房主已从本地页签上报进度
+    if (syncTabId.value !== id) {
+      localFileId.value = ''
+      await setSyncTab(id)
+    }
     // 本地源走无损文件流：成员边收边播（画质/音轨与源文件一致），不再抓屏推流
     await controller.hostShareLocalFile(info, { asSource: true })
     localFileId.value = controller.shareFileId
   }
+  return id
+}
+
+/**
+ * 打开本地视频：系统对话框选文件 → 本机 file:// 播放；若在房且是房主则立即推流同步（成员马上能看）。
+ * 返回值：Promise。
+ */
+async function onPickLocal(): Promise<void> {
+  const info = await window.p2pApi.pickVideoFile()
+  if (!info) return
+  await openSharedLocalFile(info)
 }
 
 /**
@@ -884,35 +902,48 @@ function normUrlKey(u: string): string {
 
 // 成员端：房主切换同步页签 → 复用相同地址页签或新建，置顶第一位并自动跳转显示。
 // 同样适用于首次心跳建立同步（syncTabId 为空时 applySnapshot 也会走这里）
+/** 进行中的同步页签导航（同一 URL 去重）：fileOffer 的 attach 回填与心跳 applySnapshot
+ *  可能并发触发首次 onboard，二者都在 await 前读到 syncTabId 为空，会各开一个页签（成员端重复页签） */
+let syncNavInFlight: { url: string; promise: Promise<void> } | null = null
 controller.onSyncTab = async (url) => {
-  // 成员：始终复用「当前同步页签」原地导航——观看源在 网页/直链/推流 之间切换也只保留一个页签；
-  // 尚无同步页签时先按地址复用同址页签，仍无则新建。
-  const cur =
-    syncTabId.value != null ? tabs.value.find((x) => x.id === syncTabId.value) ?? null : null
-  const key = normUrlKey(url)
-  let t = cur ?? tabs.value.find((x) => normUrlKey(x.url) === key) ?? null
-  if (!t) {
-    const id = await window.p2pApi.openVideo(url)
-    t = ensureTab(id, url)!
-  } else if (t.url !== url) {
-    // 复用页签但记录地址与房主不一致：原地导航纠正到房主精确地址（不新建页签）
-    await window.p2pApi.openVideo(url, t.id)
-    t.url = url
+  if (syncNavInFlight?.url === url) return syncNavInFlight.promise
+  const run = async (): Promise<void> => {
+    // 成员：始终复用「当前同步页签」原地导航——观看源在 网页/直链/推流 之间切换也只保留一个页签；
+    // 尚无同步页签时先按地址复用同址页签，仍无则新建。
+    const cur =
+      syncTabId.value != null ? tabs.value.find((x) => x.id === syncTabId.value) ?? null : null
+    const key = normUrlKey(url)
+    let t = cur ?? tabs.value.find((x) => normUrlKey(x.url) === key) ?? null
+    if (!t) {
+      const id = await window.p2pApi.openVideo(url)
+      t = ensureTab(id, url)!
+    } else if (t.url !== url) {
+      // 复用页签但记录地址与房主不一致：原地导航纠正到房主精确地址（不新建页签）
+      await window.p2pApi.openVideo(url, t.id)
+      t.url = url
+    }
+    // 同步页签恒排第一位（成员端固定规则）。
+    // 注意必须按 id 去重而非引用比较：ensureTab 新建分支返回 raw 对象，
+    // 而数组元素经 Vue reactive 包装为 Proxy，`x !== t` 恒真会导致同一页签写入两次（重复标签）
+    tabs.value = [t, ...tabs.value.filter((x) => x.id !== t.id)]
+    syncTabId.value = t.id
+    controller.syncTabId = t.id
+    controller.videoUrl = url
+    // 记录本次同步导航基准：pageUrl 需一拍 tick 才落地，避免被下一拍心跳误判为地址漂移而重复导航
+    controller.noteSourceNavigated(url)
+    // 迁移跟随守卫到新同步页签（旧同步页签由主进程自动解除），并跳转显示。
+    // 守卫只该给成员（跟随端不采集事件）：房主若被挂守卫，本机 play/pause/seek
+    // 会被 harness push() 静默丢弃，事件级同步（含「等待成员预加载」）整体失效
+    await window.p2pApi.setSyncTab(t.id, tabRole.value === 'follower')
+    await activateTab(t.id)
   }
-  // 同步页签恒排第一位（成员端固定规则）。
-  // 注意必须按 id 去重而非引用比较：ensureTab 新建分支返回 raw 对象，
-  // 而数组元素经 Vue reactive 包装为 Proxy，`x !== t` 恒真会导致同一页签写入两次（重复标签）
-  tabs.value = [t, ...tabs.value.filter((x) => x.id !== t.id)]
-  syncTabId.value = t.id
-  controller.syncTabId = t.id
-  controller.videoUrl = url
-  // 记录本次同步导航基准：pageUrl 需一拍 tick 才落地，避免被下一拍心跳误判为地址漂移而重复导航
-  controller.noteSourceNavigated(url)
-  // 迁移跟随守卫到新同步页签（旧同步页签由主进程自动解除），并跳转显示。
-  // 守卫只该给成员（跟随端不采集事件）：房主若被挂守卫，本机 play/pause/seek
-  // 会被 harness push() 静默丢弃，事件级同步（含「等待成员预加载」）整体失效
-  await window.p2pApi.setSyncTab(t.id, tabRole.value === 'follower')
-  await activateTab(t.id)
+  const promise = run()
+  syncNavInFlight = { url, promise }
+  try {
+    await promise
+  } finally {
+    if (syncNavInFlight?.promise === promise) syncNavInFlight = null
+  }
 }
 
 // 房主端：直接推流需要展示「本机回放」页签 → 新建或复用推流页签并跳转。
@@ -1175,13 +1206,8 @@ onMounted(() => {
       const name = path.split(/[\\/]/).pop() || 'video.mp4'
       const size = await window.p2pApi.fileSize(path)
       const url = path.startsWith('file:') ? path : 'file:///' + path.replace(/\\/g, '/')
-      // 房主本机也打开该文件进视频页签，便于同步进度
-      const id = await window.p2pApi.openVideo(url)
-      ensureTab(id, url)
-      await activateTab(id)
-      await afterTabNavigated(id, url)
-      // E2E 文件分发路径：以文件为观看源（成员收完后本地播放）
-      await controller.hostShareLocalFile({ path, url, name, size }, { asSource: true })
+      // 与「打开本地视频」同一条路径：房主本机开页签 → 切同步目标 → 以文件为观看源分发
+      await openSharedLocalFile({ path, url, name, size })
       return { path, url, name, size }
     },
     shareUrl: () => buildShareUrl(roomId.value),

@@ -1691,6 +1691,8 @@ export class RoomController {
     if (!asSource) {
       void this.sendFileTo(fileId).catch((e) => p2pLog('send file failed', e))
     }
+    // 与直链/中继共享一致：立即广播一次状态，避免成员等下一拍心跳才开始对齐
+    this.sendState()
     this.onShareChanged?.()
   }
 
