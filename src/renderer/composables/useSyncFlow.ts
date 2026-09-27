@@ -72,7 +72,7 @@ export function useSyncFlow(deps: UseSyncFlowDeps) {
       controller.broadcastSyncTab(url)
       // 从推流/其它源切回本地文件页签：重新把该文件作为观看源广播（fileId 不同才重发，避免开文件时重复要约）
       if (deps.localFile.value && deps.localFileId.value && controller.shareFileId !== deps.localFileId.value) {
-        await controller.hostShareLocalFile(deps.localFile.value, { asSource: true })
+        await controller.hostShareLocalFile(deps.localFile.value)
         deps.localFileId.value = controller.shareFileId
       }
     } else if (isLoopbackMediaUrl(url)) {

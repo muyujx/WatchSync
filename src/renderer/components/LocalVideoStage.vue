@@ -23,13 +23,9 @@ const props = defineProps<{
   active: boolean
 }>()
 
-const emit = defineEmits<{
-  (e: 'prefetch'): void
-}>()
-
 /** 底部共享条状态（模块级单例，App 装配时已 initShareBar） */
 const sb = useShareBar()
-/** 本页签是否本地文件页：filePath/预取按钮只显示在本地文件页（条仅激活页签可见，等价按激活页判定） */
+/** 本页签是否本地文件页：filePath 只显示在本地文件页（条仅激活页签可见，等价按激活页判定） */
 const isFilePage = computed(() => props.url.startsWith('file:'))
 
 const videoRef = ref<HTMLVideoElement | null>(null)
@@ -202,13 +198,10 @@ onUnmounted(() => {
     <ShareBar
       :share-mode="sb.shareMode"
       :share-name="sb.shareName"
-      :can-prefetch="isFilePage && sb.canPrefetch"
-      :prefetch-ratio="sb.copyRatio"
       :file-path="isFilePage ? sb.filePath : ''"
       :download-speed="sb.speeds.download"
       :upload-speed="sb.speeds.upload"
       :load-speed="sb.speeds.load"
-      @prefetch="emit('prefetch')"
     />
   </div>
 </template>

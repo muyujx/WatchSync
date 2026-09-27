@@ -1,5 +1,5 @@
 <!--
-  本地视频播放页操作区（视频下方）：观看源共享状态 + 预取操作。
+  本地视频播放页操作区（视频下方）：观看源共享状态。
   由 LocalVideoStage 内嵌渲染（每个本地媒体页签一份，随播放面 v-show 显隐），
   网页页签/主页不会出现。白底、无阴影，作为页面内容的一部分（不是独立白条）；
   无内容时只留空白底部（与白底播放页无缝）。高度 48px（styles/toolbar.css .streambar）。
@@ -14,10 +14,6 @@ const props = defineProps<{
   shareMode: 'file' | 'none'
   /** 当前共享展示名 */
   shareName: string
-  /** 房主且已选本地文件时显示「预取整份」 */
-  canPrefetch: boolean
-  /** 整份预取进度 0~1；<0 表示当前不在预取 */
-  prefetchRatio: number
   /** 房主本地文件的绝对路径（有此值时左下角直接显示路径，不再显示共享名） */
   filePath?: string
   /** 房主从视频源下载速率（字节/秒；<0 不显示——本地文件源无下载） */
@@ -26,10 +22,6 @@ const props = defineProps<{
   uploadSpeed?: number
   /** 成员从房主接收的加载速率（字节/秒；<0 不显示） */
   loadSpeed?: number
-}>()
-
-const emit = defineEmits<{
-  (e: 'prefetch'): void
 }>()
 
 const statusLabel = computed(() => {
@@ -48,12 +40,11 @@ const statusTitle = computed(() => {
   return '尚未共享观看源'
 })
 
-/** 有共享状态、速度或可操作按钮时渲染内容；否则底部只留空白（成员端不再出现无意义的「未共享」） */
+/** 有共享状态或速度时渲染内容；否则底部只留空白（成员端不再出现无意义的「未共享」） */
 const hasContent = computed(
   () =>
     !!props.filePath ||
     props.shareMode !== 'none' ||
-    props.canPrefetch ||
     (props.downloadSpeed ?? -1) >= 0 ||
     (props.uploadSpeed ?? -1) >= 0 ||
     (props.loadSpeed ?? -1) >= 0,
@@ -73,18 +64,7 @@ const hasContent = computed(
       <span v-if="(props.loadSpeed ?? -1) >= 0" class="stream-speed" title="从房主接收数据的加载速度">
         ↓ {{ formatSpeed(props.loadSpeed ?? 0) }}
       </span>
-      <div class="flex-spacer"></div>
-      <button
-        v-if="props.canPrefetch && props.prefetchRatio < 0"
-        class="m-btn"
-        title="把整份视频文件传给成员落盘（无损副本，耗时较长）"
-        @click="emit('prefetch')"
-      >
-        预取整份
-      </button>
-      <span v-else-if="props.canPrefetch" class="chip" title="整份副本传输进度">
-        副本 {{ Math.round(props.prefetchRatio * 100) }}%
-      </span>
     </template>
   </div>
 </template>
+

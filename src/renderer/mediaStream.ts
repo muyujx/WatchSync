@@ -169,7 +169,9 @@ export class MediaStreamReceiver {
     if (this.activeId !== fileId) return
     try {
       const raw = await window.p2pApi.mediaWanted(fileId)
-      const [, total] = await window.p2pApi.mediaProgress(fileId)
+      // 一次 mediaProgress 同时供缺口规划（total）与进度回调（have/total）——
+      // 原实现缺口规划查一遍、refreshRatio 再查一遍，热路径（200ms 一拍）IPC 凭空翻倍
+      const [have, total] = await window.p2pApi.mediaProgress(fileId)
       const size = total || Number.MAX_SAFE_INTEGER
       // 前读窗口 + 去重：同一缺口在未满足前不再重复请求（旧实现每 200ms 整段重发，~23 倍冗余）
       const planned = planRequests(
@@ -182,15 +184,14 @@ export class MediaStreamReceiver {
       )
       this.outstanding.set(fileId, planned.outstanding)
       if (planned.requests.length) this.deps.onNeed(fileId, planned.requests)
-      await this.refreshRatio(fileId)
+      this.reportRatio(fileId, have, total)
     } catch (e) {
       this.deps.log?.('pump media failed', e)
     }
   }
 
-  /** 重新读取就绪进度并按阈值回调 */
-  private async refreshRatio(fileId: string): Promise<void> {
-    const [have, total] = await window.p2pApi.mediaProgress(fileId)
+  /** 按就绪进度计算接收比例并按阈值回调（不发 IPC；数据由 pump 的 mediaProgress 提供一次复用） */
+  private reportRatio(fileId: string, have: number, total: number): void {
     if (total <= 0) return
     const ratio = Math.min(1, have / total)
     const prev = this.ratios.get(fileId) ?? -1

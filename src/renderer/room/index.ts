@@ -293,22 +293,20 @@ export class RoomController {
       p2pLog('peerJoin', id)
       // 新成员加入：向其自我介绍（对方也会介绍自己）
       this.announceProfile()
-      // 房主：已有待分发/分发中的文件时对新成员定向补要约+补发（中途加入不丢片；与观看模式无关）
+      // 房主：已有共享中的文件时对新成员定向补要约（中途加入不丢片；与观看模式无关）。
+      // 分发只有流式：成员建好本机媒体源后按缺口自行补拉，不整份推送
       if (this.role === 'host' && this.shareFileId) {
         const fid = this.shareFileId
         const meta = this.hostFiles.get(fid)
         if (meta) {
-          const streamMode = this.shareMode === 'file'
           this.roomHandle?.sendTo(id, {
             t: 'fileOffer',
             fileId: fid,
             name: this.shareName || 'video',
             size: meta.size,
             mime: 'video/mp4',
-            asSource: streamMode,
+            asSource: true,
           })
-          // 流式模式：新成员自行按缺口拉取；副本模式才整份补发
-          if (!streamMode) void this.files.sendFileTo(fid, id).catch((e) => p2pLog('resend file failed', e))
         }
       }
       // 直链共享（url 模式）展示名不再随心跳重复携带：新成员加入时定向补发一次同步页签信息
@@ -487,14 +485,13 @@ export class RoomController {
         this.shareFileId = msg.fileId ?? ''
         this.shareName = msg.name ?? ''
         this.onShareChanged?.()
-        // file 模式只认本地副本（避免跳到房主磁盘路径）；url 模式打开房主给的地址
+        // file 模式只认本地副本（避免跳到房主磁盘路径）；url 模式打开房主给的地址。
+        // 副本未就绪（fileOffer 的 attach 尚未完成）不发裸请求：整份补发已移除，
+        // attach 完成后本机媒体源就绪，播放器会按缺口自行补拉（fileNeed.ranges 定向房主）
         let navUrl = msg.url
         if (this.shareMode === 'file') {
           const localUrl = this.shareFileId ? this.media.urlFor(this.shareFileId) : undefined
-          if (!localUrl) {
-            if (this.shareFileId) this.roomHandle?.broadcast({ t: 'fileNeed', fileId: this.shareFileId })
-            return
-          }
+          if (!localUrl) return
           navUrl = localUrl
         }
         void this.onSyncTab?.(navUrl)
@@ -531,28 +528,10 @@ export class RoomController {
       })
       return
     }
-    // 文件传完：完成标志（渐进模式下源早已可播，这里仅补齐导航与进度）
-    if (msg.t === 'fileDone') {
-      if (this.role !== 'follower') return
-      const url = this.media.urlFor(msg.fileId)
-      if (!url) return
-      this.shareFileId = msg.fileId
-      if (this.shareMode === 'file') {
-        const changed = this.videoUrl !== url
-        this.videoUrl = url
-        if (changed) void this.onSyncTab?.(url)
-      }
-      this.onShareChanged?.()
-      return
-    }
-    // 成员要文件：流式模式按缺口定向补发；无缺口信息时整份补发
+    // 成员要文件：按缺口定向补发（fileNeed.ranges 必带，协议层已校验；整份补发已移除）
     if (msg.t === 'fileNeed') {
       if (this.role !== 'host') return
-      const info = this.hostFiles.get(msg.fileId)
-      if (msg.ranges?.length) void this.files.sendFileRanges(msg.fileId, peerId, msg.ranges)
-      // 远程中继源无缺口信息不整份补发：多为成员尚未完成 attach（fileOffer 流程会补上），
-      // 播放器就绪后会按缺口重新上报；整份直拉会白向源站+DC 灌整片流量
-      else if (!info?.remote) void this.files.sendFileTo(msg.fileId)
+      void this.files.sendFileRanges(msg.fileId, peerId, msg.ranges)
       return
     }
     // 房主解散指令：成员端先交还控制权再通知 UI 退出（否则守卫/旧快照会让本地暂停失效）
@@ -578,11 +557,13 @@ export class RoomController {
     this.follower.handleHostMsg(msg, peerId)
   }
 
-  /** 媒体缺口回调（mediaStream onNeed）：房主自己预读回源；成员转成 fileNeed 向房主补拉 */
+  /** 媒体缺口回调（mediaStream onNeed）：房主自己预读回源；成员转成 fileNeed 定向向房主补拉 */
   private handleMediaNeed(fileId: string, ranges: Array<[number, number]>): void {
     // 房主（远程中继源）：自己拉字节，同时喂本机播放与全体成员 —— 只向源站取一份
     if (this.hostFiles.has(fileId)) void this.relay.relayFetch(fileId, ranges)
-    else this.roomHandle?.broadcast({ t: 'fileNeed', fileId, ranges })
+    // 成员：定向发给房主（缺口上报是 200ms 轮询 + 5s 超时重发的流式消息，
+    // 房主身份尚未识别时本拍不发，下一拍再试即可，不做全员广播）
+    else if (this.hostPeerId) this.roomHandle?.sendTo(this.hostPeerId, { t: 'fileNeed', fileId, ranges })
   }
 
   /**
@@ -630,28 +611,11 @@ export class RoomController {
   }
 
   /**
-   * 房主：把本地文件完整副本分发给成员（委托 shareInit）。
-   * 参数：info 本地文件元数据（pick_video_file 返回）；
-   *       opts.asSource 是否以该文件为观看源（缺省否，仅后台传副本不打断推流）。
+   * 房主：把本地文件作为流式观看源共享给成员（委托 shareInit）。
+   * 参数：info 本地文件元数据（pick_video_file 返回）。
    */
-  hostShareLocalFile(
-    info: { path: string; url: string; name: string; size: number },
-    opts?: { asSource?: boolean },
-  ): Promise<void> {
-    return this.shareInit.hostShareLocalFile(info, opts)
-  }
-
-  /**
-   * 查询文件进度：房主查发送比例，成员查接收比例。
-   * 参数：fileId 媒体 ID。
-   * 返回值：0~1。
-   */
-  fileRatio(fileId: string): number {
-    const sent = this.files.sentRatio(fileId)
-    if (sent !== undefined) return sent
-    // 成员：以媒体服务实际就绪字节为准（重传不会重复计数）
-    const recv = this.media.ratioFor(fileId)
-    return recv >= 0 ? recv : 0
+  hostShareLocalFile(info: { path: string; url: string; name: string; size: number }): Promise<void> {
+    return this.shareInit.hostShareLocalFile(info)
   }
 
   /**

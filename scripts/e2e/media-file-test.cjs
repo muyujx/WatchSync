@@ -41,7 +41,7 @@ async function main() {
     const e = window.__p2pE2e
     if (!e) return { ok: false, reason: 'no-e2e' }
     await e.join(${JSON.stringify(host.link)})
-    // 等文件传输 + fileDone 打开本地副本
+    // 等成员建好本地副本媒体源并边收边播打开（流式：按缺口补拉，无 fileDone 完成标志）
     await new Promise((r) => setTimeout(r, 8000))
     return { ok: true, diag: await e.diag() }
   })()`)

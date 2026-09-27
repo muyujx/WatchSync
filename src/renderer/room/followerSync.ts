@@ -361,13 +361,10 @@ export class FollowerSync {
       if (this.c.shareMode === 'file') {
         const localUrl = this.c.shareFileId ? this.c.media.urlFor(this.c.shareFileId) : undefined
         if (!localUrl) {
-          // 缺副本则请求补发，待源就绪后再打开
-          if (this.c.shareFileId) {
-            this.c.room()?.broadcast({ t: 'fileNeed', fileId: this.c.shareFileId })
-            return
-          }
-          // 无观看源（房主已停共享）：解锁同步页签
-          this.unlockSyncTab('no file source')
+          // 副本未就绪（fileOffer 的 attach 尚未完成）：安静等待，不发裸请求——
+          // 整份补发已移除，attach 完成后本机媒体源就绪，播放器会按缺口自行补拉
+          // （fileNeed.ranges 定向房主）；无观看源（房主已停共享）解锁同步页签
+          if (!this.c.shareFileId) this.unlockSyncTab('no file source')
           return
         }
         url = localUrl

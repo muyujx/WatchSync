@@ -2,15 +2,17 @@
  * 房主端「文件分块收发」子系统。
  *
  * 职责：
- * - 发送（房主）：整份分发 sendFileTo、按成员缺口定向补发 sendFileRanges（盘上直发 /
- *   源站代拉后跟随转发）、带重试的可靠块发送 sendBlockReliable、发送进度与速率记账。
+ * - 发送（房主）：按成员缺口定向补发 sendFileRanges（盘上直发 / 源站代拉后跟随转发）、
+ *   带重试的可靠块发送 sendBlockReliable、发送速率记账。
  * - 接收（成员）：onFileChunk 落盘（含开发期限速）与接收速率记账。
  * 与 RelayPrefetch 的分工：源站拉取一律经 relay.ensureSourcePull（在途去重，每个字节
  * 只向源站取一次），这里只负责「从本机副本盘上直发」与「跟随落盘增量转发」。
+ * 分发只有流式一种：成员按播放器缺口上报（fileNeed.ranges，定向房主），按需补拉，
+ * 不再存在「整份副本预取」路径。
  */
 import type { FileChunkMeta, RoomHandle } from '../../core/room'
-import { sendFileChunks, FILE_CHUNK_SIZE } from '../../core/fileShare'
-import { readRemoteChunk, streamRemoteRange } from '../remoteMedia'
+import { FILE_CHUNK_SIZE } from '../../core/fileShare'
+import { streamRemoteRange } from '../remoteMedia'
 import { splitRangeByReady } from '../../core/mediaSource'
 import { SpeedMeter } from '../../core/speed'
 import { throttleTakeP2p } from '../devThrottle'
@@ -39,8 +41,6 @@ export interface FileTransferCtx {
 }
 
 export class FileTransfer {
-  /** 房主：fileId → 已发送比例 0~1（「整份预取」进度用） */
-  private sendRatios = new Map<string, number>()
   /** 房主：peerId → 发送中的区间（避免同一区间重复补发） */
   private inflightRanges = new Map<string, Set<string>>()
   /** 房主向成员发送速率（滑动窗口字节记账；数据停流后自动衰减到 0，无需重置） */
@@ -61,62 +61,6 @@ export class FileTransfer {
   /** 成员：从房主接收速率（字节/秒） */
   get loadSpeed(): number {
     return this.loadMeter.bytesPerSecond()
-  }
-
-  /** 房主：fileId → 已发送比例（未发送过返回 undefined） */
-  sentRatio(fileId: string): number | undefined {
-    return this.sendRatios.get(fileId)
-  }
-
-  /** 房主：按数据源类型读取一块（本地路径 / 远程直链） */
-  private async readSource(
-    info: { path?: string; remote?: string },
-    offset: number,
-    length: number,
-  ): Promise<ArrayBuffer | null> {
-    if (info.remote) return readRemoteChunk(info.remote, offset, length)
-    if (info.path) return window.p2pApi.readFileChunk(info.path, offset, length)
-    return null
-  }
-
-  /**
-   * 房主：向指定成员（或全员）分发文件块。
-   * 参数：fileId 媒体 ID；target 缺省全员。
-   * 返回值：Promise 发送完成。
-   */
-  async sendFileTo(fileId: string, target?: string): Promise<void> {
-    const info = this.c.hostFiles.get(fileId)
-    const room = this.c.room()
-    if (!info || !room) return
-    await sendFileChunks({
-      fileId,
-      size: info.size,
-      read: async (offset, length) => {
-        const buf = await this.readSource(info, offset, length)
-        return buf ?? new ArrayBuffer(0)
-      },
-      send: async (data, meta, t) => {
-        const to = t ?? target
-        // 定向副本发送必须完整：截断的块是成员副本上的永久缺洞（播放花屏/中断），
-        // 重试耗尽直接中止本轮分发（fileDone 不会发出，成员不会拿到残缺副本）
-        if (to && !(await this.sendBlockReliable(room, data, meta, to))) throw new Error(`send block failed @${meta.offset}`)
-        if (!to) {
-          if (import.meta.env.DEV) await throttleTakeP2p(data.byteLength)
-          const delivered = await room.sendBinary(data, meta)
-          if (delivered) this.pushMeter.add(data.byteLength)
-        }
-      },
-      target,
-      onProgress: (ratio) => {
-        // 定向补发不覆盖全员发送进度，避免 UI 回跳
-        if (target) return
-        this.sendRatios.set(fileId, ratio)
-        this.c.onShareChanged?.()
-      },
-    })
-    if (!target) this.sendRatios.set(fileId, 1)
-    room.broadcast({ t: 'fileDone', fileId })
-    this.c.onShareChanged?.()
   }
 
   /**

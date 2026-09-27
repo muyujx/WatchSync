@@ -82,7 +82,6 @@
     :tab-id                      页签 ID（videoBus 登记 / 同步链路路由用）
     :url                         页签地址（播放源）
     :active                      是否激活（非激活 v-show 隐藏但视频照常播）
-    @prefetch                    房主在底部条点「预取整份」→ 开始整份副本传输
     每个页签常驻一个实例；底部共享条内嵌在播放面里（状态取 useShareBar 单例，随页签显隐）。
   -->
   <div class="stage-layer" :style="{ top: stageTop }">
@@ -92,7 +91,6 @@
       :tab-id="t.id"
       :url="t.url"
       :active="t.id === activeTabId"
-      @prefetch="onSendFileCopy"
     />
   </div>
 
@@ -295,8 +293,7 @@ const { settingsOpen, myName, openSettings, closeSettings, saveSettings } = useS
 })
 
 /** ===== 本地文件 / 共享 ===== */
-const { localFile, localFileId, fileCopying, fileCopyRatio, openSharedLocalFile, onPickLocal, onSendFileCopy } =
-  useLocalFileShare({
+const { localFile, localFileId, openSharedLocalFile, onPickLocal } = useLocalFileShare({
     controller,
     videoUrl,
     roomId,
@@ -363,8 +360,6 @@ const { tabTitleOf, onShareWeb } = initShareBar({
   relayTabId,
   webShare,
   localFile,
-  fileCopying,
-  fileCopyRatio,
 })
 
 /** ===== 房间会话（建房/加入/退出/成员面板） ===== */

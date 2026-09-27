@@ -1,6 +1,6 @@
 /**
  * 底部共享条状态（模块级单例，模式同 useRelays）：RoomController 共享态的响应式投影——
- * 共享模式/共享源名称/传输速率/整份副本进度。App 装配时 initShareBar 一次
+ * 共享模式/共享源名称/传输速率。App 装配时 initShareBar 一次
  * （订阅 controller.onShareChanged、启动速率刷新定时器，并导出 tabTitleOf/onShareWeb）；
  * LocalVideoStage 经 useShareBar 读取同一份状态内嵌渲染 ShareBar，状态不再经 App 逐层透传。
  * 底部条内嵌在本地视频播放面，只在本地视频播放页出现，故这里无网页页分支。
@@ -24,10 +24,6 @@ export interface ShareBarState {
   shareName: string
   /** 房主最近选择的本地文件绝对路径（''=无；仅本地文件页显示，播放面按自身地址判定） */
   filePath: string
-  /** 房主且已选本地文件（预取入口；播放面还需自身是本地文件页才显示按钮） */
-  canPrefetch: boolean
-  /** 整份副本传输进度 0~1；<0 表示当前不在预取 */
-  copyRatio: number
   /**
    * 底部条速率（字节/秒；-1 = 不显示）。
    * 房主：下载速率仅网页视频推流时有（本地文件源无下载）；上传速率为发给成员的速率。
@@ -49,12 +45,8 @@ export interface ShareBarDeps {
   relayTabId: Ref<number | null>
   /** 网页视频共享特性（重发进度共享） */
   webShare: WebShareFeature
-  /** 房主最近选择的本地视频（filePath / canPrefetch 来源） */
+  /** 房主最近选择的本地视频（filePath 来源） */
   localFile: Ref<LocalFileInfo | null>
-  /** 是否正在发送整份副本（进度联动） */
-  fileCopying: Ref<boolean>
-  /** 整份副本传输进度 0~1 */
-  fileCopyRatio: Ref<number>
 }
 
 /** ===== 模块级单例 ===== */
@@ -112,10 +104,6 @@ export function initShareBar(deps: ShareBarDeps): {
 
   const filePath = computed(() => deps.localFile.value?.path ?? '')
 
-  const canPrefetch = computed(() => !!(deps.roomId.value && deps.isHost.value && deps.localFile.value))
-
-  const copyRatio = computed(() => (deps.fileCopying.value ? deps.fileCopyRatio.value : -1))
-
   const speeds = computed(() => {
     void speedTick.value
     if (!deps.roomId.value || shareMode.value === 'none') return { download: -1, upload: -1, load: -1 }
@@ -132,17 +120,9 @@ export function initShareBar(deps: ShareBarDeps): {
   controller.onShareChanged = () => {
     shareModeR.value = controller.shareMode
     shareName.value = controller.shareName
-    // 整份副本传输进度（房主侧按已登记的 shareFileId 查询）
-    if (deps.fileCopying.value && controller.shareFileId) {
-      deps.fileCopyRatio.value = controller.fileRatio(controller.shareFileId)
-      if (deps.fileCopyRatio.value >= 1) {
-        deps.fileCopying.value = false
-        notify('完整副本已发送完成')
-      }
-    }
   }
 
-  state = reactive({ shareMode, shareName, filePath, canPrefetch, copyRatio, speeds })
+  state = reactive({ shareMode, shareName, filePath, speeds })
 
   /**
    * 手动重发进度共享（原底部条「共享给成员」按钮行为；按钮已随底部条收敛为本地视频页而移除，

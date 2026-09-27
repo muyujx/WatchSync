@@ -41,12 +41,10 @@ export type SyncMsg =
   | { t: 'syncTab'; url: string; mode?: ShareMode; fileId?: string; name?: string }
   /** 房主结束共享/关闭同步页签（房主→全员）：成员解锁同步页签，可自由关闭 */
   | { t: 'syncEnd' }
-  /** 文件分发要约（房主→全员）：宣布即将推送完整媒体文件（可选无损路径） */
+  /** 文件分发要约（房主→全员）：宣布流式共享该媒体（成员边收边播，按缺口补拉） */
   | { t: 'fileOffer'; fileId: string; name: string; size: number; mime: string; asSource?: boolean }
-  /** 文件传输完成（房主→成员） */
-  | { t: 'fileDone'; fileId: string }
-  /** 成员请求补发文件：ranges 为 [起始, 结束) 字节区间（流式模式按需拉取；省略=请求整份） */
-  | { t: 'fileNeed'; fileId: string; ranges?: Array<[number, number]> }
+  /** 成员缺口补拉请求（成员→房主）：ranges 为 [起始, 结束) 块对齐字节区间（必带，只拉真正缺的字节） */
+  | { t: 'fileNeed'; fileId: string; ranges: Array<[number, number]> }
   /** 就绪探询（房主→成员）：房主主动询问指定共享媒体的落盘/缓冲状态（判定在房主侧） */
   | { t: 'readyAsk'; fileId: string }
   /** 就绪应答（成员→房主）：原始状态数据，房主据此判定加载是否足够、是否放行/自动开播；
@@ -86,7 +84,6 @@ const NUMERIC_FIELDS: Record<SyncMsg['t'], string[]> = {
   syncTab: [],
   syncEnd: [],
   fileOffer: ['size'],
-  fileDone: [],
   fileNeed: [],
   readyAsk: [],
   readyState: ['readyBytes', 'totalBytes', 'duration', 'position', 'readyState'],
@@ -134,13 +131,14 @@ export function decodeMsg(raw: string): SyncMsg | null {
       if (typeof o.size !== 'number' || !Number.isFinite(o.size) || o.size < 0) return null
       if (o.asSource !== undefined && typeof o.asSource !== 'boolean') return null
     }
-    if ((t === 'fileDone' || t === 'fileNeed' || t === 'readyAsk') && typeof o.fileId !== 'string') return null
+    if ((t === 'fileNeed' || t === 'readyAsk') && typeof o.fileId !== 'string') return null
     if (t === 'readyState') {
       if (typeof o.fileId !== 'string') return null
       if (typeof o.paused !== 'boolean' || typeof o.syncPaused !== 'boolean') return null
       if (o.bufferedEnd !== undefined && (typeof o.bufferedEnd !== 'number' || !Number.isFinite(o.bufferedEnd))) return null
     }
-    if (t === 'fileNeed' && o.ranges !== undefined) {
+    // fileNeed 的 ranges 必填：缺口补拉是它唯一的语义（整份补发已移除），缺失即非法消息
+    if (t === 'fileNeed') {
       if (!Array.isArray(o.ranges)) return null
       for (const r of o.ranges) {
         if (!Array.isArray(r) || r.length !== 2) return null

@@ -23,8 +23,6 @@ describe('protocol encode/decode', () => {
       { t: 'syncEnd' },
       { t: 'fileOffer', fileId: 'f1', name: 'a.mp4', size: 100, mime: 'video/mp4' },
       { t: 'fileOffer', fileId: 'f2', name: 'b.mp4', size: 200, mime: 'video/mp4', asSource: true },
-      { t: 'fileDone', fileId: 'f1' },
-      { t: 'fileNeed', fileId: 'f1' },
       { t: 'fileNeed', fileId: 'f1', ranges: [[0, 65536], [131072, 262144]] },
       { t: 'readyAsk', fileId: 'f1' },
       { t: 'readyState', fileId: 'f1', readyBytes: 1, totalBytes: 2, duration: 3, position: 0.5, readyState: 4, paused: true, syncPaused: false },
@@ -54,6 +52,10 @@ describe('protocol encode/decode', () => {
     expect(decodeMsg(JSON.stringify({ t: 'readyState', fileId: 'f', readyBytes: 1, totalBytes: 2, duration: 3, position: 0, readyState: 4 }))).toBeNull() // 缺 paused/syncPaused
     expect(decodeMsg(JSON.stringify({ t: 'readyState', fileId: 'f', readyBytes: 1, totalBytes: 2, duration: 3, position: 0, readyState: 4, paused: true, syncPaused: 'no' }))).toBeNull() // syncPaused 非布尔
     expect(decodeMsg(JSON.stringify({ t: 'readyState', fileId: 'f', readyBytes: 1, totalBytes: 2, duration: 3, position: 0, readyState: 4, paused: true, syncPaused: false, bufferedEnd: 'x' }))).toBeNull() // bufferedEnd 非数值
+    expect(decodeMsg(JSON.stringify({ t: 'fileNeed', fileId: 'f1' }))).toBeNull() // fileNeed 缺 ranges（整份补发已移除，ranges 必带）
+    expect(decodeMsg(JSON.stringify({ t: 'fileNeed', fileId: 'f1', ranges: 'x' }))).toBeNull() // ranges 非数组
+    expect(decodeMsg(JSON.stringify({ t: 'fileNeed', fileId: 'f1', ranges: [[1]] }))).toBeNull() // 区间元素形状非法
+    expect(decodeMsg(JSON.stringify({ t: 'fileDone', fileId: 'f1' }))).toBeNull() // fileDone 已从协议移除
   })
   it('旧版本 state/seek 消息（无 ready 字段）仍可解码，向后兼容', () => {
     const legacyState = JSON.stringify({ t: 'state', url: 'https://a.com', position: 1, playing: true, at: 1 })

@@ -1,11 +1,10 @@
 /**
- * 本地视频共享（composable）：选文件本机播放、在房为房主时立即推流同步给成员、
- * 以及「整份副本预取」（可选无损路径，不打断推流）。
+ * 本地视频共享（composable）：选文件本机播放、在房为房主时立即流式共享给成员。
+ * 分发只有流式一种：成员边收边播，按播放器缺口向房主按需补拉。
  */
 import { ref, type Ref } from 'vue'
 import type { RoomController } from '../room'
 import type { TabInfo } from '../components/TabStrip.vue'
-import { notify } from '../notify'
 
 /** 本地文件元数据（pick_video_file 返回） */
 export interface LocalFileInfo {
@@ -35,14 +34,10 @@ export interface LocalFileShareDeps {
 
 export function useLocalFileShare(deps: LocalFileShareDeps) {
   const { controller } = deps
-  /** 最近一次选择的本地视频（供「预取整份」） */
+  /** 最近一次选择的本地视频（供回选本地文件页签时判断是否需要重新广播） */
   const localFile = ref<LocalFileInfo | null>(null)
   /** 本地文件作为观看源时的共享 ID（回选本地文件页签时判断是否需要重新广播） */
   const localFileId = ref('')
-  /** 是否正在发送整份副本 */
-  const fileCopying = ref(false)
-  /** 整份副本传输进度 0~1 */
-  const fileCopyRatio = ref(0)
 
   /**
    * 打开本地视频并作为本机播放页签；在房且为房主时立即作为共享源同步给成员（成员马上能看）。
@@ -66,7 +61,7 @@ export function useLocalFileShare(deps: LocalFileShareDeps) {
         await deps.setSyncTab(id)
       }
       // 本地源走无损文件流：成员边收边播（画质/音轨与源文件一致），不再抓屏推流
-      await controller.hostShareLocalFile(info, { asSource: true })
+      await controller.hostShareLocalFile(info)
       localFileId.value = controller.shareFileId
     }
     return id
@@ -82,18 +77,5 @@ export function useLocalFileShare(deps: LocalFileShareDeps) {
     await openSharedLocalFile(info)
   }
 
-  /**
-   * 房主：把完整本地文件副本发给成员（可选无损路径，不打断当前推流）。
-   * 返回值：Promise。
-   */
-  async function onSendFileCopy(): Promise<void> {
-    const info = localFile.value
-    if (!info || !deps.roomId.value || !deps.isHost.value) return
-    fileCopying.value = true
-    fileCopyRatio.value = 0
-    await controller.hostShareLocalFile(info)
-    notify('开始整份预取给成员')
-  }
-
-  return { localFile, localFileId, fileCopying, fileCopyRatio, openSharedLocalFile, onPickLocal, onSendFileCopy }
+  return { localFile, localFileId, openSharedLocalFile, onPickLocal }
 }

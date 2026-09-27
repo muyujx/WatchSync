@@ -4,7 +4,7 @@
  * 职责：三种观看源共享的发起与恢复——
  * - hostShareDirectUrl：原画直链共享（成员本机直接播，各端自行拉 CDN）
  * - hostShareRemote：网页视频「直接推流」（房主拉远程直链字节中继给成员落盘播放）
- * - hostShareLocalFile：本地文件分发（完整副本或作为观看源）
+ * - hostShareLocalFile：本地文件流式共享（成员边收边播，按缺口自行补拉）
  * - resyncRelay：回选推流页签时重新广播已建立的中继
  * 只写共享元数据（shareMode/shareFileId 等）与 hostFiles 登记，传输细节在
  * FileTransfer（成员补发）与 RelayPrefetch（源站预读）。
@@ -14,7 +14,6 @@ import type { RoomHandle } from '../../core/room'
 import { isLoopbackMediaUrl } from '../../core/mediaSource'
 import { newFileId } from '../../core/fileShare'
 import { probeRemoteMedia } from '../remoteMedia'
-import { p2pLog } from '../../core/log'
 import type { MediaStreamReceiver } from '../mediaStream'
 import type { HostFileEntry } from './relayPrefetch'
 import type { RelayPrefetch } from './relayPrefetch'
@@ -152,28 +151,18 @@ export class ShareInit {
   }
 
   /**
-   * 房主：把本地文件完整副本分发给成员（可选；默认本地视频走推流，此接口供「发送完整副本」）。
-   * 参数：info 本地文件元数据（pick_video_file 返回）；
-   *       opts.asSource 是否以该文件为观看源（成员收完后本地 file:// 播放；缺省否，仅后台传副本不打断推流）。
-   * 返回值：Promise 发起分发完成（传输在后台继续）。
+   * 房主：把本地文件作为流式观看源共享给成员——成员边收边播，按播放器缺口自行补拉。
+   * 参数：info 本地文件元数据（pick_video_file 返回）。
+   * 返回值：Promise 发起共享完成。
    */
-  async hostShareLocalFile(
-    info: { path: string; url: string; name: string; size: number },
-    opts?: { asSource?: boolean },
-  ): Promise<void> {
+  async hostShareLocalFile(info: { path: string; url: string; name: string; size: number }): Promise<void> {
     const fileId = newFileId()
     this.c.shareFileId = fileId
     this.c.shareName = info.name
     this.c.hostFiles.set(fileId, { path: info.path, size: info.size })
-    // 仅当以文件为观看源时切换模式；默认保持当前 shareMode（推流/网页）不打断成员画面
-    const asSource = !!opts?.asSource
-    if (asSource) this.c.shareMode = 'file'
+    this.c.shareMode = 'file'
     this.c.directShare = false
-    this.c.room()?.broadcast({ t: 'fileOffer', fileId, name: info.name, size: info.size, mime: 'video/mp4', asSource })
-    // 流式模式（asSource）：成员按缺口按需拉取，不盲目全量推送；副本模式才整份发
-    if (!asSource) {
-      void this.c.files.sendFileTo(fileId).catch((e) => p2pLog('send file failed', e))
-    }
+    this.c.room()?.broadcast({ t: 'fileOffer', fileId, name: info.name, size: info.size, mime: 'video/mp4', asSource: true })
     // 与直链/中继共享一致：立即广播一次状态，避免成员等下一拍心跳才开始对齐
     this.c.hostSync.sendState()
     this.c.onShareChanged?.()
