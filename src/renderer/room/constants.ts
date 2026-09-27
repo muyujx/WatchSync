@@ -35,13 +35,10 @@ export const RELAY_FOLLOW_STALL_MS = 15000
  *  （或整份落盘/缓冲到片尾）才算就绪，房主据此放行「等待成员预加载」。
  *  readyState>=2 只代表能解当前帧——刚开副本就误报就绪，房主直接续播会让成员几秒后
  *  数据耗尽卡住；且暂停期 Chromium 回收 media-server 播放面的 buffered 区间（恒空） */
-export const MEMBER_READY_BUFFER_AHEAD_S = 10
+export const MEMBER_READY_AHEAD_S = 10
 
-/** 成员就绪上报保鲜窗（ms）：超过该时长未刷新的上报视为过期（按未就绪处理） */
+/** 成员就绪应答保鲜窗（ms）：超过该时长未刷新的应答视为过期（按未就绪处理） */
 export const MEMBER_READY_FRESH_MS = 8000
-
-/** 成员就绪态周期重报间隔（ms）：无变化也重发，维持房主侧新鲜度 */
-export const MEMBER_REPORT_INTERVAL_MS = 5000
 
 /** 房主保持暂停的自身动作窗口（ms）：窗口内的 pause/play 事件是保持逻辑自己发起的，不算用户手动操作 */
 export const SELF_ACTION_WINDOW_MS = 1500

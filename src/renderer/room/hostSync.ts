@@ -6,7 +6,7 @@
  * - 事件推送消费（本机 play/pause/seek 发生即广播：web 页签经 Rust sync-events 推送、
  *   Vue 本地播放面由 videoBus 直推，无轮询）
  * - 「等待成员预加载」hold（发现成员缺口时暂停自己，全员就绪或超时后统一续播）
- * - 成员就绪表 peerReady（mready 上报的新鲜度维护）
+ * - 成员就绪探询（readyAsk 500ms 一问，readyState 收原始数据，是否足够由房主判定）
  */
 import type { RoomHandle } from '../../core/room'
 import type { SyncMsg } from '../../core/protocol'
@@ -16,11 +16,15 @@ import * as videoBus from '../videoBus'
 import type { HostFileEntry } from './relayPrefetch'
 import {
   AUTO_ACTION_QUIET_MS,
+  MEMBER_READY_AHEAD_S,
   MEMBER_READY_FRESH_MS,
   MEMBER_WAIT_TIMEOUT_MS,
   SELF_ACTION_WINDOW_MS,
   type Role,
 } from './constants'
+
+/** 成员就绪应答（readyState 消息） */
+type MemberReadyState = Extract<SyncMsg, { t: 'readyState' }>
 
 /** 房主端同步依赖的门面子集（由 RoomController 实现） */
 export interface HostSyncCtx {
@@ -46,24 +50,35 @@ export interface HostSyncCtx {
 export class HostSync {
   /** 状态心跳定时器（2s 全量快照兜底） */
   private pollTimer: number | null = null
+  /** 成员就绪探询定时器（500ms 一问；file/推流共享且有成员时才发） */
+  private probeTimer: number | null = null
   /** 事件处理链（批间串行化：seek 分支内 await 查询状态，防两批交错乱序执行） */
   private processing: Promise<void> = Promise.resolve()
-  /** 成员缓冲就绪上报（peerId → { ready, at }），驱动「等待成员预加载」 */
-  private peerReady = new Map<string, { ready: boolean; at: number }>()
+  /** 成员最近一次就绪应答（peerId → { 应答原文, 到达时间 }）；是否足够由 readyEnough 判定 */
+  private peerStates = new Map<string, { at: number; s: MemberReadyState }>()
   /** 是否正为成员预加载保持暂停 */
   private holdingForMembers = false
   private holdTimer: number | null = null
   private holdStartedAt = 0
-  /** 最近一次自动动作（超时续播）时刻，其事件回声不触发保持逻辑 */
+  /** 最近一次自动动作（超时续播/等待室自动开播）时刻，其事件回声不触发保持逻辑 */
   private autoActionAt = 0
+  /** 本共享是否已起播过（等待室判定：从未起播才允许「成员就绪自动开播」；用户主动暂停不抢播） */
+  private playedSinceShare = false
+  /** 已识别的共享媒体 id（换共享目标时重置等待室状态） */
+  private lastShareFileId = ''
 
   constructor(private c: HostSyncCtx) {}
 
   /** 房主：开启周期心跳（2s 全量对表兜底）+ 订阅事件推送（操作即时广播） */
   start(): void {
     this.stop()
+    // 等待室状态复位：新一次主持从「未起播」开始
+    this.playedSinceShare = false
+    this.lastShareFileId = this.c.shareFileId
     // 状态心跳：全量快照兜底，负责地址同步、新成员对齐与存活判定
     this.pollTimer = window.setInterval(() => this.sendState(), 2000)
+    // 就绪探询：500ms 一问（file/推流共享且有成员时才实际发出），应答喂给 hold/自动开播判定
+    this.probeTimer = window.setInterval(() => this.probeMembers(), 500)
     // 事件即推即播：订阅同步页签视频事件（web 页签 Rust sync-events 推送、本地播放面直推），无轮询
     videoBus.setSyncEventsHandler(this.onEvents)
   }
@@ -74,6 +89,10 @@ export class HostSync {
       clearInterval(this.pollTimer)
       this.pollTimer = null
     }
+    if (this.probeTimer) {
+      clearInterval(this.probeTimer)
+      this.probeTimer = null
+    }
     videoBus.setSyncEventsHandler(null)
     this.clearHoldTimer()
     this.holdingForMembers = false
@@ -81,17 +100,98 @@ export class HostSync {
 
   /** 清空成员就绪表（转让降级/离开房间时调用） */
   reset(): void {
-    this.peerReady.clear()
+    this.peerStates.clear()
   }
 
-  /** 成员离开时移除其就绪上报 */
+  /** 成员离开时移除其就绪应答 */
   forgetPeer(peerId: string): void {
-    this.peerReady.delete(peerId)
+    this.peerStates.delete(peerId)
   }
 
-  /** 成员缓冲就绪上报（mready 消息）：驱动「等待成员预加载」的保持/放行 */
-  notePeerReady(peerId: string, ready: boolean): void {
-    this.peerReady.set(peerId, { ready, at: Date.now() })
+  /**
+   * 房主：广播就绪探询。仅文件/推流共享需要（url 模式成员各自拉流，无数据依赖）；
+   * 无成员不问。应答见 noteReadyState。
+   */
+  private probeMembers(): void {
+    // 换共享目标：旧应答与「已起播」标记作废，重新等待全员就绪
+    if (this.c.shareFileId !== this.lastShareFileId) {
+      this.lastShareFileId = this.c.shareFileId
+      this.playedSinceShare = false
+      this.peerStates.clear()
+    }
+    const room = this.c.room()
+    if (!room || !this.c.shareFileId || !this.c.hostFiles.has(this.c.shareFileId)) return
+    if (this.c.peers.size === 0) return
+    room.broadcast({ t: 'readyAsk', fileId: this.c.shareFileId })
+  }
+
+  /**
+   * 房主：收成员就绪应答（readyState）。存原始数据，判定在使用点（readyEnough/membersAllReady）。
+   * fileId 与当前共享不符的应答直接丢弃（换共享后的迟到应答不污染新共享的判定）。
+   */
+  noteReadyState(peerId: string, s: MemberReadyState): void {
+    if (s.fileId !== this.c.shareFileId) return
+    this.peerStates.set(peerId, { at: Date.now(), s })
+    // 有成员从等不到数据到够播的转变：若房主从未起播，全员就绪即自动开播
+    void this.autoPlayWhenMembersReady()
+  }
+
+  /**
+   * 房主：单份成员应答是否足够开播。判定要素：
+   * - syncPaused：成员暂停同步自由观看，视为就绪（不拖住房主等待）
+   * - readyState>=2：元素当前帧可解；元素都没建好（0）时播了也白播
+   * - 元素缓冲：到片尾，或提前量达标（播放中 buffered 有效时最准）
+   * - 落盘字节折算：readyBytes/totalBytes × duration ≥ 提前量秒数，或整份落盘
+   *   （暂停期 Chromium 会回收 media-server 播放面的 buffered 区间（恒空），字节是等待期主判据）
+   */
+  private readyEnough(s: MemberReadyState): boolean {
+    if (s.syncPaused) return true
+    if (s.readyState < 2) return false
+    const end = s.bufferedEnd
+    if (end !== undefined) {
+      if (s.duration > 0 && end >= s.duration - 1) return true
+      if (end - s.position >= MEMBER_READY_AHEAD_S) return true
+    }
+    if (s.totalBytes <= 0 || s.duration <= 0) return false
+    if (s.readyBytes >= s.totalBytes) return true
+    return (s.readyBytes / s.totalBytes) * s.duration >= MEMBER_READY_AHEAD_S
+  }
+
+  /** 房主：全部成员是否都已就绪（应答在保鲜期内、fileId 匹配当前共享、判定足够） */
+  private membersAllReady(): boolean {
+    const now = Date.now()
+    for (const p of this.c.peers) {
+      const e = this.peerStates.get(p)
+      if (!e || now - e.at > MEMBER_READY_FRESH_MS) return false
+      if (e.s.fileId !== this.c.shareFileId || !this.readyEnough(e.s)) return false
+    }
+    return true
+  }
+
+  /**
+   * 等待室：房主共享后未起播、全员就绪 → 自动开播，成员随即跟随。
+   * 只覆盖「从未起播」的初始等待：起播后的等待由 hold（播放/拖动触发）负责；
+   * 用户播放过再暂停属于主动停下，成员就绪不抢播。
+   */
+  private async autoPlayWhenMembersReady(): Promise<void> {
+    if (this.holdingForMembers || this.playedSinceShare) return
+    // 仅文件/推流共享：url 模式成员各自拉流，无预加载等待语义
+    if (!this.c.shareFileId || !this.c.hostFiles.has(this.c.shareFileId)) return
+    if (this.c.peers.size === 0 || !this.membersAllReady()) return
+    let st: (VideoSnapshot & { pageUrl: string; hasVideo: boolean }) | null = null
+    try {
+      st = await videoBus.videoStatus()
+    } catch {
+      return
+    }
+    // 已在播/无视频不动作；异步窗口内状态可能已变，以读取结果为准
+    if (!st?.hasVideo || !st.paused) return
+    this.playedSinceShare = true
+    // 本次开播的事件回声不参与保持判定（全员已就绪，避免多余的 hold 检查）
+    this.autoActionAt = Date.now()
+    p2pLog('member ready, auto start playback')
+    notify('成员已就绪，自动开始播放')
+    videoBus.videoCmd('play')
   }
 
   /** 房主：接收同步页签推送的本机视频事件（追加到处理链尾，批间保序执行） */
@@ -107,6 +207,8 @@ export class HostSync {
   private async processEvents(events: Array<{ ev: string; position: number; paused: boolean }>): Promise<void> {
     for (const ev of events) {
       if (ev.ev === 'play' || ev.ev === 'playing') {
+        // 本共享已起播：等待室结束，此后成员就绪不再自动开播（用户主动暂停是意图，不抢播）
+        this.playedSinceShare = true
         // play=用户起播；playing=缓冲恢复。两者都广播 play：成员立即恢复播放。
         // 自动续播（hold 超时）的事件回声不参与保持判定，否则续播会立刻重新触发
         // 「等待成员预加载」形成超时续播→hold 的无限震荡
@@ -136,12 +238,9 @@ export class HostSync {
           ready: Boolean(st?.hasVideo && st.readyState >= 2),
         })
         // 成员数据落盘晚于房主：拖动后等成员预加载到位再继续同步。
-        // seek 使成员旧的就绪态全部失效——它们的「就绪」针对的是旧位置，
-        // 新目标要等成员 seek 后重新上报（slow 网成员会晚好几秒）
-        for (const p of this.c.peers) {
-          const r = this.peerReady.get(p)
-          if (r) r.ready = false
-        }
+        // seek 使成员旧的就绪应答全部失效——它们的「足够」针对的是旧位置，
+        // 新目标要等成员拖到位后重新应答（慢网成员会晚好几秒）
+        this.peerStates.clear()
         void this.maybeHoldForMembers('seek')
       }
     }
@@ -171,16 +270,6 @@ export class HostSync {
         fileId: this.c.shareFileId || undefined,
       } satisfies SyncMsg)
     })
-  }
-
-  /** 房主：全部成员是否都已在当前进度缓冲就绪（上报保鲜期内且 ready） */
-  private membersAllReady(): boolean {
-    const now = Date.now()
-    for (const p of this.c.peers) {
-      const r = this.peerReady.get(p)
-      if (!r || !r.ready || now - r.at > MEMBER_READY_FRESH_MS) return false
-    }
-    return true
   }
 
   /**

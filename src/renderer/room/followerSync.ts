@@ -6,7 +6,7 @@
  *   房主加载状态经 waiting/playing 事件映射的 pause/play 即时跟随，
  *   成员暂停期间元素照常取数缓冲，自身加载不受影响
  * - 校准循环 start（2s 对表：断线判定/播放状态对齐/位置偏差 seek）
- * - 就绪上报（mready：缓冲提前量达标才就绪；变化即报 + 400ms 起播快报 + 周期保鲜）
+ * - 就绪应答（房主 readyAsk 探询时回原始状态数据，「加载是否足够」由房主判定）
  * - 观看源地址漂移自愈（correctSourceDrift）与桥就绪等待（waitForBridge）
  * - 暂停/恢复同步（pauseSync/resumeSync）与同步页签解锁（unlockSyncTab）
  */
@@ -19,8 +19,6 @@ import * as videoBus from '../videoBus'
 import type { MediaStreamReceiver } from '../mediaStream'
 import {
   BRIDGE_WAIT_MS,
-  MEMBER_READY_BUFFER_AHEAD_S,
-  MEMBER_REPORT_INTERVAL_MS,
   SEEK_GRACE_MS,
   SOURCE_CORRECT_COOLDOWN_MS,
   SOURCE_CORRECT_MAX_ATTEMPTS,
@@ -80,11 +78,6 @@ export class FollowerSync {
   private sourceCorrection: SourceCorrectionState = { target: '', attempts: 0, lastAt: 0 }
   /** 防止 applySnapshot 并发（等待桥就绪期间可能又收到心跳） */
   private applyingSnapshot = false
-  /** 起播期快速就绪上报定时器（400ms；就绪后自动停） */
-  private readyTimer: number | null = null
-  /** 最近一次上报的就绪态与时间（变化即报 + 周期保鲜） */
-  private lastReadyReported: boolean | null = null
-  private lastReadySentAt = 0
 
   constructor(private c: FollowerSyncCtx) {}
 
@@ -249,17 +242,14 @@ export class FollowerSync {
     this.lastStateAt = 0
     this.connectionLost = false
     this.syncPaused = false
-    this.lastReadyReported = null
-    this.lastReadySentAt = 0
   }
 
-  /** 停止全部成员侧定时器（校准循环/快速就绪上报；幂等） */
+  /** 停止全部成员侧定时器（校准循环；幂等） */
   stop(): void {
     if (this.followTimer) {
       clearInterval(this.followTimer)
       this.followTimer = null
     }
-    this.clearReadyWatch()
   }
 
   /** 完整重置（加入/离开房间时调用）：停止定时器并清空全部成员侧状态（含桥/漂移纠正） */
@@ -285,9 +275,6 @@ export class FollowerSync {
         return
       }
       const st = await videoBus.videoStatus().catch(() => null)
-      // 向房主上报本机缓冲就绪态（房主「等待成员预加载」的决策依据；
-      // 暂停同步期间也要上报——房主加载跟随期正是成员在缓冲的时刻）
-      void this.reportBufferState(st)
       if (!this.lastSnapshot) return
       // 暂停同步：不做校准与状态对齐（本地自由控制）
       if (this.syncPaused) return
@@ -317,80 +304,43 @@ export class FollowerSync {
   }
 
   /**
-   * 成员：向房主上报本机缓冲就绪态（变化即报 + 周期保鲜重报）。
-   * 暂停同步时始终按就绪上报——自由观看的成员不应拖住房主的「等待预加载」。
-   * 参数：st 本机视频快照（可能为 null：无桥/无视频按未就绪上报）。
+   * 成员：应答房主就绪探询（readyAsk）。只回原始数据——落盘字节、元素状态、暂停同步标记；
+   * 「加载是否足够」的判定在房主侧（readyEnough），成员不做任何阈值判断。
+   * fileId 直接用探询里指定的共享媒体 ID 查本机落盘进度，不解析播放地址（避免地址形态变化误判）。
+   * 参数：fileId 房主探询的共享媒体 ID。
    */
-  private async reportBufferState(st: (VideoSnapshot & { pageUrl: string; hasVideo: boolean }) | null): Promise<boolean | undefined> {
-    if (this.c.role !== 'follower' || !this.c.connected) return undefined
-    const ready = this.syncPaused || (await this.bufferReady(st))
-    if (ready === this.lastReadyReported && Date.now() - this.lastReadySentAt < MEMBER_REPORT_INTERVAL_MS) return ready
-    this.lastReadyReported = ready
-    this.lastReadySentAt = Date.now()
-    this.sendToHost({ t: 'mready', ready })
-    return ready
-  }
-
-  /**
-   * 成员「加载完成」判定（mready 的 ready 依据，房主据此放行「等待成员预加载」）。
-   * readyState>=2 只代表能解当前帧，刚开副本就会误报就绪；且暂停期 Chromium 会回收
-   * media-server 播放面的 buffered 区间（恒空），元素缓冲不可作唯一依据。三条路径任一满足：
-   * - 元素缓冲提前量达标（播放中 buffered 有效时最准确）
-   * - 本地副本落盘字节折算的内容秒数达标（mediaProgress；开副本等待期的主判据）
-   * - 整份副本已落盘
-   * 网页桥不报 bufferedEnd（url 模式本就不参与 hold），退回 readyState>=2 旧口径。
-   */
-  private async bufferReady(st: (VideoSnapshot & { pageUrl: string; hasVideo: boolean }) | null): Promise<boolean> {
-    if (!st?.hasVideo) return false
-    if (st.readyState < 2) return false
-    const end = st.bufferedEnd
-    if (end === undefined) return true
-    if (st.duration > 0 && end >= st.duration - 1) return true
-    if (end - st.position >= MEMBER_READY_BUFFER_AHEAD_S) return true
-    // 本地副本（本机回环媒体 /media/<fileId>）：按落盘进度折算
-    const fileId = st.src.split('/media/')[1]
-    if (!fileId) return false
-    try {
-      const [readyBytes, totalBytes] = await window.p2pApi.mediaProgress(fileId)
-      if (totalBytes <= 0) return false
-      if (readyBytes >= totalBytes) return true
-      if (st.duration <= 0) return false
-      // 平均码率折算：落盘字节 ÷ 字节每秒 ≥ 提前量秒数
-      return (readyBytes / totalBytes) * st.duration >= MEMBER_READY_BUFFER_AHEAD_S
-    } catch {
-      return false
-    }
+  answerReadyAsk(fileId: string): void {
+    if (this.c.role !== 'follower' || !this.c.room()) return
+    void videoBus
+      .videoStatus()
+      .then(async (st) => {
+        let readyBytes = 0
+        let totalBytes = 0
+        try {
+          ;[readyBytes, totalBytes] = await window.p2pApi.mediaProgress(fileId)
+        } catch {
+          // 查不到落盘进度按 0 上报，由房主判定为未就绪
+        }
+        this.sendToHost({
+          t: 'readyState',
+          fileId,
+          readyBytes,
+          totalBytes,
+          duration: st?.duration ?? 0,
+          position: st?.position ?? 0,
+          readyState: st?.readyState ?? 0,
+          paused: st?.paused ?? true,
+          syncPaused: this.syncPaused,
+          bufferedEnd: st?.bufferedEnd,
+        })
+      })
+      .catch(() => {})
   }
 
   /** 成员：定向发送给房主（房主身份未知时退化为全员广播，仅房主消费） */
   private sendToHost(msg: SyncMsg): void {
     if (this.c.hostPeerId) this.c.room()?.sendTo(this.c.hostPeerId, msg)
     else this.c.room()?.broadcast(msg)
-  }
-
-  /**
-   * 成员：起播期快速就绪上报（400ms）。
-   * 跟随循环是 2s 节拍，成员就绪后最多要等 2s 才上报，房主的「等待成员预加载」就白等 ~2s。
-   * 这里用短节拍把「就绪」这一刻尽早送达；一旦就绪立即上报并自停，不影响稳态开销。
-   * 就绪口径与 bufferReady 一致（缓冲提前量达标），缓冲攒够前保持快报。
-   */
-  startReadyWatch(): void {
-    if (this.c.role !== 'follower' || this.readyTimer !== null) return
-    this.readyTimer = window.setInterval(() => {
-      void videoBus
-        .videoStatus()
-        .then(async (st) => {
-          if (await this.reportBufferState(st)) this.clearReadyWatch()
-        })
-        .catch(() => {})
-    }, 400)
-  }
-
-  /** 停止快速就绪上报（幂等） */
-  private clearReadyWatch(): void {
-    if (this.readyTimer === null) return
-    clearInterval(this.readyTimer)
-    this.readyTimer = null
   }
 
   /**

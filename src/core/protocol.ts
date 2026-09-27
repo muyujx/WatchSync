@@ -47,8 +47,26 @@ export type SyncMsg =
   | { t: 'fileDone'; fileId: string }
   /** 成员请求补发文件：ranges 为 [起始, 结束) 字节区间（流式模式按需拉取；省略=请求整份） */
   | { t: 'fileNeed'; fileId: string; ranges?: Array<[number, number]> }
-  /** 成员缓冲就绪上报（成员→房主）：ready=本机视频已缓冲到当前进度（房主「等待成员预加载」用） */
-  | { t: 'mready'; ready: boolean }
+  /** 就绪探询（房主→成员）：房主主动询问指定共享媒体的落盘/缓冲状态（判定在房主侧） */
+  | { t: 'readyAsk'; fileId: string }
+  /** 就绪应答（成员→房主）：原始状态数据，房主据此判定加载是否足够、是否放行/自动开播；
+   *  syncPaused=true 表示成员暂停同步自由观看（房主视为就绪，不拖住等待） */
+  | {
+      t: 'readyState'
+      fileId: string
+      /** 本机副本已落盘字节 / 总字节 */
+      readyBytes: number
+      totalBytes: number
+      /** 成员播放器时长（未取到为 0） */
+      duration: number
+      position: number
+      /** 成员元素 readyState */
+      readyState: number
+      paused: boolean
+      syncPaused: boolean
+      /** 元素缓冲末端秒数（网页桥不报，缺省） */
+      bufferedEnd?: number
+    }
   /** 延迟探测（任意端→全员） */
   | { t: 'ping'; ts: number }
   /** 延迟应答（→全员） */
@@ -70,7 +88,8 @@ const NUMERIC_FIELDS: Record<SyncMsg['t'], string[]> = {
   fileOffer: ['size'],
   fileDone: [],
   fileNeed: [],
-  mready: [],
+  readyAsk: [],
+  readyState: ['readyBytes', 'totalBytes', 'duration', 'position', 'readyState'],
   ping: ['ts'],
   pong: ['ts'],
 }
@@ -115,8 +134,12 @@ export function decodeMsg(raw: string): SyncMsg | null {
       if (typeof o.size !== 'number' || !Number.isFinite(o.size) || o.size < 0) return null
       if (o.asSource !== undefined && typeof o.asSource !== 'boolean') return null
     }
-    if ((t === 'fileDone' || t === 'fileNeed') && typeof o.fileId !== 'string') return null
-    if (t === 'mready' && typeof o.ready !== 'boolean') return null
+    if ((t === 'fileDone' || t === 'fileNeed' || t === 'readyAsk') && typeof o.fileId !== 'string') return null
+    if (t === 'readyState') {
+      if (typeof o.fileId !== 'string') return null
+      if (typeof o.paused !== 'boolean' || typeof o.syncPaused !== 'boolean') return null
+      if (o.bufferedEnd !== undefined && (typeof o.bufferedEnd !== 'number' || !Number.isFinite(o.bufferedEnd))) return null
+    }
     if (t === 'fileNeed' && o.ranges !== undefined) {
       if (!Array.isArray(o.ranges)) return null
       for (const r of o.ranges) {

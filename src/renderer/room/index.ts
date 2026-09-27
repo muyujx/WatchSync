@@ -496,7 +496,6 @@ export class RoomController {
             return
           }
           navUrl = localUrl
-          this.follower.startReadyWatch()
         }
         void this.onSyncTab?.(navUrl)
       }
@@ -524,7 +523,6 @@ export class RoomController {
         this.shareName = msg.name
         this.shareFileId = msg.fileId
         this.onShareChanged?.()
-        this.follower.startReadyWatch()
       }
       void this.media.attach(msg.fileId, msg.name, msg.size, { mime: msg.mime }).then((url) => {
         if (!msg.asSource || this.role !== 'follower' || !url) return
@@ -568,11 +566,15 @@ export class RoomController {
     if (this.role === 'host') {
       // 房主：响应 hello 回全量状态
       if (msg.t === 'hello') this.hostSync.sendState()
-      // 成员缓冲就绪上报：驱动「等待成员预加载」的保持/放行
-      if (msg.t === 'mready') this.hostSync.notePeerReady(peerId, msg.ready)
+      // 成员就绪应答：原始状态数据，「够不够播」的判定在 hostSync
+      if (msg.t === 'readyState') this.hostSync.noteReadyState(peerId, msg)
       return
     }
-    // 成员：应用房主播放指令（来源过滤/暂停同步短路/state-play-pause-seek）
+    // 成员：应答房主就绪探询（回原始数据）；应用房主播放指令（来源过滤/暂停同步短路/state-play-pause-seek）
+    if (msg.t === 'readyAsk') {
+      this.follower.answerReadyAsk(msg.fileId)
+      return
+    }
     this.follower.handleHostMsg(msg, peerId)
   }
 

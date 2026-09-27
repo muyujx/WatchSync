@@ -26,8 +26,9 @@ describe('protocol encode/decode', () => {
       { t: 'fileDone', fileId: 'f1' },
       { t: 'fileNeed', fileId: 'f1' },
       { t: 'fileNeed', fileId: 'f1', ranges: [[0, 65536], [131072, 262144]] },
-      { t: 'mready', ready: true },
-      { t: 'mready', ready: false },
+      { t: 'readyAsk', fileId: 'f1' },
+      { t: 'readyState', fileId: 'f1', readyBytes: 1, totalBytes: 2, duration: 3, position: 0.5, readyState: 4, paused: true, syncPaused: false },
+      { t: 'readyState', fileId: 'f1', readyBytes: 1, totalBytes: 2, duration: 3, position: 0.5, readyState: 4, paused: true, syncPaused: true, bufferedEnd: 12 },
     ]
     for (const m of msgs) expect(decodeMsg(encodeMsg(m))).toEqual(m)
   })
@@ -48,8 +49,11 @@ describe('protocol encode/decode', () => {
     expect(decodeMsg(JSON.stringify({ t: 'syncTab', url: 1 }))).toBeNull() // url 非字符串
     expect(decodeMsg(JSON.stringify({ t: 'state', url: 'u', position: 1, playing: true, at: 1, ready: 'yes' }))).toBeNull() // ready 非布尔
     expect(decodeMsg(JSON.stringify({ t: 'seek', position: 1, playing: true, at: 1, ready: 'no' }))).toBeNull() // seek.ready 非布尔
-    expect(decodeMsg(JSON.stringify({ t: 'mready' }))).toBeNull() // 缺 ready
-    expect(decodeMsg(JSON.stringify({ t: 'mready', ready: 'yes' }))).toBeNull() // ready 非布尔
+    expect(decodeMsg(JSON.stringify({ t: 'readyAsk' }))).toBeNull() // 缺 fileId
+    expect(decodeMsg(JSON.stringify({ t: 'readyState', fileId: 'f' }))).toBeNull() // 缺数值字段
+    expect(decodeMsg(JSON.stringify({ t: 'readyState', fileId: 'f', readyBytes: 1, totalBytes: 2, duration: 3, position: 0, readyState: 4 }))).toBeNull() // 缺 paused/syncPaused
+    expect(decodeMsg(JSON.stringify({ t: 'readyState', fileId: 'f', readyBytes: 1, totalBytes: 2, duration: 3, position: 0, readyState: 4, paused: true, syncPaused: 'no' }))).toBeNull() // syncPaused 非布尔
+    expect(decodeMsg(JSON.stringify({ t: 'readyState', fileId: 'f', readyBytes: 1, totalBytes: 2, duration: 3, position: 0, readyState: 4, paused: true, syncPaused: false, bufferedEnd: 'x' }))).toBeNull() // bufferedEnd 非数值
   })
   it('旧版本 state/seek 消息（无 ready 字段）仍可解码，向后兼容', () => {
     const legacyState = JSON.stringify({ t: 'state', url: 'https://a.com', position: 1, playing: true, at: 1 })
