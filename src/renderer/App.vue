@@ -99,6 +99,7 @@ import { computed, onMounted, ref } from 'vue'
 import { RoomController } from './room'
 import { setRelaySink, useRelays } from './composables/useRelays'
 import { isLoopbackMediaUrl } from '../core/mediaSource'
+import { isWatchsyncLink } from '../core/shareLink'
 import TopBar from './components/TopBar.vue'
 import HomeSites from './components/HomeSites.vue'
 import type { TabRole } from './components/TabStrip.vue'
@@ -397,6 +398,12 @@ async function openSite(s: { url: string }): Promise<void> {
       joinInput.value = raw
       videoUrl.value = ''
       await onJoinLink()
+      return
+    }
+    // 形似邀请链接但解析失败（房间号缺失/非法）：明确提示，
+    // 否则会被补全协议头当网页地址在当前页签内导航（watchsync:// 网页打不开，白丢页签）
+    if (isWatchsyncLink(raw)) {
+      notify('邀请链接无效')
       return
     }
     await openInTab(raw)

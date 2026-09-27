@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { buildShareUrl, generateRoomId, parseShareUrl } from '../../src/core/shareLink'
+import { buildShareUrl, generateRoomId, isWatchsyncLink, parseShareUrl } from '../../src/core/shareLink'
 
 describe('generateRoomId', () => {
   it('生成 16 字符 Base32，且随机', () => {
@@ -22,5 +22,15 @@ describe('buildShareUrl / parseShareUrl', () => {
     expect(parseShareUrl('watchsync://join?room=BAD')).toBeNull()
     expect(parseShareUrl('watchsync://join')).toBeNull()
     expect(parseShareUrl('not a url')).toBeNull()
+  })
+})
+
+describe('isWatchsyncLink', () => {
+  it('按协议头识别邀请链接（大小写不敏感），不校验内容', () => {
+    expect(isWatchsyncLink('watchsync://join?room=BAD')).toBe(true)
+    expect(isWatchsyncLink('WatchSync:join')).toBe(true)
+    expect(isWatchsyncLink('watchsync://')).toBe(true)
+    expect(isWatchsyncLink('https://example.com')).toBe(false)
+    expect(isWatchsyncLink('awatchsync://x')).toBe(false)
   })
 })

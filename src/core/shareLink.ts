@@ -55,3 +55,14 @@ export function parseShareUrl(input: string): { roomId: string } | null {
     return null
   }
 }
+
+/**
+ * 疑似邀请链接判定（只看协议头，不校验内容）。
+ * 用途：地址栏输入解析失败时区分「普通网页地址」与「格式坏的邀请链接」——
+ * 后者应提示无效，而不是被补全协议头当网页地址导航。
+ * 参数：input 任意输入。
+ * 返回值：true = 以 watchsync: 协议开头（大小写不敏感）。
+ */
+export function isWatchsyncLink(input: string): boolean {
+  return /^watchsync:/i.test(input)
+}
