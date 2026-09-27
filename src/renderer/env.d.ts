@@ -16,6 +16,8 @@ declare global {
     duration: number
     /** 就绪程度（0 无数据 ~ 4；<1 无 metadata，<2 正在缓冲） */
     readyState: number
+    /** 当前播放位置所在缓冲区间的末端（秒；仅本地播放面填充，网页桥不填 = undefined） */
+    bufferedEnd?: number
     /** 当前播放源（直链共享用；blob:/MSE 站点不可直传） */
     src: string
   }

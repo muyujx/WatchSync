@@ -6,7 +6,7 @@
  *   房主加载状态经 waiting/playing 事件映射的 pause/play 即时跟随，
  *   成员暂停期间元素照常取数缓冲，自身加载不受影响
  * - 校准循环 start（2s 对表：断线判定/播放状态对齐/位置偏差 seek）
- * - 就绪上报（mready：变化即报 + 400ms 起播快报 + 周期保鲜）
+ * - 就绪上报（mready：缓冲提前量达标才就绪；变化即报 + 400ms 起播快报 + 周期保鲜）
  * - 观看源地址漂移自愈（correctSourceDrift）与桥就绪等待（waitForBridge）
  * - 暂停/恢复同步（pauseSync/resumeSync）与同步页签解锁（unlockSyncTab）
  */
@@ -19,6 +19,7 @@ import * as videoBus from '../videoBus'
 import type { MediaStreamReceiver } from '../mediaStream'
 import {
   BRIDGE_WAIT_MS,
+  MEMBER_READY_BUFFER_AHEAD_S,
   MEMBER_REPORT_INTERVAL_MS,
   SEEK_GRACE_MS,
   SOURCE_CORRECT_COOLDOWN_MS,
@@ -322,11 +323,25 @@ export class FollowerSync {
    */
   private reportBufferState(st: (VideoSnapshot & { pageUrl: string; hasVideo: boolean }) | null): void {
     if (this.c.role !== 'follower' || !this.c.connected) return
-    const ready = this.syncPaused ? true : Boolean(st?.hasVideo && st.readyState >= 2)
+    const ready = this.syncPaused || this.bufferReady(st)
     if (ready === this.lastReadyReported && Date.now() - this.lastReadySentAt < MEMBER_REPORT_INTERVAL_MS) return
     this.lastReadyReported = ready
     this.lastReadySentAt = Date.now()
     this.sendToHost({ t: 'mready', ready })
+  }
+
+  /**
+   * 成员「加载完成」判定（mready 的 ready 依据，房主据此放行「等待成员预加载」）：
+   * 同步位置之后缓冲满 MEMBER_READY_BUFFER_AHEAD_S 秒（或已缓冲到片尾）才算就绪。
+   * readyState>=2 只代表能解当前帧——成员刚开副本缓冲一两秒就会误报就绪，
+   * 房主直接续播会让成员几秒后数据耗尽卡住。网页桥不报 bufferedEnd，退回旧口径。
+   */
+  private bufferReady(st: (VideoSnapshot & { pageUrl: string; hasVideo: boolean }) | null): boolean {
+    if (!st?.hasVideo) return false
+    const end = st.bufferedEnd
+    if (end === undefined) return st.readyState >= 2
+    if (st.duration > 0 && end >= st.duration - 1) return true
+    return end - st.position >= MEMBER_READY_BUFFER_AHEAD_S
   }
 
   /** 成员：定向发送给房主（房主身份未知时退化为全员广播，仅房主消费） */
@@ -339,6 +354,7 @@ export class FollowerSync {
    * 成员：起播期快速就绪上报（400ms）。
    * 跟随循环是 2s 节拍，成员就绪后最多要等 2s 才上报，房主的「等待成员预加载」就白等 ~2s。
    * 这里用短节拍把「就绪」这一刻尽早送达；一旦就绪立即上报并自停，不影响稳态开销。
+   * 就绪口径与 bufferReady 一致（缓冲提前量达标），缓冲攒够前保持快报。
    */
   startReadyWatch(): void {
     if (this.c.role !== 'follower' || this.readyTimer !== null) return
@@ -347,7 +363,7 @@ export class FollowerSync {
         .videoStatus()
         .then((st) => {
           this.reportBufferState(st)
-          if (st?.hasVideo && st.readyState >= 2) this.clearReadyWatch()
+          if (this.bufferReady(st)) this.clearReadyWatch()
         })
         .catch(() => {})
     }, 400)

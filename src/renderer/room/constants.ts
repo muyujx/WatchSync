@@ -31,6 +31,11 @@ export const MEMBER_WAIT_TIMEOUT_MS = 30000
  *  超过该时长无任何新字节则判定预读停滞，改为直拉兜底 */
 export const RELAY_FOLLOW_STALL_MS = 15000
 
+/** 成员「加载完成」缓冲提前量（s）：同步位置之后缓冲满该秒数才算就绪（或已缓冲到片尾），
+ *  房主据此放行「等待成员预加载」。readyState>=2 只代表能解当前帧——成员刚开副本缓冲
+ *  一两秒就会误报就绪，房主直接续播会让成员几秒后数据耗尽卡住 */
+export const MEMBER_READY_BUFFER_AHEAD_S = 10
+
 /** 成员就绪上报保鲜窗（ms）：超过该时长未刷新的上报视为过期（按未就绪处理） */
 export const MEMBER_READY_FRESH_MS = 8000
 

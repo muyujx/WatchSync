@@ -60,8 +60,18 @@ function snapshot(v: HTMLVideoElement): VideoSnapshot {
     rate: v.playbackRate,
     duration: v.duration,
     readyState: v.readyState,
+    bufferedEnd: bufferedEndAt(v),
     src: v.currentSrc || v.src || '',
   }
+}
+
+/** 当前位置所在缓冲区间的末端（秒；不在任何区间内 = 0），成员「加载完成」判定依据 */
+function bufferedEndAt(v: HTMLVideoElement): number {
+  const b = v.buffered
+  for (let i = 0; i < b.length; i++) {
+    if (b.start(i) <= v.currentTime + 0.25 && v.currentTime <= b.end(i)) return b.end(i)
+  }
+  return 0
 }
 
 /** file:// 地址还原成本地路径（媒体服务按路径发布；Windows 盘符路径为 /F:/x 形式） */
@@ -80,7 +90,7 @@ const surface: LocalSurface = {
   },
   status: () => {
     const v = videoRef.value
-    return v ? snapshot(v) : { position: 0, paused: true, rate: 1, duration: 0, readyState: 0, src: '' }
+    return v ? snapshot(v) : { position: 0, paused: true, rate: 1, duration: 0, readyState: 0, bufferedEnd: 0, src: '' }
   },
   cmd: (action, arg) => {
     const v = videoRef.value
