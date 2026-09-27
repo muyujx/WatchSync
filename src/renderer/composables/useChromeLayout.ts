@@ -1,8 +1,8 @@
 /**
- * 布局上报（composable）：把 UI 壳的内容区留白（顶栏高度 / 底部预留）上报给 Rust。
+ * 布局上报（composable）：把 UI 壳的内容区留白（顶栏高度）上报给 Rust。
  * 布局的唯一权威在 Vue：Rust 不再持有任何几何常量，页签 webview 的 bounds 由
- * 这里的上报值 + 当前窗口尺寸决定。上报时机：挂载、窗口尺寸变化、顶栏尺寸变化、
- * 网页全屏切换、底部条显隐切换。
+ * 这里的上报值 + 当前窗口尺寸决定。上报时机：挂载、窗口尺寸变化、顶栏尺寸变化、网页全屏切换。
+ * （底部预留恒 0：底部共享条内嵌 LocalVideoStage，不占 web 页签布局。）
  */
 import { onMounted, onUnmounted, ref, watch, type Ref } from 'vue'
 
@@ -12,8 +12,6 @@ export interface UseChromeLayoutDeps {
   chromeEl: Ref<HTMLElement | null>
   /** 网页视频 HTML 全屏（web 页签全屏时视频铺满整窗，顶部留白归零） */
   videoFullscreen: Ref<boolean>
-  /** 底部条是否可见（本地视频页签专属；web 页签恒不可见 → 底部留白恒 0） */
-  streamBarVisible: Ref<boolean>
 }
 
 export function useChromeLayout(deps: UseChromeLayoutDeps) {
@@ -26,9 +24,7 @@ export function useChromeLayout(deps: UseChromeLayoutDeps) {
     const el = deps.chromeEl.value
     const top = deps.videoFullscreen.value || !el ? 0 : el.offsetHeight
     chromeH.value = top
-    // 底部条只出现在本地视频页签（Vue 壳内渲染），web 页签无需底部预留
-    const bottom = 0
-    void window.p2pApi.setTabInsets(top, bottom)
+    void window.p2pApi.setTabInsets(top, 0)
   }
 
   onMounted(() => {
@@ -44,10 +40,7 @@ export function useChromeLayout(deps: UseChromeLayoutDeps) {
     window.removeEventListener('resize', report)
   })
 
-  watch(
-    [deps.videoFullscreen, deps.streamBarVisible],
-    () => report(),
-  )
+  watch(deps.videoFullscreen, () => report())
 
   return { report, chromeH }
 }

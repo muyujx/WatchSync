@@ -1,10 +1,9 @@
 /**
- * 页签列表与导航（composable）：页签条目维护、激活/回主页/打开网页/关闭，
- * 以及「当前页是什么类型」的判定（本地文件页 / 本机回环媒体页 / 底部条可见性）。
+ * 页签列表与导航（composable）：页签条目维护、激活/回主页/打开网页/关闭。
  * 房间与同步语义通过依赖注入（锁定判定、关闭联动）回连，本模块只管页签域。
  */
-import { computed, ref, type Ref } from 'vue'
-import { isLoopbackMediaUrl, isVuePlaybackUrl } from '../../core/mediaSource'
+import { ref, type Ref } from 'vue'
+import { isVuePlaybackUrl } from '../../core/mediaSource'
 import type { TabInfo } from '../components/TabStrip.vue'
 import { notify } from '../notify'
 import * as videoBus from '../videoBus'
@@ -13,8 +12,6 @@ import * as videoBus from '../videoBus'
 export interface UseTabsDeps {
   /** 地址栏地址（激活页签切换时同步显示） */
   videoUrl: Ref<string>
-  /** 网页视频 HTML 全屏状态（全屏时隐藏底部条） */
-  videoFullscreen: Ref<boolean>
   /** 播放记录面板是否打开（getter：history composable 晚于本模块构造） */
   historyOpen(): boolean
   /** 关闭播放记录面板 */
@@ -36,26 +33,6 @@ export function useTabs(deps: UseTabsDeps) {
   const activeTabId = ref<number | null>(null)
   /** 已关闭页签 ID（防 title 迟到事件重建幽灵页签） */
   const closedTabIds = new Set<number>()
-
-  /**
-   * 播放页底部操作区是否显示（同时决定 Rust 侧是否为它预留 48px）。
-   * 本地视频播放页 + 推流回放/成员收流页（本机回环媒体页签）：前者显示路径/预取，
-   * 后者显示共享状态与传输速度；网页页/主页不显示，各页面相互独立。
-   */
-  const onLocalFilePage = computed(() => {
-    if (activeTabId.value == null) return false
-    const t = tabs.value.find((x) => x.id === activeTabId.value)
-    return !!t && t.url.startsWith('file:')
-  })
-  /** 激活页签是否为本机回环媒体页（房主推流回放页 / 成员收流页，file 共享模式的播放面） */
-  const onLoopbackMediaPage = computed(() => {
-    if (activeTabId.value == null) return false
-    const t = tabs.value.find((x) => x.id === activeTabId.value)
-    return !!t && isLoopbackMediaUrl(t.url) && t.url.includes('/media/')
-  })
-  const streamBarVisible = computed(
-    () => activeTabId.value != null && !deps.videoFullscreen.value && (onLocalFilePage.value || onLoopbackMediaPage.value),
-  )
 
   /** 工具栏导航按钮（作用于激活页签） */
   async function nav(action: string): Promise<void> {
@@ -169,9 +146,6 @@ export function useTabs(deps: UseTabsDeps) {
   return {
     tabs,
     activeTabId,
-    onLocalFilePage,
-    onLoopbackMediaPage,
-    streamBarVisible,
     nav,
     activateTab,
     goHome,

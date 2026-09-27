@@ -1,16 +1,43 @@
 /**
- * 底部共享条（composable）：共享模式/共享源名称/传输速率的展示逻辑，
- * 手动重发进度共享（联调钩子入口），以及共享源页签的展示名覆盖（tabTitleOf）。
- * 底部条只在本地视频播放页挂载（App.vue 按 streamBarVisible v-if），故这里无网页页分支。
+ * 底部共享条状态（模块级单例，模式同 useRelays）：RoomController 共享态的响应式投影——
+ * 共享模式/共享源名称/传输速率/整份副本进度。App 装配时 initShareBar 一次
+ * （订阅 controller.onShareChanged、启动速率刷新定时器，并导出 tabTitleOf/onShareWeb）；
+ * LocalVideoStage 经 useShareBar 读取同一份状态内嵌渲染 ShareBar，状态不再经 App 逐层透传。
+ * 底部条内嵌在本地视频播放面，只在本地视频播放页出现，故这里无网页页分支。
  */
-import { computed, onMounted, onUnmounted, ref, type Ref } from 'vue'
+import { computed, reactive, ref, type Ref } from 'vue'
 import { isLoopbackMediaUrl } from '../../core/mediaSource'
 import type { RoomController } from '../room'
 import type { WebShareFeature } from '../webShare'
 import { notify } from '../notify'
+import type { LocalFileInfo } from './useLocalFileShare'
 
-/** 底部共享条依赖（由 App 提供） */
-export interface UseShareBarDeps {
+/** 底部共享条展示状态（useShareBar 返回；字段供 ShareBar 渲染） */
+export interface ShareBarState {
+  /**
+   * 底部条展示的共享模式。底部条内嵌本地视频播放页（本地文件页/回环媒体页），
+   * 这些页面只可能处于「无损文件流」共享（本地分发、网页推流、成员收流同为 file 模式），
+   * url 模式（原画直链）只存在于网页页签、不会到这里。
+   */
+  shareMode: 'file' | 'none'
+  /** 共享展示名 */
+  shareName: string
+  /** 房主最近选择的本地文件绝对路径（''=无；仅本地文件页显示，播放面按自身地址判定） */
+  filePath: string
+  /** 房主且已选本地文件（预取入口；播放面还需自身是本地文件页才显示按钮） */
+  canPrefetch: boolean
+  /** 整份副本传输进度 0~1；<0 表示当前不在预取 */
+  copyRatio: number
+  /**
+   * 底部条速率（字节/秒；-1 = 不显示）。
+   * 房主：下载速率仅网页视频推流时有（本地文件源无下载）；上传速率为发给成员的速率。
+   * 成员：加载速率为从房主接收的速率。
+   */
+  speeds: { download: number; upload: number; load: number }
+}
+
+/** 初始化依赖（由 App 装配提供） */
+export interface ShareBarDeps {
   controller: RoomController
   roomId: Ref<string>
   isHost: Ref<boolean>
@@ -22,11 +49,20 @@ export interface UseShareBarDeps {
   relayTabId: Ref<number | null>
   /** 网页视频共享特性（重发进度共享） */
   webShare: WebShareFeature
+  /** 房主最近选择的本地视频（filePath / canPrefetch 来源） */
+  localFile: Ref<LocalFileInfo | null>
   /** 是否正在发送整份副本（进度联动） */
   fileCopying: Ref<boolean>
   /** 整份副本传输进度 0~1 */
   fileCopyRatio: Ref<number>
 }
+
+/** ===== 模块级单例 ===== */
+let state: ShareBarState | null = null
+/** 速率刷新定时器（App 生命周期 = 窗口生命周期，不主动 teardown；重初始化时先清旧的防叠加） */
+let speedTimer: number | null = null
+/** 共享展示名 */
+const shareName = ref('')
 
 /** 去掉扩展名，只留文件名（本地视频页签展示用；不显示路径） */
 function baseName(name: string): string {
@@ -51,44 +87,38 @@ function shareDisplayTitle(name: string): string {
   return base.replace(/\.(mp4|m4v|mkv|webm|mov|avi|ts|flv)$/i, '')
 }
 
-export function useShareBar(deps: UseShareBarDeps) {
+/**
+ * 初始化底部共享条状态（App 装配时调用；重复调用以最新依赖重挂订阅与定时器）。
+ * 返回值：App 侧消费的接口（页签展示名覆盖 + 联调钩子的重发入口）。
+ */
+export function initShareBar(deps: ShareBarDeps): {
+  tabTitleOf(t: { id: number; url: string }): string
+  onShareWeb(): void
+} {
   const { controller } = deps
 
-  /** 共享展示名 */
-  const shareName = ref('')
-
   /** controller.shareMode 的响应式镜像（controller 非响应式，用它驱动 UI 重算） */
-  const shareModeR = ref<typeof controller.shareMode>(controller.shareMode)
+  const shareModeR = ref(controller.shareMode)
+  shareName.value = controller.shareName
 
-  /**
-   * 底部条展示的共享模式。组件只在本地视频播放页挂载（本地文件页/回环媒体页），
-   * 这些页面只可能处于「无损文件流」共享（本地分发、网页推流、成员收流同为 file 模式），
-   * url 模式（原画直链）只存在于网页页签、不会到达这里。
-   */
-  const shareBarMode = computed<'file' | 'none'>(() =>
+  /** 速率显示每秒刷新（SpeedMeter 是滑窗计算，非响应式；仅在房间里才有意义） */
+  const speedTick = ref(0)
+  if (speedTimer !== null) window.clearInterval(speedTimer)
+  speedTimer = window.setInterval(() => speedTick.value++, 1000)
+
+  const shareMode = computed<'file' | 'none'>(() =>
     deps.roomId.value && shareModeR.value === 'file' ? 'file' : 'none',
   )
 
-  /** 速度显示每秒刷新（SpeedMeter 是滑窗计算，非响应式；仅在房间里才有意义） */
-  const speedTick = ref(0)
-  let speedTimer: number | null = null
-  onMounted(() => {
-    speedTimer = window.setInterval(() => {
-      speedTick.value++
-    }, 1000)
-  })
-  onUnmounted(() => {
-    if (speedTimer !== null) window.clearInterval(speedTimer)
-  })
+  const filePath = computed(() => deps.localFile.value?.path ?? '')
 
-  /**
-   * 底部条速率（字节/秒；-1 = 不显示）。
-   * 房主：下载速率仅网页视频推流时有（本地文件源无下载）；上传速率为发给成员的速率。
-   * 成员：加载速率为从房主接收的速率。
-   */
-  const shareSpeeds = computed(() => {
+  const canPrefetch = computed(() => !!(deps.roomId.value && deps.isHost.value && deps.localFile.value))
+
+  const copyRatio = computed(() => (deps.fileCopying.value ? deps.fileCopyRatio.value : -1))
+
+  const speeds = computed(() => {
     void speedTick.value
-    if (!deps.roomId.value || shareBarMode.value === 'none') return { download: -1, upload: -1, load: -1 }
+    if (!deps.roomId.value || shareMode.value === 'none') return { download: -1, upload: -1, load: -1 }
     if (deps.isHost.value) {
       return {
         download: controller.isRemoteShare ? controller.pullSpeed : -1,
@@ -112,6 +142,8 @@ export function useShareBar(deps: UseShareBarDeps) {
     }
   }
 
+  state = reactive({ shareMode, shareName, filePath, canPrefetch, copyRatio, speeds })
+
   /**
    * 手动重发进度共享（原底部条「共享给成员」按钮行为；按钮已随底部条收敛为本地视频页而移除，
    * 此入口保留给联调钩子 __p2pE2e.shareWeb）：按当前同步页签强制重发一次进度共享。
@@ -126,7 +158,7 @@ export function useShareBar(deps: UseShareBarDeps) {
   }
 
   /**
-   * 页签展示名覆盖：本地视频页签只显示文件名（去后缀），不显示路径/文件名后缀。
+   * 页签展示名覆盖（TopBar 用）：本地视频页签只显示文件名（去后缀），不显示路径/文件名后缀。
    * 房主本机 file:// 页签从地址取；推流回放页签与成员无损文件流页签显示共享源的
    * 名称（shareName 由房主下发，网页视频=源页签标题）。
    * 参数：t 页签条目。
@@ -153,5 +185,11 @@ export function useShareBar(deps: UseShareBarDeps) {
     return ''
   }
 
-  return { shareName, shareModeR, shareBarMode, shareSpeeds, onShareWeb, tabTitleOf }
+  return { tabTitleOf, onShareWeb }
+}
+
+/** 底部共享条展示状态（LocalVideoStage 内嵌渲染 ShareBar 用；须在 initShareBar 之后调用） */
+export function useShareBar(): ShareBarState {
+  if (!state) throw new Error('useShareBar 需先由 App initShareBar 初始化')
+  return state
 }

@@ -1,13 +1,17 @@
 <!--
   本地视频播放面（Vue 本地媒体页签的宿主）：file:// 本地文件 / 推流回放与成员收流（本机回环媒体）。
   每个本地媒体页签常驻一个实例（隐藏页签 v-show 隐藏，视频/音频照常运行，对齐 webview.hide 语义）。
+  底部共享条（ShareBar）随播放面内嵌渲染：只在本地视频页出现，网页页签/主页无底部条；
+  条状态取自 composables/useShareBar.ts 单例（App 初始化），本组件按自身地址补充页内判定。
   组件内创建 LocalVideoSurface 登记进 videoBus：同步链路对这类页签的
   status/drain/cmd/inject 全部由它应答（语义与页面桥逐字段一致，见 harness.ts）。
 -->
 <script setup lang="ts">
-import { onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { isVuePlaybackUrl } from '../../core/mediaSource'
 import { registerSurface, unregisterSurface, type LocalSurface } from '../videoBus'
+import ShareBar from './ShareBar.vue'
+import { useShareBar } from '../composables/useShareBar'
 
 const props = defineProps<{
   /** 页签 id（登记 videoBus 用） */
@@ -16,9 +20,16 @@ const props = defineProps<{
   url: string
   /** 是否激活页签（非激活隐藏但继续播放） */
   active: boolean
-  /** 底部预留 px（激活页签底部条可见时为 48，否则 0） */
-  bottomInset: number
 }>()
+
+const emit = defineEmits<{
+  (e: 'prefetch'): void
+}>()
+
+/** 底部共享条状态（模块级单例，App 装配时已 initShareBar） */
+const sb = useShareBar()
+/** 本页签是否本地文件页：filePath/预取按钮只显示在本地文件页（条仅激活页签可见，等价按激活页判定） */
+const isFilePage = computed(() => props.url.startsWith('file:'))
 
 const videoRef = ref<HTMLVideoElement | null>(null)
 const src = ref('')
@@ -167,9 +178,21 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div v-show="active" class="local-stage" :style="{ paddingBottom: bottomInset + 'px' }">
-    <!-- 媒体文档等价样式：视频铺满内容区、贴底；白底随主题（--ws-surface） -->
+  <div v-show="active" class="local-stage">
+    <!-- 媒体文档等价样式：视频占满条上方区域、贴底；白底随主题（--ws-surface） -->
     <video ref="videoRef" class="local-video" :src="src" controls playsinline preload="auto" />
+    <!-- 底部共享条：本地视频页专属操作区，随播放面 v-show 显隐 -->
+    <ShareBar
+      :share-mode="sb.shareMode"
+      :share-name="sb.shareName"
+      :can-prefetch="isFilePage && sb.canPrefetch"
+      :prefetch-ratio="sb.copyRatio"
+      :file-path="isFilePage ? sb.filePath : ''"
+      :download-speed="sb.speeds.download"
+      :upload-speed="sb.speeds.upload"
+      :load-speed="sb.speeds.load"
+      @prefetch="emit('prefetch')"
+    />
   </div>
 </template>
 
@@ -178,14 +201,15 @@ onUnmounted(() => {
   position: absolute;
   inset: 0;
   display: flex;
-  align-items: flex-end;
+  flex-direction: column;
   background: var(--ws-surface);
   overflow: hidden;
 }
 .local-video {
   display: block;
   width: 100%;
-  height: 100%;
+  flex: 1 1 0;
+  min-height: 0;
   object-fit: contain;
   object-position: center bottom;
   background: transparent;

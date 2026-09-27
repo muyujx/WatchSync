@@ -39,7 +39,8 @@
   </div>
 
   <!-- 本地视频播放面层（Vue 本地媒体页签：file:// / 推流回放与成员收流；
-       网页页签仍为 Rust 托管 webview，按 useChromeLayout 上报的留白摆放） -->
+       网页页签仍为 Rust 托管 webview，按 useChromeLayout 上报的留白摆放。
+       底部共享条内嵌在播放面里，状态取 useShareBar 单例，随页签显隐） -->
   <div class="stage-layer" :style="{ top: stageTop }">
     <LocalVideoStage
       v-for="t in vueTabs"
@@ -47,23 +48,9 @@
       :tab-id="t.id"
       :url="t.url"
       :active="t.id === activeTabId"
-      :bottom-inset="t.id === activeTabId && streamBarVisible ? STREAMBAR_HEIGHT : 0"
+      @prefetch="onSendFileCopy"
     />
   </div>
-
-  <!-- 本地视频播放页底部操作区（本地文件页：路径/预取；推流回放/成员收流页：共享状态与速度） -->
-  <ShareBar
-    v-if="streamBarVisible"
-    :share-mode="shareBarMode"
-    :share-name="shareName"
-    :can-prefetch="!!(roomId && isHost && onLocalFilePage && localFile)"
-    :prefetch-ratio="fileCopying ? fileCopyRatio : -1"
-    :file-path="onLocalFilePage ? (localFile?.path ?? '') : ''"
-    :download-speed="shareSpeeds.download"
-    :upload-speed="shareSpeeds.upload"
-    :load-speed="shareSpeeds.load"
-    @prefetch="onSendFileCopy"
-  />
 
   <!-- 全局提示条：UI 壳渲染；网页页签激活时由 ToastHost 镜像到页内 -->
   <ToastHost :active-url="activeTabUrl" :chrome-h="chromeH" />
@@ -91,7 +78,7 @@
 /**
  * 应用根组件（组装根）：持有跨域共享的「脊柱」状态并按依赖顺序装配各功能域 composables。
  * 具体职责拆分：页签导航 composables/useTabs.ts；同步目标编排 useSyncFlow.ts；
- * 直接推流 useDirectRelay.ts；底部共享条（本地视频播放页）useShareBar.ts；设置 useSettings.ts；
+ * 直接推流 useDirectRelay.ts；底部共享条状态 useShareBar.ts（条内嵌 LocalVideoStage）；设置 useSettings.ts；
  * 房间会话 useRoomSession.ts；主题/书签/历史续播/本地文件共享见 composables/*；
  * 顶部栏 components/TopBar.vue；主页站点卡片 components/HomeSites.vue；联调钩子见 devHooks.ts。
  */
@@ -106,7 +93,6 @@ import type { TabRole } from './components/TabStrip.vue'
 import MembersDialog from './components/MembersDialog.vue'
 import SettingsDialog from './components/SettingsDialog.vue'
 import HistoryPanel from './components/HistoryPanel.vue'
-import ShareBar from './components/ShareBar.vue'
 import LocalVideoStage from './components/LocalVideoStage.vue'
 import ToastHost from './components/ToastHost.vue'
 import { WebShareFeature } from './webShare'
@@ -120,7 +106,7 @@ import { useSettings } from './composables/useSettings'
 import { useLocalFileShare } from './composables/useLocalFileShare'
 import { useSyncFlow } from './composables/useSyncFlow'
 import { useDirectRelay } from './composables/useDirectRelay'
-import { useShareBar } from './composables/useShareBar'
+import { initShareBar } from './composables/useShareBar'
 import { useChromeLayout } from './composables/useChromeLayout'
 import { useRoomSession } from './composables/useRoomSession'
 import { setupDevHooks } from './devHooks'
@@ -151,8 +137,6 @@ const videoFullscreen = ref(false)
 const localFullscreen = ref(false)
 /** 任意播放面全屏（驱动顶栏/底部条隐藏） */
 const anyFullscreen = computed(() => videoFullscreen.value || localFullscreen.value)
-/** 底部操作区高度（ShareBar .streambar，与 styles/toolbar.css 保持一致） */
-const STREAMBAR_HEIGHT = 48
 
 /** 页签角色语义（决定同步按钮/徽标渲染）：房内房主=可切换同步；房内成员=只读徽标；其余=普通 */
 const tabRole = computed<TabRole>(() => (roomId.value ? (isHost.value ? 'host' : 'follower') : 'none'))
@@ -166,8 +150,6 @@ const { theme, persistedTheme, applyTheme } = useTheme()
 const {
   tabs,
   activeTabId,
-  onLocalFilePage,
-  streamBarVisible,
   nav,
   activateTab,
   goHome,
@@ -177,7 +159,6 @@ const {
   isTabClosed,
 } = useTabs({
   videoUrl,
-  videoFullscreen: anyFullscreen,
   historyOpen: () => historyApi.historyOpen.value,
   closeHistory: () => historyApi.closeHistory(),
   invalidateResume: () => historyApi.invalidateResume(),
@@ -192,7 +173,6 @@ const { chromeH } = useChromeLayout({
   chromeEl,
   // web 页签 HTML 全屏时视频铺满整窗（顶部留白归零）；本地元素全屏不影响 web 页签布局
   videoFullscreen,
-  streamBarVisible,
 })
 /** 本地媒体页签（file:// / 本机回环媒体；播放面由 UI 壳渲染） */
 const vueTabs = computed(() => tabs.value.filter((t) => isVuePlaybackUrl(t.url)))
@@ -290,8 +270,8 @@ const { relayTabId, showDirectRelay, onDirectRelay, clearTab: clearRelayTab } = 
   webShare,
 })
 
-/** ===== 底部共享条（只在本地视频播放页挂载） ===== */
-const { shareName, shareBarMode, shareSpeeds, onShareWeb, tabTitleOf } = useShareBar({
+/** ===== 底部共享条（状态单例；条内嵌 LocalVideoStage 渲染，App 只消费页签名覆盖与联调钩子） ===== */
+const { tabTitleOf, onShareWeb } = initShareBar({
   controller,
   roomId,
   isHost,
@@ -299,6 +279,7 @@ const { shareName, shareBarMode, shareSpeeds, onShareWeb, tabTitleOf } = useShar
   activeTabId,
   relayTabId,
   webShare,
+  localFile,
   fileCopying,
   fileCopyRatio,
 })

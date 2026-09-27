@@ -12,9 +12,9 @@
 .join { width: 200px; height: 32px; padding: 0 12px; border: 1px solid var(--ws-border); border-radius: 16px; font-size: 12px; outline: none; background: var(--ws-surface); color: var(--ws-text); }
 .join:focus { border-color: var(--ws-accent); }
 
-/* ===== 播放页操作区：视频下方常驻、页面内容的一部分（非独立白条，无阴影分隔） =====
-   高度 48px：本地视频播放面（LocalVideoStage）按同名常量预留底部空间；
-   只在本地媒体页签（file:// / 本机回环媒体）显示，网页全屏时隐藏 */
-.streambar { position: fixed; right: 0; bottom: 0; left: 0; z-index: 2; display: flex; align-items: center; gap: 8px; height: 48px; padding: 0 12px; background: var(--ws-surface); overflow-x: auto; overflow-y: hidden; }
+/* ===== 播放页操作区：本地视频播放面（LocalVideoStage）的内嵌底条，页面内容的一部分 =====
+   高度 48px；只在本地媒体页签（file:// / 本机回环媒体）随播放面出现，
+   播放面 flex 布局自身为其留位，网页页签/主页不会渲染 */
+.streambar { flex: 0 0 auto; display: flex; align-items: center; gap: 8px; height: 48px; padding: 0 12px; background: var(--ws-surface); overflow-x: auto; overflow-y: hidden; }
 .stream-idle { flex: 0 1 auto; min-width: 0; padding: 0 4px; font-size: 12px; color: var(--ws-text-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .stream-speed { flex: 0 0 auto; padding: 0 4px; font-size: 12px; color: var(--ws-text-2); font-variant-numeric: tabular-nums; white-space: nowrap; }

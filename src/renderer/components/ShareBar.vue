@@ -1,9 +1,9 @@
 <!--
   本地视频播放页操作区（视频下方）：观看源共享状态 + 预取操作。
-  只服务本地视频页面（房主本地文件页 / 推流回放与成员收流页）：挂载与否由 App.vue 的
-  streamBarVisible 决定（Rust 侧仅对这些页签给底部预留，见 tabs::bottom_inset）。
-  白底、无阴影，作为页面内容的一部分（不是独立白条）；无内容时只留空白底部（与白底播放页无缝）。
-  高度须与 Rust tabs::CHROME_BOTTOM 一致（48px）。状态文案在组件内按 shareMode/shareName 推导。
+  由 LocalVideoStage 内嵌渲染（每个本地媒体页签一份，随播放面 v-show 显隐），
+  网页页签/主页不会出现。白底、无阴影，作为页面内容的一部分（不是独立白条）；
+  无内容时只留空白底部（与白底播放页无缝）。高度 48px（styles/toolbar.css .streambar）。
+  状态取自 composables/useShareBar.ts 单例，由 LocalVideoStage 绑定；文案按 shareMode/shareName 推导。
 -->
 <script setup lang="ts">
 import { computed } from 'vue'
