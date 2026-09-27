@@ -4,12 +4,13 @@
   底部共享条（ShareBar）随播放面内嵌渲染：只在本地视频页出现，网页页签/主页无底部条；
   条状态取自 composables/useShareBar.ts 单例（App 初始化），本组件按自身地址补充页内判定。
   组件内创建 LocalVideoSurface 登记进 videoBus：同步链路对这类页签的
-  status/drain/cmd/inject 全部由它应答（语义与页面桥逐字段一致，见 harness.ts）。
+  status/cmd/inject 全部由它应答（语义与页面桥逐字段一致，见 harness.ts），
+  播放事件发生即经 emitLocalEvents 推送（videoBus 转发给房主同步引擎）。
 -->
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { isVuePlaybackUrl } from '../../core/mediaSource'
-import { registerSurface, unregisterSurface, type LocalSurface } from '../videoBus'
+import { emitLocalEvents, registerSurface, unregisterSurface, type LocalSurface } from '../videoBus'
 import ShareBar from './ShareBar.vue'
 import { useShareBar } from '../composables/useShareBar'
 
@@ -42,14 +43,14 @@ let cleanup: (() => void) | null = null
 const MANUAL_SEEK_WINDOW_MS = 1000
 let lastGestureAt = 0
 let guard = false
-const queue: Array<{ ev: string; position: number; paused: boolean }> = []
 
 /** 播放历史 tick 节流（与桥 300ms tick 同量级；history 侧自带 10s 落盘节流） */
 let lastTickAt = 0
 
 function push(ev: string, v: HTMLVideoElement): void {
   if (guard) return
-  queue.push({ ev, position: v.currentTime, paused: v.paused })
+  // 事件发生即推送（videoBus 只转发同步页签的事件给房主同步引擎）
+  emitLocalEvents(props.tabId, [{ ev, position: v.currentTime, paused: v.paused }])
 }
 
 function snapshot(v: HTMLVideoElement): VideoSnapshot {
@@ -81,7 +82,6 @@ const surface: LocalSurface = {
     const v = videoRef.value
     return v ? snapshot(v) : { position: 0, paused: true, rate: 1, duration: 0, readyState: 0, src: '' }
   },
-  drain: () => queue.splice(0, queue.length),
   cmd: (action, arg) => {
     const v = videoRef.value
     if (!v) return

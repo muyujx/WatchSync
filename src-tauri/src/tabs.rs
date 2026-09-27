@@ -437,8 +437,7 @@ pub fn set_sync_tab(app: &tauri::AppHandle, tab_id: Option<i64>, guard: bool) {
     }
     *sync = tab_id;
     drop(sync);
-    // 清空事件缓存与状态缓存（切目标 / 清除同步）
-    st.events.lock().unwrap().clear();
+    // 清空状态缓存（切目标 / 清除同步）
     *st.last_status.lock().unwrap() = None;
     if let Some(id) = tab_id {
         let entry = st.tabs.lock().unwrap().get(&id).cloned();
@@ -465,7 +464,6 @@ pub fn close(app: &tauri::AppHandle, tab_id: i64) {
         let mut sync = st.sync_id.lock().unwrap();
         if *sync == Some(tab_id) {
             *sync = None;
-            st.events.lock().unwrap().clear();
             *st.last_status.lock().unwrap() = None;
         }
     }

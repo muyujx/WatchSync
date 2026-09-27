@@ -3,7 +3,8 @@
  *
  * 职责：
  * - 周期心跳 sendState（2s 全量对表兜底：地址同步/新成员对齐/存活判定）
- * - 事件采样 broadcastEvents（80ms 粒度把本机 play/pause/seek 即时广播）
+ * - 事件推送消费（本机 play/pause/seek 发生即广播：web 页签经 Rust sync-events 推送、
+ *   Vue 本地播放面由 videoBus 直推，无轮询）
  * - 停滞看门狗 hostStallWatchdog（播放位置无进展时原地重 seek / reload 自愈）
  * - 「等待成员预加载」hold（发现成员缺口时暂停自己，全员就绪或超时后统一续播）
  * - 成员就绪表 peerReady（mready 上报的新鲜度维护）
@@ -16,7 +17,6 @@ import * as videoBus from '../videoBus'
 import type { HostFileEntry } from './relayPrefetch'
 import {
   AUTO_ACTION_QUIET_MS,
-  EVENT_POLL_MS,
   HOST_STALL_RESEEK_MS,
   MEMBER_READY_FRESH_MS,
   MEMBER_WAIT_TIMEOUT_MS,
@@ -48,10 +48,8 @@ export interface HostSyncCtx {
 export class HostSync {
   /** 状态心跳定时器（2s 全量快照兜底） */
   private pollTimer: number | null = null
-  /** 事件采样定时器（80ms 即时广播视频操作） */
-  private eventTimer: number | null = null
-  /** 事件采样防重入标记（drainEvents 为异步 IPC，避免并发堆积） */
-  private draining = false
+  /** 事件处理链（批间串行化：seek 分支内 await 查询状态，防两批交错乱序执行） */
+  private processing: Promise<void> = Promise.resolve()
   /** 停滞看门狗定时器（1s 观测播放位置进展；房主侧独立计时） */
   private stallTimer: number | null = null
   /** 看门狗观测：最近一次播放位置、该位置首次出现的时间、同段停滞内已重试次数 */
@@ -69,13 +67,13 @@ export class HostSync {
 
   constructor(private c: HostSyncCtx) {}
 
-  /** 房主：开启周期心跳（2s 全量对表兜底）+ 事件采样（80ms 即时广播视频操作）+ 停滞看门狗 */
+  /** 房主：开启周期心跳（2s 全量对表兜底）+ 订阅事件推送（操作即时广播）+ 停滞看门狗 */
   start(): void {
     this.stop()
     // 状态心跳：全量快照兜底，负责地址同步、新成员对齐与存活判定
     this.pollTimer = window.setInterval(() => this.sendState(), 2000)
-    // 事件采样：play/pause/seek 发生后立即广播，操作同步延迟从 2s 降到 80ms 粒度以内
-    this.eventTimer = window.setInterval(() => void this.broadcastEvents(), EVENT_POLL_MS)
+    // 事件即推即播：订阅同步页签视频事件（web 页签 Rust sync-events 推送、本地播放面直推），无轮询
+    videoBus.setSyncEventsHandler(this.onEvents)
     this.ensureStallTimer()
   }
 
@@ -85,15 +83,11 @@ export class HostSync {
       clearInterval(this.pollTimer)
       this.pollTimer = null
     }
-    if (this.eventTimer) {
-      clearInterval(this.eventTimer)
-      this.eventTimer = null
-    }
+    videoBus.setSyncEventsHandler(null)
     if (this.stallTimer) {
       clearInterval(this.stallTimer)
       this.stallTimer = null
     }
-    this.draining = false
     this.stallPos = -1
     this.stallSince = 0
     this.stallKicks = 0
@@ -124,56 +118,56 @@ export class HostSync {
     }, 1000)
   }
 
+  /** 房主：接收同步页签推送的本机视频事件（追加到处理链尾，批间保序执行） */
+  private readonly onEvents = (events: Array<{ ev: string; position: number; paused: boolean }>): void => {
+    if (!events.length) return
+    this.processing = this.processing.then(() => this.processEvents(events)).catch(() => {})
+  }
+
   /**
-   * 房主：取走本机视频事件并即时转换为同步消息广播。
-   * drainEvents 为异步 IPC，用 draining 标记防重入；seek 需查询实时播放状态。
+   * 房主：处理一批本机视频事件并即时转换为同步消息广播。
+   * seek 需查询实时播放状态（异步）；批间经 processing 链串行化保序。
    */
-  private async broadcastEvents(): Promise<void> {
-    if (this.draining) return
-    this.draining = true
-    try {
-      for (const ev of await videoBus.drainEvents()) {
-        if (ev.ev === 'play') {
-          // 自动续播（超时/看门狗）的事件回声：不参与保持判定，否则续播会立刻重新触发
-          // 「等待成员预加载」形成 hold↔看门狗无限震荡
-          const autoEcho = Date.now() - this.autoActionAt < AUTO_ACTION_QUIET_MS
-          // 等待期间用户自己按了播放：尊重用户意图，取消保持（成员自行追赶）
-          if (!autoEcho && this.holdingForMembers && Date.now() - this.holdStartedAt > SELF_ACTION_WINDOW_MS) {
-            this.cancelHold('user play')
+  private async processEvents(events: Array<{ ev: string; position: number; paused: boolean }>): Promise<void> {
+    for (const ev of events) {
+      if (ev.ev === 'play') {
+        // 自动续播（超时/看门狗）的事件回声：不参与保持判定，否则续播会立刻重新触发
+        // 「等待成员预加载」形成 hold↔看门狗无限震荡
+        const autoEcho = Date.now() - this.autoActionAt < AUTO_ACTION_QUIET_MS
+        // 等待期间用户自己按了播放：尊重用户意图，取消保持（成员自行追赶）
+        if (!autoEcho && this.holdingForMembers && Date.now() - this.holdStartedAt > SELF_ACTION_WINDOW_MS) {
+          this.cancelHold('user play')
+        }
+        this.c.room()?.broadcast({ t: 'play', position: ev.position, at: Date.now() })
+        if (!autoEcho) void this.maybeHoldForMembers('play')
+      } else if (ev.ev === 'pause') {
+        // 等待期间用户手动暂停（非保持逻辑自身的暂停）：取消等待，不自动续播
+        if (this.holdingForMembers && Date.now() - this.holdStartedAt > SELF_ACTION_WINDOW_MS) {
+          this.cancelHold('user pause')
+        }
+        this.c.room()?.broadcast({ t: 'pause', position: ev.position })
+      } else if (ev.ev === 'seek') {
+        const st = await videoBus.videoStatus()
+        this.c.room()?.broadcast({
+          t: 'seek',
+          position: ev.position,
+          playing: !st?.paused,
+          at: Date.now(),
+          // 拖进度时房主是否已缓冲就绪；false → 成员暂停等待，避免成员先加载完抢跑
+          ready: Boolean(st?.hasVideo && st.readyState >= 2),
+        })
+        // 看门狗原地重 seek 的事件回声：位置未变，失效/重等只会无限推迟就绪判定
+        if (Date.now() - this.autoActionAt >= AUTO_ACTION_QUIET_MS) {
+          // 成员数据落盘晚于房主：拖动后等成员预加载到位再继续同步。
+          // seek 使成员旧的就绪态全部失效——它们的「就绪」针对的是旧位置，
+          // 新目标要等成员 seek 后重新上报（slow 网成员会晚好几秒）
+          for (const p of this.c.peers) {
+            const r = this.peerReady.get(p)
+            if (r) r.ready = false
           }
-          this.c.room()?.broadcast({ t: 'play', position: ev.position, at: Date.now() })
-          if (!autoEcho) void this.maybeHoldForMembers('play')
-        } else if (ev.ev === 'pause') {
-          // 等待期间用户手动暂停（非保持逻辑自身的暂停）：取消等待，不自动续播
-          if (this.holdingForMembers && Date.now() - this.holdStartedAt > SELF_ACTION_WINDOW_MS) {
-            this.cancelHold('user pause')
-          }
-          this.c.room()?.broadcast({ t: 'pause', position: ev.position })
-        } else if (ev.ev === 'seek') {
-          const st = await videoBus.videoStatus()
-          this.c.room()?.broadcast({
-            t: 'seek',
-            position: ev.position,
-            playing: !st?.paused,
-            at: Date.now(),
-            // 拖进度时房主是否已缓冲就绪；false → 成员暂停等待，避免成员先加载完抢跑
-            ready: Boolean(st?.hasVideo && st.readyState >= 2),
-          })
-          // 看门狗原地重 seek 的事件回声：位置未变，失效/重等只会无限推迟就绪判定
-          if (Date.now() - this.autoActionAt >= AUTO_ACTION_QUIET_MS) {
-            // 成员数据落盘晚于房主：拖动后等成员预加载到位再继续同步。
-            // seek 使成员旧的就绪态全部失效——它们的「就绪」针对的是旧位置，
-            // 新目标要等成员 seek 后重新上报（slow 网成员会晚好几秒）
-            for (const p of this.c.peers) {
-              const r = this.peerReady.get(p)
-              if (r) r.ready = false
-            }
-            void this.maybeHoldForMembers('seek')
-          }
+          void this.maybeHoldForMembers('seek')
         }
       }
-    } finally {
-      this.draining = false
     }
   }
 

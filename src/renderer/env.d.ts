@@ -30,8 +30,8 @@ declare global {
       setSyncTab(tabId: number | null, guard: boolean): Promise<void>
       /** 注入桥脚本（guard 预留：成员端跟随模式开关），作用于同步页签 */
       inject(guard: boolean): Promise<string>
-      /** 取走视频事件队列 */
-      drainEvents(): Promise<Array<{ ev: string; position: number; paused: boolean }>>
+      /** 订阅同步页签视频事件推送（桥上报即推；房主同步引擎经 videoBus 消费） */
+      onSyncEvents(cb: (events: Array<{ ev: string; position: number; paused: boolean }>) => void): void
       /** 查询视频状态（pageUrl 为视频视图实时地址，hasVideo 表示页面是否已装桥，readyState 为视频就绪程度） */
       videoStatus(): Promise<(VideoSnapshot & { pageUrl: string; hasVideo: boolean }) | null>
       /** 下发视频指令：action = play|pause|seek|rate */

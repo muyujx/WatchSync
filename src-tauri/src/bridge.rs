@@ -24,7 +24,7 @@ pub fn handle_report(
         let tab = v.get("tab").and_then(|x| x.as_i64()).unwrap_or(-1);
         let kind = v.get("kind").and_then(|x| x.as_str()).unwrap_or("");
         match kind {
-            // 心跳：事件入队（仅同步页签）+ 状态缓存（所有页签）+ 历史记录
+            // 心跳：事件推送（仅同步页签）+ 状态缓存（所有页签）+ 历史记录
             "tick" => {
                 let st = state(app);
                 let sync = st.sync_id.lock().unwrap().clone();
@@ -58,22 +58,31 @@ pub fn handle_report(
                     }
                 }
                 if sync == Some(tab) {
-                    // 同步页签：事件入队（保持原语义）
-                    if let Some(evs) = v.get("events").and_then(|x| x.as_array()) {
-                        let mut q = st.events.lock().unwrap();
-                        for e in evs {
-                            let ev = e.get("ev").and_then(|x| x.as_str()).unwrap_or("");
-                            if ev.is_empty() {
-                                continue;
-                            }
-                            q.push(VideoEvent {
-                                ev: ev.to_string(),
-                                position: e.get("position").and_then(|x| x.as_f64()).unwrap_or(0.0),
-                                paused: e.get("paused").and_then(|x| x.as_bool()).unwrap_or(true),
-                            });
-                        }
+                    // 同步页签：事件解析后直接推送 UI（emit 到 UI 壳 webview，由 videoBus 转发房主
+                    // 同步引擎；非空才推）。无中间队列：reporter 打包（300ms）之后零排队。
+                    let events: Vec<VideoEvent> = v
+                        .get("events")
+                        .and_then(|x| x.as_array())
+                        .map(|evs| {
+                            evs.iter()
+                                .filter_map(|e| {
+                                    let ev = e.get("ev").and_then(|x| x.as_str())?;
+                                    if ev.is_empty() {
+                                        return None;
+                                    }
+                                    Some(VideoEvent {
+                                        ev: ev.to_string(),
+                                        position: e.get("position").and_then(|x| x.as_f64()).unwrap_or(0.0),
+                                        paused: e.get("paused").and_then(|x| x.as_bool()).unwrap_or(true),
+                                    })
+                                })
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    if !events.is_empty() {
+                        let _ = app.emit_to("ui", "sync-events", &events);
                     }
-                    // 同步页签状态缓存（保持原语义：status 键存在才覆盖；
+                    // 同步页签状态缓存（status 键存在才覆盖；
                     // 无桥/无视频置 None，hasVideo=false 且 pageUrl 仍持续同步）
                     if has_status_key {
                         *st.last_status.lock().unwrap() = status.clone();

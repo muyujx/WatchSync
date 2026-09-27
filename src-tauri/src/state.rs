@@ -8,7 +8,7 @@ use std::sync::{Mutex, OnceLock};
 use serde::{Deserialize, Serialize};
 use tauri::Manager;
 
-/// 桥上报的视频事件（与 Electron 版 drainEvents 返回形状一致）
+/// 桥上报的视频事件（sync-events 事件推送 UI 的载荷；形状与页面桥事件一致）
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VideoEvent {
     pub ev: String,
@@ -77,8 +77,6 @@ pub struct AppState {
     pub sync_id: Mutex<Option<i64>>,
     /// 页签 id 发生器
     pub next_id: AtomicI64,
-    /// 同步页签积压的视频事件（桥上报，UI 经 drain_events 取走）
-    pub events: Mutex<Vec<VideoEvent>>,
     /// 同步页签最近一次桥状态（无桥/加载中为 None）
     pub last_status: Mutex<Option<BridgeStatus>>,
     /// 激活页签的 HTML 全屏状态
@@ -101,7 +99,6 @@ impl AppState {
             active_id: Mutex::new(None),
             sync_id: Mutex::new(None),
             next_id: AtomicI64::new(1),
-            events: Mutex::new(Vec::new()),
             last_status: Mutex::new(None),
             html_fullscreen: Mutex::new(false),
             was_maximized_before_fs: Mutex::new(false),

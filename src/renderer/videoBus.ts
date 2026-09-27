@@ -3,10 +3,11 @@
  *
  * 背景：本地媒体页签（file:// / 本机回环媒体）的播放面在 UI 壳内渲染（LocalVideoStage），
  * 没有子 webview 也没有桥。同步子系统（hostSync/followerSync）原先直接调 window.p2pApi
- * 的 videoStatus/drainEvents/videoCmd/inject，这些命令只作用于「同步页签的 webview」；
+ * 的 videoStatus/videoCmd/inject，这些命令只作用于「同步页签的 webview」；
  * 同步页签是 Vue 页签时改由本模块注册的 LocalVideoSurface 应答，语义与桥逐字段一致：
  * - status：{position, paused, rate, duration, readyState, src}
- * - 事件：play / pause / seek（seeking + 手动手势窗口判定，见 core 侧 harness 等价实现）
+ * - 事件：play / pause / seek（seeking + 手动手势窗口判定，见 core 侧 harness 等价实现），
+ *   发生即推送（web 页签由 Rust sync-events 推送、本地面经 emitLocalEvents 直推）
  * - cmd：play / pause / seek / reload / rate
  * - setFollow：跟随守卫（true = 不采集事件，成员端语义）
  */
@@ -15,8 +16,6 @@
 export interface LocalSurface {
   /** 当前视频快照（元素存在即视为 hasVideo） */
   status(): VideoSnapshot
-  /** 取走积压的播放事件（play/pause/seek；跟随端恒为空） */
-  drain(): Array<{ ev: string; position: number; paused: boolean }>
   /** 下发播放指令 */
   cmd(action: string, arg?: number): void
   /** 跟随守卫开关 */
@@ -60,10 +59,35 @@ export async function videoStatus(): Promise<(VideoSnapshot & { pageUrl: string;
   return window.p2pApi.videoStatus()
 }
 
-/** 取走同步页签积压事件 */
-export async function drainEvents(): Promise<Array<{ ev: string; position: number; paused: boolean }>> {
-  if (syncIsLocal()) return surfaces.get(syncTabId!)!.drain()
-  return window.p2pApi.drainEvents()
+/** 房主同步页签视频事件处理器（hostSync 注册；null = 非房主同步态，事件丢弃） */
+let syncEventsHandler: ((events: Array<{ ev: string; position: number; paused: boolean }>) => void) | null = null
+/** Rust sync-events 推送监听是否已注册（首次设置处理器时注册一次，之后常驻） */
+let bridgeListenerReady = false
+
+/**
+ * 设置同步页签视频事件处理器（房主 hostSync start/stop 调用）。
+ * 首次设置时订阅 Rust 的 sync-events 推送（桥上报即推，无轮询、无中间队列）。
+ */
+export function setSyncEventsHandler(
+  cb: ((events: Array<{ ev: string; position: number; paused: boolean }>) => void) | null,
+): void {
+  syncEventsHandler = cb
+  if (cb && !bridgeListenerReady && window.p2pApi) {
+    bridgeListenerReady = true
+    window.p2pApi.onSyncEvents((events) => {
+      // 同步页签是 Vue 本地面时事件不走 Rust（本地媒体页签无桥 webview），滤掉切换竞态中的残留推送
+      if (syncEventsHandler && !syncIsLocal()) syncEventsHandler(events)
+    })
+  }
+}
+
+/** 本地播放面事件推送（LocalVideoStage 调用）：仅同步页签的事件转发给房主处理器 */
+export function emitLocalEvents(
+  tabId: number,
+  events: Array<{ ev: string; position: number; paused: boolean }>,
+): void {
+  if (tabId !== syncTabId || !syncEventsHandler) return
+  syncEventsHandler(events)
 }
 
 /** 向同步页签下发播放指令 */

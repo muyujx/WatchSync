@@ -37,17 +37,6 @@ pub async fn inject(app: AppHandle, guard: bool) -> String {
     tabs::inject_sync(&app, guard)
 }
 
-/// 取走视频事件队列（取出后立即释放锁，守卫不跨 await 边界）
-#[tauri::command]
-pub async fn drain_events(app: AppHandle) -> Vec<crate::state::VideoEvent> {
-    let st = state(&app);
-    let taken = {
-        let mut q = st.events.lock().unwrap();
-        std::mem::take(&mut *q)
-    };
-    taken
-}
-
 /// 查询视频状态（同步取值后立即释放锁）
 #[tauri::command]
 pub async fn video_status(app: AppHandle) -> Option<crate::state::VideoStatusFull> {

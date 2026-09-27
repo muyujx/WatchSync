@@ -99,7 +99,6 @@ fn main() {
             commands::set_active_tab,
             commands::set_sync_tab,
             commands::inject,
-            commands::drain_events,
             commands::video_status,
             commands::video_cmd,
             commands::video_nav,

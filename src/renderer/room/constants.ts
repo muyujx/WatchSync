@@ -24,9 +24,6 @@ export const SOURCE_CORRECT_COOLDOWN_MS = 3000
 /** 成员端地址漂移连续纠正上限：达到即停止（防站点强制重定向，如登录墙，造成来回死循环） */
 export const SOURCE_CORRECT_MAX_ATTEMPTS = 5
 
-/** 房主事件采样间隔（ms）：视频操作事件即时广播的轮询粒度，决定操作同步延迟上限 */
-export const EVENT_POLL_MS = 80
-
 /** 房主未就绪确认拍数：连续 N 次心跳未就绪才暂停冻结成员（防 readyState 瞬时波动造成 pause/play 抖动） */
 export const NOT_READY_CONFIRMATIONS = 2
 

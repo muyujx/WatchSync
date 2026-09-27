@@ -25,8 +25,12 @@ import { parseShareUrl } from '../core/shareLink'
     setSyncTab: (tabId: number | null, guard: boolean) => invoke('set_sync_tab', { tabId, guard }),
     /** 注入桥脚本（作用于同步页签） */
     inject: (guard: boolean) => invoke('inject', { guard }),
-    /** 取走视频事件队列 */
-    drainEvents: () => invoke('drain_events'),
+    /** 订阅同步页签视频事件推送（桥上报即推，见 bridge.rs sync-events；UI 侧 videoBus 转发） */
+    onSyncEvents: (cb: (events: Array<{ ev: string; position: number; paused: boolean }>) => void) => {
+      void listen('sync-events', (e: { payload: Array<{ ev: string; position: number; paused: boolean }> }) =>
+        cb(e.payload),
+      )
+    },
     /** 查询视频状态 */
     videoStatus: () => invoke('video_status'),
     /** 下发视频指令：action = play|pause|seek|rate */
