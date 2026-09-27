@@ -84,7 +84,9 @@ import {
   type HistoryRecord,
 } from '../../core/history'
 
+/** 组件属性：open 面板显隐（数据自取：打开时自行轮询播放记录，父级只给开关） */
 const props = defineProps<{ open: boolean }>()
+/** 组件事件：close 关闭面板；open 点某条记录（父级开页签并按记录进度续播） */
 const emit = defineEmits<{ close: []; open: [r: HistoryRecord] }>()
 
 /** 当前记录（轮询结果） */

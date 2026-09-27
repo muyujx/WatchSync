@@ -42,29 +42,56 @@ defineProps<{
   historyOpen: boolean
 }>()
 
+/**
+ * 组件事件（全部转发给父级 App 处理，本组件不持业务状态）：
+ * 页签域：activate 切换查看页签；setSync 房主切换同步目标；close 关闭页签；home 回主页。
+ * 导航/窗口：win 窗口控制（minimize/toggleMaximize/close）；nav 工具栏导航（back/forward/reload）。
+ * 房间域：open 地址栏回车打开；host 创建房间；copyLink 复制邀请链接；directRelay 当前网页视频转直接推流；
+ * openMembers 打开成员面板；toggleSyncPause 成员暂停/恢复同步；exitRoom 退出（房主=解散）房间；
+ * joinLink 按邀请链接加入；cancelJoin 取消进行中的加入。
+ * 面板：toggleHistory 开/关播放记录面板；openSettings 打开设置面板。
+ */
 const emit = defineEmits<{
+  /** 切换查看某页签（参数：页签 ID） */
   activate: [id: number]
+  /** 房主把同步目标切到此页签（参数：页签 ID） */
   setSync: [id: number]
+  /** 关闭页签（参数：页签 ID） */
   close: [id: number]
+  /** 回主页（页签保留后台） */
   home: []
+  /** 窗口控制：minimize / toggleMaximize / close */
   win: [action: string]
+  /** 工具栏导航：back / forward / reload */
   nav: [action: string]
+  /** 地址栏回车：打开视频网页 / 粘的是邀请链接则加入 */
   open: []
+  /** 创建房间（以当前打开的视频网页为观看源） */
   host: []
+  /** 复制邀请链接到剪贴板 */
   copyLink: []
+  /** 当前网页视频转「直接推流」（开/跳推流页签并同步成员） */
   directRelay: []
+  /** 打开成员面板 */
   openMembers: []
+  /** 成员端暂停/恢复跟随同步 */
   toggleSyncPause: []
+  /** 退出房间（房主=解散房间） */
   exitRoom: []
+  /** 按邀请链接输入框内容加入房间 */
   joinLink: []
+  /** 取消进行中的加入（中止建连回初始态） */
   cancelJoin: []
+  /** 开/关播放记录面板 */
   toggleHistory: []
+  /** 打开设置面板 */
   openSettings: []
 }>()
 </script>
 
 <template>
   <div class="topbar">
+    <!-- 标签行：props 与事件原样转发（页签状态与语义由 App 持有，见 TabStrip.vue 属性/事件说明） -->
     <TabStrip
       :tabs="tabs"
       :active-id="activeId"

@@ -1,5 +1,42 @@
 <template>
   <div ref="chromeEl">
+    <!--
+      顶部栏（纯展示组件：状态在本组件持有，交互经事件回传处理；下列注释与属性行逐行对应）
+      v-show="!anyFullscreen"      视频/网页全屏时隐藏顶栏（播放面铺满整窗）
+      v-model:url                  地址栏输入（双向）
+      v-model:join-input           邀请链接输入框（双向）
+      :tabs                        页签列表
+      :active-id                   当前激活（查看）的页签
+      :sync-id                     同步目标页签
+      :role                        页签角色语义：房内房主=每页签带同步按钮；成员=只读同步点；未入房=普通
+      :sync-paused                 成员端已暂停同步（同步点变黄）
+      :is-max                      窗口最大化状态（最大化/还原图标切换）
+      :title-of                    页签展示名覆盖（本地视频页签只显示文件名去后缀）
+      :room-id                     房间号（''=未在房，驱动「创建房间」↔「退出房间」按钮组切换）
+      :is-host                     是否房主（房间按钮组与文案随之切换）
+      :busy                        建房/加入进行中（按钮 loading 与禁用）
+      :connection-lost             成员端与房主连接已断开（红字提示）
+      :show-direct-relay           当前网页视频可否「直接推流」（按钮显隐）
+      :member-count                在线成员数（成员按钮文案）
+      :history-open                播放记录面板是否开着（按钮高亮）
+      @activate                    点页签本体：切换查看该页签
+      @set-sync                    点页签上的同步按钮：切换同步目标（房主）
+      @close                       关闭页签
+      @home                        回主页
+      @win                         窗口控制：minimize / toggleMaximize / close
+      @nav                         工具栏导航：back / forward / reload
+      @open                        地址栏回车：打开网页（粘的是邀请链接则转加入）
+      @host                        创建房间（以当前视频网页为观看源）
+      @copy-link                   复制邀请链接
+      @direct-relay                当前网页视频转直接推流
+      @open-members                打开成员面板
+      @toggle-sync-pause           成员暂停/恢复同步
+      @exit-room                   退出房间（房主=解散房间）
+      @join-link                   按输入框里的邀请链接加入房间
+      @cancel-join                 取消进行中的加入
+      @toggle-history              开/关播放记录面板
+      @open-settings               打开设置面板
+    -->
     <TopBar
       v-show="!anyFullscreen"
       v-model:url="videoUrl"
@@ -38,9 +75,16 @@
     />
   </div>
 
-  <!-- 本地视频播放面层（Vue 本地媒体页签：file:// / 推流回放与成员收流；
-       网页页签仍为 Rust 托管 webview，按 useChromeLayout 上报的留白摆放。
-       底部共享条内嵌在播放面里，状态取 useShareBar 单例，随页签显隐） -->
+  <!--
+    本地视频播放面层（Vue 本地媒体页签：file:// / 推流回放与成员收流；
+    网页页签仍为 Rust 托管 webview，按 useChromeLayout 上报的留白摆放。
+    注释与绑定行同序）
+    :tab-id                      页签 ID（videoBus 登记 / 同步链路路由用）
+    :url                         页签地址（播放源）
+    :active                      是否激活（非激活 v-show 隐藏但视频照常播）
+    @prefetch                    房主在底部条点「预取整份」→ 开始整份副本传输
+    每个页签常驻一个实例；底部共享条内嵌在播放面里（状态取 useShareBar 单例，随页签显隐）。
+  -->
   <div class="stage-layer" :style="{ top: stageTop }">
     <LocalVideoStage
       v-for="t in vueTabs"
@@ -52,13 +96,40 @@
     />
   </div>
 
-  <!-- 全局提示条：UI 壳渲染；网页页签激活时由 ToastHost 镜像到页内 -->
+  <!--
+    全局提示条（Toast）：:active-url 激活页签地址（null=主页；网页页签的 webview 盖住壳内容区，
+    提示会镜像进页面内渲染） · :chrome-h 顶栏高度（提示条定位在其下方）。
+  -->
   <ToastHost :active-url="activeTabUrl" :chrome-h="chromeH" />
 
-  <!-- 主页站点卡片（含站点书签增删改对话框与「打开本地视频」入口） -->
+  <!--
+    主页站点卡片（无激活页签时显示；含站点书签增删改对话框与「打开本地视频」入口；注释与绑定行同序）
+    ref="homeSites"              组件实例（设置读取后调 .rebuild() 重建自定义卡片）
+    :active                      主页显隐（无激活页签 = true）
+    @open-site                   点站点卡片 → 填地址并打开页签
+    @pick-local                  点「打开本地视频」→ 系统对话框选文件 → 打开并共享
+  -->
   <HomeSites ref="homeSites" :active="activeTabId == null" @open-site="openSite" @pick-local="onPickLocal" />
 
+  <!--
+    成员面板（注释与绑定行同序）
+    :open                        显隐
+    :members                     房间成员列表（控制器映射，含在线状态与往返延迟）
+    :i-am-host                   本端是房主时成员行显示「转让房主」按钮
+    @close                       关闭面板
+    @transfer                    把房主转让给该成员
+  -->
   <MembersDialog :open="membersOpen" :members="memberList" :i-am-host="isHost" @close="closeMembers" @transfer="onTransferHost" />
+
+  <!--
+    设置面板（注释与绑定行同序）
+    :open                        显隐
+    :nickname                    当前昵称（打开时回填输入框）
+    :theme                       当前主题（打开时回填分段选择）
+    @close                       取消（不保存）
+    @save                        提交昵称+主题（持久化并广播 profile）
+    @preview-theme               选主题时即时预览（不落盘，点保存才生效）
+  -->
   <SettingsDialog
     :open="settingsOpen"
     :nickname="myName"
@@ -67,6 +138,10 @@
     @save="saveSettings"
     @preview-theme="applyTheme"
   />
+
+  <!--
+    播放记录面板：:open 显隐（网页视频全屏时强制隐藏）。@close 关闭 · @open 点某条记录→父级开页签续播。
+  -->
   <HistoryPanel
     :open="historyOpen && !videoFullscreen"
     @close="closeHistory"
