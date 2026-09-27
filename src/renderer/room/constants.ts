@@ -24,15 +24,6 @@ export const SOURCE_CORRECT_COOLDOWN_MS = 3000
 /** 成员端地址漂移连续纠正上限：达到即停止（防站点强制重定向，如登录墙，造成来回死循环） */
 export const SOURCE_CORRECT_MAX_ATTEMPTS = 5
 
-/** 房主未就绪确认拍数：连续 N 次心跳未就绪才暂停冻结成员（防 readyState 瞬时波动造成 pause/play 抖动） */
-export const NOT_READY_CONFIRMATIONS = 2
-
-/** 房主刚 seek 后的未就绪确认拍数：拖进度加载窗口短，1 拍即冻，缩短成员抢跑 */
-export const SEEK_NOT_READY_CONFIRMATIONS = 1
-
-/** 房主 seek 后多少 ms 内的未就绪心跳用更快确认（覆盖 state 心跳间隔） */
-export const HOST_SEEK_FAST_WINDOW_MS = 6000
-
 /** 房主等待成员预加载的超时（ms）：超时后不再等，直接继续（成员靠校准循环追平） */
 export const MEMBER_WAIT_TIMEOUT_MS = 30000
 

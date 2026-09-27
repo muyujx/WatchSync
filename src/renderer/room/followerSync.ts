@@ -2,8 +2,9 @@
  * 成员端「跟随同步」子系统。
  *
  * 职责：
- * - 应用房主播放指令（state/play/pause/seek）：含来源过滤、暂停同步短路、
- *   房主未就绪（readyState<2）冻结门控
+ * - 应用房主播放指令（state/play/pause/seek）：含来源过滤、暂停同步短路；
+ *   房主加载状态经 waiting/playing 事件映射的 pause/play 即时跟随，
+ *   成员暂停期间元素照常取数缓冲，自身加载不受影响
  * - 校准循环 start（2s 对表：断线判定/播放状态对齐/位置偏差 seek）
  * - 就绪上报（mready：变化即报 + 400ms 起播快报 + 周期保鲜）
  * - 观看源地址漂移自愈（correctSourceDrift）与桥就绪等待（waitForBridge）
@@ -18,11 +19,8 @@ import * as videoBus from '../videoBus'
 import type { MediaStreamReceiver } from '../mediaStream'
 import {
   BRIDGE_WAIT_MS,
-  HOST_SEEK_FAST_WINDOW_MS,
   MEMBER_REPORT_INTERVAL_MS,
-  NOT_READY_CONFIRMATIONS,
   SEEK_GRACE_MS,
-  SEEK_NOT_READY_CONFIRMATIONS,
   SOURCE_CORRECT_COOLDOWN_MS,
   SOURCE_CORRECT_MAX_ATTEMPTS,
   STATE_TIMEOUT_MS,
@@ -73,12 +71,6 @@ export class FollowerSync {
   private followTimer: number | null = null
   /** 最近一次下发 seek 的时间（0=从未；宽限期内不再重复 seek/rate） */
   private lastSeekAt = 0
-  /** 冻结标记：房主未就绪（初始加载/中途缓冲）时为 true，暂停成员并跳过一切对齐动作 */
-  private hostNotReady = false
-  /** 连续未就绪心跳计数（达到拍数才置 hostNotReady，防瞬时波动误判） */
-  private notReadyCount = 0
-  /** 最近一次收到房主 seek 的时间（ms，0=无）：其后未就绪用更少确认拍数尽快冻结 */
-  private lastHostSeekAt = 0
   /** 暂停同步标记：true 时不采纳房主指令、不校准本地视频（本地可自由操作） */
   private syncPaused = false
   /** 桥就绪标记（视频元素已创建并注入；换页后重置） */
@@ -98,11 +90,6 @@ export class FollowerSync {
   /** 成员端是否处于暂停同步（供 UI 渲染黄点/按钮态） */
   get isPaused(): boolean {
     return this.syncPaused
-  }
-
-  /** 成员端是否处于「房主未就绪」冻结（供诊断快照读取） */
-  get isFrozen(): boolean {
-    return this.hostNotReady
   }
 
   /**
@@ -176,63 +163,28 @@ export class FollowerSync {
       this.markAlive()
       // 共享模式同步（file/stream 时成员不跟 url 导航）
       this.c.applyShareMeta(msg.mode, msg.fileId)
-      // 就绪门控：房主未就绪（初始加载/中途网络缓冲，readyState<2）时确认后暂停冻结成员，
-      // 期间不采纳基准、不做对齐；房主刚 seek 后用更少拍数尽快冻，避免成员先加载完抢跑。
-      if (msg.ready === false) {
-        this.notReadyCount++
-        const afterSeek = this.lastHostSeekAt > 0 && Date.now() - this.lastHostSeekAt < HOST_SEEK_FAST_WINDOW_MS
-        const need = afterSeek ? SEEK_NOT_READY_CONFIRMATIONS : NOT_READY_CONFIRMATIONS
-        if (!this.hostNotReady && this.notReadyCount >= need) {
-          this.hostNotReady = true
-          p2pLog('host not ready, freeze follower', { afterSeek, need })
-          // 边沿触发仅暂停一次；成员停在哪由冻结前的基准决定，偏差不再扩大
-          void videoBus.videoCmd('pause')
-        }
-        // 未就绪心跳仍驱动页签地址同步（换视频/换剧集能跟上），但不采纳基准
-        void this.applySnapshot(null, msg.url)
-        return
-      }
-      // 恢复就绪：若此前处于冻结，applySnapshot 需先 seek 到房主进度再对齐播放
-      const wasFrozen = this.hostNotReady
-      this.hostNotReady = false
-      this.notReadyCount = 0
-      this.lastHostSeekAt = 0
-      void this.applySnapshot({ position: msg.position, playing: msg.playing, at: msg.at }, msg.url, wasFrozen)
+      // 心跳的 playing 与 waiting/playing 事件同口径（房主加载中即 false），
+      // 直接采纳快照即可，无需独立的冻结门控
+      void this.applySnapshot({ position: msg.position, playing: msg.playing, at: msg.at }, msg.url)
     } else if (msg.t === 'play') {
-      if (this.hostNotReady) return
       // 关键：同步更新本地基准，避免 followTimer 用旧快照（playing=false）把刚起播又暂停
       this.lastSnapshot = { position: msg.position, playing: true, at: msg.at }
       this.markAlive()
       videoBus.videoCmd('play')
     } else if (msg.t === 'pause') {
-      if (this.hostNotReady) return
-      // pause 消息无 at：暂停时不做位置推算，基准位置即房主暂停点
+      // pause 消息无 at：暂停时不做位置推算，基准位置即房主暂停点。
+      // 房主加载中（waiting 事件映射）也走此消息：成员暂停不前进，元素照常取数缓冲
       this.lastSnapshot = { position: msg.position, playing: false, at: Date.now() }
       this.markAlive()
       videoBus.videoCmd('pause')
     } else if (msg.t === 'seek') {
       this.markAlive()
       this.lastSeekAt = Date.now()
-      this.lastHostSeekAt = Date.now()
       // 先更新基准再下发，避免同轮 followTimer 按旧位置反向校正
       this.lastSnapshot = { position: msg.position, playing: msg.playing, at: msg.at }
-      // 成员跳到目标进度（即便房主仍在加载），加载完成后与房主位置一致
+      // 成员跳到目标进度（即便房主仍在加载），加载完成后与房主位置一致；
+      // 房主加载中会随即经 waiting→pause 广播让成员停下（元素自身无数据也不会抢跑）
       videoBus.videoCmd('seek', msg.position)
-      // 房主拖进度后仍在缓冲：成员停住等 ready，禁止起播（成员先加载完也不抢跑）
-      if (msg.ready === false) {
-        if (!this.hostNotReady) {
-          this.hostNotReady = true
-          this.notReadyCount = 0
-          p2pLog('host seek not ready, freeze follower')
-        }
-        videoBus.videoCmd('pause')
-        return
-      }
-      // 冻结中收到已就绪的 seek：解除冻结并按 playing 对齐
-      if (this.hostNotReady) {
-        this.hostNotReady = false
-        this.notReadyCount = 0
-      }
       if (msg.playing) videoBus.videoCmd('play')
     }
   }
@@ -258,9 +210,6 @@ export class FollowerSync {
   unlockSyncTab(reason: string): void {
     p2pLog('unlock sync tab', reason)
     this.lastSnapshot = null
-    this.hostNotReady = false
-    this.notReadyCount = 0
-    this.lastHostSeekAt = 0
     // 同步结束：清空地址纠正基准，下次同步从全新序列开始
     this.sourceCorrection = { target: '', attempts: 0, lastAt: 0 }
     // 先按旧 id 解除跟随守卫，再清空指针：同步已结束，成员可关闭该页签
@@ -298,9 +247,6 @@ export class FollowerSync {
     this.lastSnapshot = null
     this.lastStateAt = 0
     this.connectionLost = false
-    this.hostNotReady = false
-    this.notReadyCount = 0
-    this.lastHostSeekAt = 0
     this.syncPaused = false
     this.lastReadyReported = null
     this.lastReadySentAt = 0
@@ -339,11 +285,9 @@ export class FollowerSync {
       }
       const st = await videoBus.videoStatus().catch(() => null)
       // 向房主上报本机缓冲就绪态（房主「等待成员预加载」的决策依据；
-      // 冻结/暂停同步期间也要上报——冻结期正是成员在缓冲的时刻）
+      // 暂停同步期间也要上报——房主加载跟随期正是成员在缓冲的时刻）
       this.reportBufferState(st)
       if (!this.lastSnapshot) return
-      // 房主未就绪冻结期：成员保持暂停，不做播放对齐与位置校正，等就绪心跳一次性对齐
-      if (this.hostNotReady) return
       // 暂停同步：不做校准与状态对齐（本地自由控制）
       if (this.syncPaused) return
       // 桥未就绪（播放器还在创建）时本轮不动作，由 applySnapshot 负责首次对齐
@@ -418,9 +362,9 @@ export class FollowerSync {
 
   /**
    * 成员端应用状态快照：按需建立/导航同步页签、纠正地址漂移，并在桥就绪后对齐位置与播放状态。
-   * 参数：s 快照（null 表示房主未就绪的心跳，仅同步页签地址、不采纳基准不做对齐）；
+   * 参数：s 快照；
    *       url 房主当前视频页（空串表示房主尚未打开视频/已关闭同步页签）；
-   *       resyncSeek 是否先 seek 到 s.position 再对齐播放（冻结恢复/房主加载完成后的强制对位）。
+   *       resyncSeek 是否先 seek 到 s.position 再对齐播放（暂停同步恢复时的强制对位）。
    */
   private async applySnapshot(s: StateSnapshot | null, url: string, resyncSeek = false): Promise<void> {
     // 等待桥就绪期间会有新心跳：直接更新快照（位置由跟随循环持续校正），避免并发重入
@@ -470,7 +414,10 @@ export class FollowerSync {
           // 初次对齐同样进入 seek 宽限期，避免跟随循环在其缓冲期间重复 seek
           this.lastSeekAt = Date.now()
           await videoBus.videoCmd('seek', s.position)
-          await videoBus.videoCmd(s.playing ? 'play' : 'pause')
+          // 先 play 触发站点起播加载（preload=none 站点不 play 永远不拉数据），
+          // 房主未在播再补 pause：元素暂停后照常取数，成员加载与房主加载并行
+          await videoBus.videoCmd('play')
+          if (!s.playing) await videoBus.videoCmd('pause')
         } else {
           // 超时未就绪：保留 bridgeReady=false，下一轮心跳重试（页面过慢/桥未装上时兜底）
           p2pLog('bridge wait timeout', { url, position: s.position, playing: s.playing })

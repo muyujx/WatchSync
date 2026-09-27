@@ -141,15 +141,22 @@ onMounted(() => {
     if (Date.now() - lastGestureAt > MANUAL_SEEK_WINDOW_MS) return
     push('seek', v)
   }
+  // 加载状态跟随：waiting/playing 即时推送（同进程直推，无需额外紧急通道）
+  const onWaiting = () => push('waiting', v)
+  const onPlaying = () => push('playing', v)
   v.addEventListener('play', onPlay)
   v.addEventListener('pause', onPause)
   v.addEventListener('seeking', onSeeking)
+  v.addEventListener('waiting', onWaiting)
+  v.addEventListener('playing', onPlaying)
   v.addEventListener('timeupdate', reportTick)
   v.addEventListener('play', reportTick)
   cleanup = () => {
     v.removeEventListener('play', onPlay)
     v.removeEventListener('pause', onPause)
     v.removeEventListener('seeking', onSeeking)
+    v.removeEventListener('waiting', onWaiting)
+    v.removeEventListener('playing', onPlaying)
     v.removeEventListener('timeupdate', reportTick)
     v.removeEventListener('play', reportTick)
     document.removeEventListener('pointerdown', markGesture, true)

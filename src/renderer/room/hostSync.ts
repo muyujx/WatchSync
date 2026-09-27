@@ -106,8 +106,9 @@ export class HostSync {
    */
   private async processEvents(events: Array<{ ev: string; position: number; paused: boolean }>): Promise<void> {
     for (const ev of events) {
-      if (ev.ev === 'play') {
-        // 自动续播（hold 超时）的事件回声：不参与保持判定，否则续播会立刻重新触发
+      if (ev.ev === 'play' || ev.ev === 'playing') {
+        // play=用户起播；playing=缓冲恢复。两者都广播 play：成员立即恢复播放。
+        // 自动续播（hold 超时）的事件回声不参与保持判定，否则续播会立刻重新触发
         // 「等待成员预加载」形成超时续播→hold 的无限震荡
         const autoEcho = Date.now() - this.autoActionAt < AUTO_ACTION_QUIET_MS
         // 等待期间用户自己按了播放：尊重用户意图，取消保持（成员自行追赶）
@@ -116,7 +117,9 @@ export class HostSync {
         }
         this.c.room()?.broadcast({ t: 'play', position: ev.position, at: Date.now() })
         if (!autoEcho) void this.maybeHoldForMembers('play')
-      } else if (ev.ev === 'pause') {
+      } else if (ev.ev === 'pause' || ev.ev === 'waiting') {
+        // pause=用户暂停；waiting=播放中加载（元素推不动）。两者都广播 pause：
+        // 成员立即暂停跟随（暂停不停成员自身加载，元素照常取数缓冲）
         // 等待期间用户手动暂停（非保持逻辑自身的暂停）：取消等待，不自动续播
         if (this.holdingForMembers && Date.now() - this.holdStartedAt > SELF_ACTION_WINDOW_MS) {
           this.cancelHold('user pause')
@@ -129,7 +132,7 @@ export class HostSync {
           position: ev.position,
           playing: !st?.paused,
           at: Date.now(),
-          // 拖进度时房主是否已缓冲就绪；false → 成员暂停等待，避免成员先加载完抢跑
+          // 拖进度时房主是否已缓冲就绪（兼容字段，成员不再消费；加载跟随由 waiting 事件承担）
           ready: Boolean(st?.hasVideo && st.readyState >= 2),
         })
         // 成员数据落盘晚于房主：拖动后等成员预加载到位再继续同步。
@@ -156,10 +159,12 @@ export class HostSync {
         t: 'state',
         url,
         position: st?.position ?? 0,
-        // 无视频（尚未装桥）时视为未播放，避免成员误判
-        playing: Boolean(st?.hasVideo && !st.paused),
-        // 就绪标记：有视频且缓冲充足（readyState>=2）。初始加载与中途网络缓冲时为 false，
-        // 成员收到后暂停冻结，避免跟随零位置/停滞进度造成进度抖动
+        // 「正在播放」的准确定义 = 有播放意图且推得动（readyState>=3 即 HAVE_FUTURE_DATA）。
+        // 播放中加载转圈时 readyState 停在 2，视同未播放：与 waiting→pause 事件同口径，
+        // 避免校准循环把因房主加载而暂停的成员又拉起来
+        playing: Boolean(st?.hasVideo && !st.paused && st.readyState >= 3),
+        // 就绪标记（兼容字段，成员不再消费，加载跟随走 waiting/playing 事件路径）：
+        // 有视频且当前帧数据就绪（readyState>=2）
         ready: Boolean(st?.hasVideo && st.readyState >= 2),
         at: Date.now(),
         mode: this.c.shareMode,

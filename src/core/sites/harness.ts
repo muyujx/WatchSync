@@ -3,7 +3,7 @@
  *
  * 职责（站点适配器无需重复实现）：
  * - 定位并绑定站点主视频元素（通过 window.__p2pSite.findVideo）
- * - 采集 play/pause/seeked 事件供房主端轮询
+ * - 采集 play/pause/seeking/waiting/playing 事件推送房主端；加载状态（waiting/playing）即时上报
  * - 接收 play/pause/seek/rate 指令并转发给站点实现（缺省走原生 video）
  * - 跟随守卫：成员端不采集事件；不拦截 play/pause 传播
  *   （stopImmediatePropagation 会让播放器 UI 收不到状态事件，控制条与真实播放脱节）
@@ -32,6 +32,13 @@ export const HARNESS_SCRIPT = `
     if (window.__p2pGuard) return
     q.push({ ev, position: video.currentTime, paused: video.paused })
   }
+  // 加载状态变化（waiting/playing）立即上报：不等 300ms tick，成员跟随暂停/恢复做到即时。
+  // 只发事件载荷：桥对缺省的 status/title 键按「不更新」处理，不影响状态缓存与历史
+  const pushUrgent = (ev) => {
+    if (window.__p2pGuard) return
+    q.push({ ev, position: video.currentTime, paused: video.paused })
+    try { window.__p2pReport && window.__p2pReport({ kind: 'tick', events: q.splice(0, q.length) }) } catch (e) {}
+  }
   // 手动 seek 判定：记录最后用户交互（pointer 按下/抬起）时间，
   // seeking 发生在交互后短窗口内才视为用户拖动进度条；其余（播放器缓冲恢复/自动回跳）不入队，
   // 避免把非手动回跳当作 seek 指令广播给成员造成进度抖动
@@ -46,10 +53,14 @@ export const HARNESS_SCRIPT = `
     if (Date.now() - lastGestureAt > MANUAL_SEEK_WINDOW_MS) return
     push('seek')
   }
+  const onWaiting = () => pushUrgent('waiting')
+  const onPlaying = () => pushUrgent('playing')
   video.addEventListener('play', onPlay)
   video.addEventListener('pause', onPause)
   // 监听 seeking 而非 seeked：拖动进度条即刻入队广播，无需等待缓冲到目标帧，降低 seek 同步延迟
   video.addEventListener('seeking', onSeek)
+  video.addEventListener('waiting', onWaiting)
+  video.addEventListener('playing', onPlaying)
 
   // 跟随守卫：只关掉事件采集（push 内 __p2pGuard 判断），不拦截 play/pause 传播，
   // 否则播放器 UI 收不到状态事件会与真实播放脱节。
@@ -63,6 +74,8 @@ export const HARNESS_SCRIPT = `
     video.removeEventListener('play', onPlay)
     video.removeEventListener('pause', onPause)
     video.removeEventListener('seeking', onSeek)
+    video.removeEventListener('waiting', onWaiting)
+    video.removeEventListener('playing', onPlaying)
     document.removeEventListener('pointerdown', markGesture, true)
     document.removeEventListener('pointerup', markGesture, true)
     disableGuard()

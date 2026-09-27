@@ -138,11 +138,6 @@ export class RoomController {
     return this.connected
   }
 
-  /** 成员端是否处于「房主未就绪」冻结（供诊断快照读取） */
-  get isFollowerFrozen(): boolean {
-    return this.follower.isFrozen
-  }
-
   /** 当前共享是否为远程源（网页视频推流）；本地文件源为 false（房主无下载） */
   get isRemoteShare(): boolean {
     const info = this.shareFileId ? this.hostFiles.get(this.shareFileId) : undefined

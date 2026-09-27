@@ -69,7 +69,6 @@ export function setupDevHooks(deps: DevHooksDeps): { syncDebug(): void } {
       tabs: deps.tabs().map((t) => ({ id: t.id, url: t.url, title: t.title, active: t.id === deps.activeTabId(), sync: t.id === deps.syncTabId() })),
       selfId,
       hostConnected: deps.controller.hostConnected,
-      followerFrozen: deps.controller.isFollowerFrozen,
       hostPeerId: deps.controller.hostPeerId,
       peers: [...deps.controller.peers],
       peerNames: Object.fromEntries(deps.controller.peerNames),

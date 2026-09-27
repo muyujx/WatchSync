@@ -9,7 +9,8 @@ export type ShareMode = 'url' | 'file'
 export type SyncMsg =
   /** 新成员请求全量状态（成员→房主） */
   | { t: 'hello' }
-  /** 全量状态/周期心跳（房主→全员）；ready 表示房主视频已就绪，未就绪时成员应暂停冻结 */
+  /** 全量状态/周期心跳（房主→全员）；playing 表示房主当前能推进播放（加载中为 false），
+   *  ready 为兼容字段（当前帧数据是否就绪，成员不再消费，加载跟随走 waiting/playing 事件） */
   | {
       t: 'state'
       url: string
