@@ -80,6 +80,8 @@ export class RoomController {
   connected = false
   /** 加入看门狗定时器 */
   private joinTimer: number | null = null
+  /** attach 代次：取消加入时自增，使在途建连落地后自弃（防取消后悬挂连接泄漏） */
+  private attachSeq = 0
   /** 媒体共享模式（url=各端拉网页/直链；file=成员用本地副本播放） */
   shareMode: ShareMode = 'url'
   /** 当前共享媒体 ID（仅 file 模式） */
@@ -189,7 +191,8 @@ export class RoomController {
     this.hostPeerId = ''
     this.connected = false
     this.clearJoinWatchdog()
-    await this.attach()
+    // cancelJoin 仅作用于成员端，房主端 attach 不会失配；防御分支只为类型完备
+    if (!(await this.attach())) throw new Error('房间建立被中断')
     this.hostSync.start()
     p2pLog('host ready', { roomId: this.roomId, relays: this.relayUrls })
     return buildShareUrl(this.roomId)
@@ -206,12 +209,26 @@ export class RoomController {
     this.connected = false
     this.hostPeerId = ''
     this.follower.reset()
-    await this.attach()
+    const landed = await this.attach()
+    // 建连等待期间被取消：cancelJoin 已清理并复位 UI，这里静默收场（不起看门狗、不发 hello）
+    if (!landed) return
     p2pLog('join start', { roomId, relays: this.relayUrls })
     // 立即请求全量状态（hello 广播全员，房主响应）
     this.roomHandle?.broadcast({ t: 'hello' })
     this.follower.start()
     this.startJoinWatchdog()
+  }
+
+  /**
+   * 取消加入（成员端连接中用户主动取消）。
+   * 作废在途建连（attach 落地后自弃）并离开房间；已连上房主后调用无效。
+   */
+  async cancelJoin(): Promise<void> {
+    if (this.role !== 'follower' || this.connected) return
+    p2pLog('join cancel', { roomId: this.roomId })
+    // 代次自增：尚未落地的 attach 完成后按失配自弃；已落地则由 leave() 正常断开
+    this.attachSeq++
+    await this.leave()
   }
 
   /** 启动加入看门狗：超时仍未见房主数据往来则判定加入失败 */
@@ -252,8 +269,12 @@ export class RoomController {
     this.onShareChanged?.()
   }
 
-  /** 建立 P2P 房间并注册消息处理 */
-  private async attach(): Promise<void> {
+  /**
+   * 建立 P2P 房间并注册消息处理。
+   * 返回值：是否落地接线（false=等待建连期间被取消/重入，本次房间连接已丢弃）。
+   */
+  private async attach(): Promise<boolean> {
+    const seq = ++this.attachSeq
     const raw = await openRealRoom(this.roomId, {
       relayUrls: this.relayUrls,
       // 中继/ICE 建连失败：离开房间后由 UI 提示（避免成员端静默停在“房间里没人”）
@@ -263,6 +284,11 @@ export class RoomController {
         this.onJoinFailed?.(reason)
       },
     })
+    // 等待建连期间发生取消/重入（代次失配）：丢弃本次房间连接，防悬挂会话泄漏
+    if (seq !== this.attachSeq) {
+      void raw.leave().catch(() => {})
+      return false
+    }
     this.roomHandle = createRoom(raw, (msg, peerId) => this.handleMsg(msg, peerId))
     // 文件分块：成员落盘；房主侧理论上不收
     this.roomHandle.onBinary((data, meta) => void this.files.onFileChunk(data, meta))
@@ -315,6 +341,7 @@ export class RoomController {
     })
     // 房主/成员通用：进入房间即开始周期延迟探测
     this.rtt.start()
+    return true
   }
 
   /** 进入房间后广播我的昵称与角色（join/host 完成后调用） */

@@ -23,6 +23,7 @@ export interface DevHooksDeps {
   joinInput: Ref<string>
   onHost(): Promise<void>
   onJoinLink(): Promise<void>
+  onCancelJoin(): Promise<void>
   openSharedLocalFile(info: LocalFileInfo): Promise<number>
   onShareWeb(): void
   onDirectRelay(): Promise<void>
@@ -86,6 +87,7 @@ export function setupDevHooks(deps: DevHooksDeps): { syncDebug(): void } {
       deps.joinInput.value = url
       return deps.onJoinLink()
     },
+    cancelJoin: () => deps.onCancelJoin(),
     shareLocalPath: async (path: string) => {
       const name = path.split(/[\\/]/).pop() || 'video.mp4'
       const size = await window.p2pApi.fileSize(path)

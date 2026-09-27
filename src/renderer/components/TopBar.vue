@@ -57,6 +57,7 @@ const emit = defineEmits<{
   toggleSyncPause: []
   exitRoom: []
   joinLink: []
+  cancelJoin: []
   toggleHistory: []
   openSettings: []
 }>()
@@ -139,6 +140,8 @@ const emit = defineEmits<{
       <button v-if="!roomId" class="m-btn tonal" :disabled="!joinInput || !!busy" @click="emit('joinLink')">
         <span v-if="busy === 'joining'" class="spinner"></span>{{ busy === 'joining' ? '连接中…' : '加入' }}
       </button>
+      <!-- 连接中可取消：中止建连回初始态，不必等 15s 看门狗超时 -->
+      <button v-if="busy === 'joining'" class="m-btn" title="中止连接，回到初始状态" @click="emit('cancelJoin')">取消</button>
 
       <div class="flex-spacer"></div>
       <button class="icon-btn history-btn" :class="{ on: historyOpen }" title="播放记录" @click="emit('toggleHistory')">

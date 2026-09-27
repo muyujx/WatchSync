@@ -214,6 +214,15 @@ export function useRoomSession(deps: UseRoomSessionDeps) {
     // 成功与否由 onHostConnected / onJoinFailed 回调决定，不在此处提前宣告
   }
 
+  /** 成员：取消加入（连接中点「取消」），中止建连回初始态，不必等看门狗超时 */
+  async function onCancelJoin(): Promise<void> {
+    // 迟到的取消点击（已连上/已失败/已抛错，busy 已被对应路径清除）：忽略
+    if (deps.busy.value !== 'joining') return
+    await controller.cancelJoin()
+    resetRoomState()
+    notify('已取消加入')
+  }
+
   /** 复制邀请链接（仅含房间号，不含任何同步信息） */
   async function onCopyLink(): Promise<void> {
     await window.p2pApi.copyText(buildShareUrl(deps.roomId.value))
@@ -255,6 +264,7 @@ export function useRoomSession(deps: UseRoomSessionDeps) {
     toggleSyncPause,
     onHost,
     onJoinLink,
+    onCancelJoin,
     onCopyLink,
     resetRoomState,
     exitRoom,

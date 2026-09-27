@@ -31,6 +31,7 @@
     @toggle-sync-pause="toggleSyncPause"
     @exit-room="exitRoom"
     @join-link="onJoinLink"
+    @cancel-join="onCancelJoin"
     @toggle-history="toggleHistory"
     @open-settings="openSettings"
   />
@@ -269,6 +270,7 @@ const {
   toggleSyncPause,
   onHost,
   onJoinLink,
+  onCancelJoin,
   onCopyLink,
   exitRoom,
 } = useRoomSession({
@@ -302,6 +304,7 @@ const devHooks = setupDevHooks({
   joinInput,
   onHost,
   onJoinLink,
+  onCancelJoin,
   openSharedLocalFile,
   onShareWeb,
   onDirectRelay,
