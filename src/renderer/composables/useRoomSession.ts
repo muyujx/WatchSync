@@ -84,6 +84,8 @@ export function useRoomSession(deps: UseRoomSessionDeps) {
     deps.connectionLost.value = false
     // 角色切换后同步暂停标记（房主无此概念；新成员默认跟随）
     deps.syncPaused.value = controller.isSyncPaused
+    // 成为新房主：提示本人（原房主的降级由转让方自己的「已转让」通知覆盖，不再提示）
+    if (nowHost) notify('已成为房主')
     deps.syncDebug()
   }
   // 成员端断线：仅提示，房间状态与后续操作交给用户自己决定
