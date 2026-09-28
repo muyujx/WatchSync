@@ -21,7 +21,7 @@ export interface DevHooksDeps {
   tabs: () => TabInfo[]
   controller: RoomController
   joinInput: Ref<string>
-  onHost(): Promise<void>
+  onHost(headcount?: number): Promise<void>
   onJoinLink(): Promise<void>
   onCancelJoin(): Promise<void>
   openSharedLocalFile(info: LocalFileInfo): Promise<number>
@@ -58,7 +58,8 @@ export function setupDevHooks(deps: DevHooksDeps): { syncDebug(): void } {
    * 返回值：含 selfId、各中继 readyState、peers/RTT 的快照对象。
    */
   async function diagSnapshot(): Promise<unknown> {
-    const { getRelaySockets, selfId } = await import('@trystero-p2p/nostr')
+    // 与 openRealRoom/relayGate 同一 vendor 模块实例（读真正生效的中继 socket 状态）
+    const { getRelaySockets, selfId } = await import('../core/vendor/trystero-nostr')
     const sockets = (getRelaySockets?.() ?? {}) as Record<string, WebSocket | undefined>
     return {
       roomId: deps.roomId(),
@@ -74,6 +75,9 @@ export function setupDevHooks(deps: DevHooksDeps): { syncDebug(): void } {
       peerNames: Object.fromEntries(deps.controller.peerNames),
       peerRtt: Object.fromEntries(deps.controller.peerRtt),
       relays: Object.entries(sockets).map(([url, ws]) => ({ url, readyState: ws?.readyState ?? -1 })),
+      // 满员锁定状态（联调验证断/开中继）
+      headcount: deps.controller.headcount,
+      relayGateOpen: deps.controller.relayGateOpen,
       // 媒体共享状态（联调共享/文件分发用）
       shareMode: deps.controller.shareMode,
       shareName: deps.controller.shareName,
@@ -85,7 +89,7 @@ export function setupDevHooks(deps: DevHooksDeps): { syncDebug(): void } {
   ;(window as unknown as { __p2pDiag: () => Promise<unknown> }).__p2pDiag = diagSnapshot
   // 联调：E2E 入口（建房/加入/按路径共享本地视频）
   ;(window as unknown as { __p2pE2e?: unknown }).__p2pE2e = {
-    host: () => deps.onHost(),
+    host: (headcount?: number) => deps.onHost(headcount),
     join: (url: string) => {
       deps.joinInput.value = url
       return deps.onJoinLink()

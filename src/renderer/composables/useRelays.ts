@@ -32,20 +32,25 @@ export function setRelaySink(cb: (urls: string[]) => void): void {
  * 返回值：待探测的中继地址列表。
  */
 async function candidateRelays(): Promise<string[]> {
-  const { defaultRelayUrls } = await import('@trystero-p2p/nostr')
+  // 与 openRealRoom 同一 vendor 模块实例（默认中继列表与写探测事件构造都取自它）
+  const { defaultRelayUrls } = await import('../../core/vendor/trystero-nostr')
   return [...new Set([...defaultRelayUrls, ...customRelays.value])]
 }
 
 /** 中继探测与管理的对外接口 */
 export function useRelays() {
-  /** 并发探测全部中继：更新状态并把可达列表交给回调（由 App 侧决定连接用中继） */
+  /** 并发探测全部中继（含写权限验证）：更新状态并把可用列表交给回调（由 App 侧决定连接用中继） */
   async function refreshRelays(): Promise<void> {
     if (probing.value) return
     probing.value = true
     try {
-      const results = await probeRelays(await candidateRelays())
+      // 写探测事件用 Trystero 模块内密钥签名（大多数公共中继校验 sig），复用其 createEvent
+      const { createEvent } = await import('../../core/vendor/trystero-nostr')
+      const results = await probeRelays(await candidateRelays(), {
+        buildEvent: (topic, content) => createEvent(topic, content),
+      })
       relayProbes.value = results
-      // 显式给出可达中继；为空数组时 Trystero 用默认中继（按 appId 确定性挑选）
+      // 显式给出可用中继（可读且可写）；为空数组时 Trystero 用默认中继（按 appId 确定性挑选）
       onReachable?.(selectRelays(results))
     } finally {
       probing.value = false

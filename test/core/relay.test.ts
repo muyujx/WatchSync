@@ -60,12 +60,60 @@ describe('probeRelay', () => {
     f.message('not-json')
     vi.advanceTimersByTime(1001)
     const r = await p
-    expect(r).toEqual({ url: 'wss://b', reachable: false, latencyMs: null })
+    expect(r).toEqual({ url: 'wss://b', reachable: false, latencyMs: null, writable: null })
 
     const f2 = fakeSocket()
     const p2 = probeRelay('wss://c', { socketFactory: () => f2.socket })
     f2.error()
     expect((await p2).reachable).toBe(false)
+  })
+
+  it('未注入 buildEvent 时跳过写探测（EOSE 即可用，writable=null）', async () => {
+    const f = fakeSocket()
+    const p = probeRelay('wss://e', { socketFactory: () => f.socket })
+    f.open()
+    const subId = JSON.parse(f.sent[0])[1]
+    f.message(JSON.stringify(['EOSE', subId]))
+    const r = await p
+    expect(r.reachable).toBe(true)
+    expect(r.writable).toBeNull()
+    // 只发过 REQ + CLOSE，没有 EVENT
+    expect(f.sent.some((d) => String(d).includes('"EVENT"'))).toBe(false)
+  })
+
+  it('注入 buildEvent 时 EOSE 后发 EVENT，OK:true 判定可用', async () => {
+    const f = fakeSocket()
+    const p = probeRelay('wss://f', {
+      socketFactory: () => f.socket,
+      buildEvent: async () => JSON.stringify(['EVENT', { id: 'ev1', sig: 'x' }]),
+    })
+    f.open()
+    const subId = JSON.parse(f.sent[0])[1]
+    f.message(JSON.stringify(['EOSE', subId]))
+    // buildEvent 是异步微任务，等它跑完 EVENT 才入发送队列
+    await new Promise((r) => setTimeout(r, 0))
+    // EOSE 后应发出 EVENT；回 OK:true 才算可用
+    const eventFrame = JSON.parse(f.sent.find((d) => String(d).startsWith('["EVENT"'))!)
+    f.message(JSON.stringify(['OK', eventFrame[1].id, true, '']))
+    const r = await p
+    expect(r).toEqual({ url: 'wss://f', reachable: true, latencyMs: expect.any(Number), writable: true })
+  })
+
+  it('注入 buildEvent 时中继拒绝（OK:false）判定不可用', async () => {
+    const f = fakeSocket()
+    const p = probeRelay('wss://g', {
+      socketFactory: () => f.socket,
+      buildEvent: async () => JSON.stringify(['EVENT', { id: 'ev2', sig: 'x' }]),
+    })
+    f.open()
+    const subId = JSON.parse(f.sent[0])[1]
+    f.message(JSON.stringify(['EOSE', subId]))
+    await new Promise((r) => setTimeout(r, 0))
+    const eventFrame = JSON.parse(f.sent.find((d) => String(d).startsWith('["EVENT"'))!)
+    f.message(JSON.stringify(['OK', eventFrame[1].id, false, 'blocked']))
+    const r = await p
+    expect(r.reachable).toBe(false)
+    expect(r.writable).toBe(false)
   })
 
   it('工厂抛错时立即判定不可达', async () => {

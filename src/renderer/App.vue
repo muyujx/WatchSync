@@ -62,7 +62,7 @@
       @win="win"
       @nav="nav"
       @open="onOpen"
-      @host="onHost"
+      @host="hostDialogOpen = true"
       @copy-link="onCopyLink"
       @direct-relay="onDirectRelay"
       @open-members="openMembers"
@@ -120,12 +120,17 @@
     @close                       关闭面板
     @transfer                    把房主转让给该成员
   -->
-  <MembersDialog 
-    :open="membersOpen" 
-    :members="memberList" 
-    :i-am-host="isHost" 
-    @close="closeMembers" 
+  <MembersDialog
+    :open="membersOpen"
+    :members="memberList"
+    :i-am-host="isHost"
+    @close="closeMembers"
     @transfer="onTransferHost" />
+
+  <!--
+    建房人数面板：@host 打开（先选满员人数再建房，0=不限）；@confirm 携人数执行创建。
+  -->
+  <HeadcountDialog :open="hostDialogOpen" @close="hostDialogOpen = false" @confirm="onHostConfirmed" />
 
   <!--
     设置面板（注释与绑定行同序）
@@ -172,6 +177,7 @@ import TopBar from './components/TopBar.vue'
 import HomeSites from './components/HomeSites.vue'
 import type { TabRole } from './components/TabStrip.vue'
 import MembersDialog from './components/MembersDialog.vue'
+import HeadcountDialog from './components/HeadcountDialog.vue'
 import SettingsDialog from './components/SettingsDialog.vue'
 import HistoryPanel from './components/HistoryPanel.vue'
 import LocalVideoStage from './components/LocalVideoStage.vue'
@@ -392,6 +398,14 @@ const {
   openInTab,
   syncDebug: () => devHooks.syncDebug(),
 })
+
+/** 建房人数弹窗显隐（工具栏「创建房间」先弹人数选择） */
+const hostDialogOpen = ref(false)
+/** 弹窗确认：带满员人数执行创建（0=不限） */
+function onHostConfirmed(headcount: number): void {
+  hostDialogOpen.value = false
+  void onHost(headcount)
+}
 
 /** ===== 联调/诊断钩子（drive.cjs） ===== */
 const devHooks = setupDevHooks({

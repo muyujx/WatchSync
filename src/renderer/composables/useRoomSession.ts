@@ -164,12 +164,15 @@ export function useRoomSession(deps: UseRoomSessionDeps) {
     }
   }
 
-  /** 房主：创建房间并复制邀请链接（不依赖视频地址；有地址则顺带打开并注入桥） */
-  async function onHost(): Promise<void> {
+  /**
+   * 房主：创建房间并复制邀请链接（不依赖视频地址；有地址则顺带打开并注入桥）。
+   * 参数：headcount 满员人数（含房主，0=不限；到员后自动断开信令中继）。
+   */
+  async function onHost(headcount = 0): Promise<void> {
     deps.busy.value = 'hosting'
     try {
       // 建房只依赖房间号；视频地址在连接建立后由心跳同步给成员
-      const link = await controller.host()
+      const link = await controller.host(undefined, headcount)
       deps.isHost.value = true
       deps.roomId.value = controller.roomId
       controller.myName = deps.myName.value

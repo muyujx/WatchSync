@@ -13,6 +13,7 @@
 import { buildShareUrl, generateRoomId } from '../../core/shareLink'
 import { createRoom, openRealRoom, type RoomHandle } from '../../core/room'
 import type { ShareMode, SyncMsg } from '../../core/protocol'
+import { createRelayGate, type RelayGate } from '../../core/relayGate'
 import { MediaStreamReceiver } from '../mediaStream'
 import { p2pLog } from '../../core/log'
 import * as videoBus from '../videoBus'
@@ -85,6 +86,12 @@ export class RoomController {
   private attachSeq = 0
   /** 媒体共享模式（url=各端拉网页/直链；file=成员用本地副本播放） */
   shareMode: ShareMode = 'url'
+  /** 满员人数（含房主）；0 = 不限（永不断开信令中继） */
+  headcount = 0
+  /** 信令中继开关（attach 时惰性创建；满员断开/掉线恢复） */
+  private gate: RelayGate | null = null
+  /** 成员端：最近一次 lock 消息声明的房间总人数（0=尚无；用于核对 mesh 完整后再断中继） */
+  private pendingLockTotal = 0
   /** 当前共享媒体 ID（仅 file 模式） */
   shareFileId = ''
   /** 当前共享展示名 */
@@ -138,6 +145,11 @@ export class RoomController {
     return this.connected
   }
 
+  /** 信令中继当前是否开启（诊断快照用；gate 未建时视为开） */
+  get relayGateOpen(): boolean {
+    return this.gate?.isOpen ?? true
+  }
+
   /** 当前共享是否为远程源（网页视频推流）；本地文件源为 false（房主无下载） */
   get isRemoteShare(): boolean {
     const info = this.shareFileId ? this.hostFiles.get(this.shareFileId) : undefined
@@ -176,21 +188,24 @@ export class RoomController {
 
   /**
    * 创建房间（房主）。
-   * 参数：roomId 指定房间号（UI 重载后恢复房间用，缺省随机生成）。
+   * 参数：roomId 指定房间号（UI 重载后恢复房间用，缺省随机生成）；headcount 满员人数（含房主，0=不限）。
    * 返回值：分享链接（仅含房间号）。
    * 说明：建房不依赖视频地址；地址随心跳 state 消息在连接建立后同步给成员。
+   * 恢复房间（roomId 传入）时 headcount 无法恢复，按不限处理。
    */
-  async host(roomId?: string): Promise<string> {
+  async host(roomId?: string, headcount = 0): Promise<string> {
     this.role = 'host'
     this.roomId = roomId || generateRoomId()
+    this.headcount = headcount
     // 房主不需要识别他人为房主；切换角色时清掉上一轮的加入状态
     this.hostPeerId = ''
     this.connected = false
+    this.pendingLockTotal = 0
     this.clearJoinWatchdog()
     // cancelJoin 仅作用于成员端，房主端 attach 不会失配；防御分支只为类型完备
     if (!(await this.attach())) throw new Error('房间建立被中断')
     this.hostSync.start()
-    p2pLog('host ready', { roomId: this.roomId, relays: this.relayUrls })
+    p2pLog('host ready', { roomId: this.roomId, headcount, relays: this.relayUrls })
     return buildShareUrl(this.roomId)
   }
 
@@ -204,6 +219,7 @@ export class RoomController {
     // 重置断线监控与房主识别：首次收到房主心跳/profile 后再建立
     this.connected = false
     this.hostPeerId = ''
+    this.pendingLockTotal = 0
     this.follower.reset()
     const landed = await this.attach()
     // 建连等待期间被取消：cancelJoin 已清理并复位 UI，这里静默收场（不起看门狗、不发 hello）
@@ -256,6 +272,50 @@ export class RoomController {
     this.onHostConnected?.()
   }
 
+  /**
+   * 成员端断线统一出口（followerSync 心跳超时时调用）。
+   * 先恢复信令中继（断开态下重连房主必需信令通道），再通知 UI。
+   */
+  onFollowerConnectionLost(): void {
+    this.gate?.open()
+    this.onConnectionLost?.()
+  }
+
+  /**
+   * 房主：按当前人数驱动信令中继开关。
+   * 满（peers ≥ headcount-1）且中继开着 → 广播 lock 并断开；不满且中继断着 → 恢复等待补员/重连。
+   * headcount 为 0（不限）时永不断开。无返回值。
+   */
+  private maybeRelayGate(): void {
+    if (this.role !== 'host' || !this.gate || !this.headcount) return
+    const full = this.peers.size >= this.headcount - 1
+    if (full && this.gate.isOpen) {
+      // 广播走 DataChannel（不受随后断中继影响）；各成员核对人数后自行断开
+      this.roomHandle?.broadcast({ t: 'lock', total: this.headcount })
+      this.gate.shut()
+      p2pLog('relay shut (room full)', this.headcount)
+    } else if (!full && !this.gate.isOpen) {
+      this.gate.open()
+      p2pLog('relay reopen (waiting for members)')
+    }
+  }
+
+  /**
+   * 成员端：核对收到 lock 后房间是否齐整，齐了才断开信令中继。
+   * 不齐（仍有握手在途）时保持中继开启，等下一个 onPeerJoin 再试（有人握手失败则中继一直开，安全侧）。
+   * 无返回值。
+   */
+  private tryShutRelay(): void {
+    if (this.role !== 'follower' || !this.pendingLockTotal || !this.gate) return
+    // 房间内除自己应看到 total-1 个成员（含房主）
+    if (this.peers.size < this.pendingLockTotal - 1) return
+    this.pendingLockTotal = 0
+    if (this.gate.isOpen) {
+      this.gate.shut()
+      p2pLog('relay shut (room full)')
+    }
+  }
+
   /** 按房主 state 心跳同步共享元数据（mode/fileId）并通知 UI（followerSync 消费 state 分支用） */
   applyShareMeta(mode?: ShareMode, fileId?: string): void {
     this.shareMode = mode ?? this.shareMode
@@ -286,6 +346,16 @@ export class RoomController {
       return false
     }
     this.roomHandle = createRoom(raw, (msg, peerId) => this.handleMsg(msg, peerId))
+    // 信令中继开关：必须引用与 openRealRoom 同一个 vendor nostr 模块实例，
+    // 否则退避/退役状态（模块级）清不到真正生效的那份
+    const nostr = await import('../../core/vendor/trystero-nostr')
+    this.gate = createRelayGate({
+      getSockets: () => nostr.getRelaySockets() as Record<string, { close(): void }>,
+      pauseReconnection: () => nostr.pauseRelayReconnection(),
+      resumeReconnection: () => nostr.resumeRelayReconnection(),
+      resetRelayState: () => nostr.resetRelayState(),
+      log: (...args) => p2pLog(...args),
+    })
     // 文件分块：成员落盘；房主侧理论上不收
     this.roomHandle.onBinary((data, meta) => void this.files.onFileChunk(data, meta))
     this.roomHandle.onPeerJoin((id) => {
@@ -293,6 +363,9 @@ export class RoomController {
       p2pLog('peerJoin', id)
       // 新成员加入：向其自我介绍（对方也会介绍自己）
       this.announceProfile()
+      // 满员锁定联动：房主按人数决定断/开中继；成员核对 lock 后自行断开
+      if (this.role === 'host') this.maybeRelayGate()
+      else this.tryShutRelay()
       // 房主：已有共享中的文件时对新成员定向补要约（中途加入不丢片；与观看模式无关）。
       // 分发只有流式：成员建好本机媒体源后按缺口自行补拉，不整份推送
       if (this.role === 'host' && this.shareFileId) {
@@ -330,6 +403,11 @@ export class RoomController {
         this.hostPeerId = ''
         if (this.role === 'follower') this.follower.releaseLocalControl('host left')
       }
+      // 满员锁定联动：房主按剩余人数决定断/开中继；成员端房主离开必须重开中继（重连必需信令），
+      // 其他成员离开只作废旧 lock（人数已不满，等房主重新锁定），中继维持现状
+      if (this.role === 'host') this.maybeRelayGate()
+      else if (this.hostPeerId === id || !this.hostPeerId) this.gate?.open()
+      else this.pendingLockTotal = 0
       this.onPeerLeft?.(id, name)
       this.onPeersChanged?.()
     })
@@ -379,12 +457,15 @@ export class RoomController {
     // 停止成员侧校准循环与加入看门狗
     this.follower.stop()
     this.clearJoinWatchdog()
-    // 停止可能残留的房主轮询（防御性）
     this.hostSync.stop()
     this.role = 'host'
     // 房主自身即权威，无需识别他人为房主
     this.hostPeerId = ''
     this.connected = true
+    this.pendingLockTotal = 0
+    // 接管后不继承锁定职责（headcount 清零）：恢复中继保守安全侧，缺员可补、掉线可重连
+    this.headcount = 0
+    this.gate?.open()
     // 清空跟随基准：本端已是权威，不再采纳他人进度
     this.follower.resetSyncBasis()
     this.hostSync.start()
@@ -408,6 +489,9 @@ export class RoomController {
     this.hostPeerId = newHostPeerId
     // 房主侧状态作废：清空成员就绪表，重置本端上报基准（作为成员重新上报）
     this.hostSync.reset()
+    // 降级后锁定职责移交新房主：本端恢复中继（安全侧），收到新房主 lock 后再核对断开
+    this.headcount = 0
+    this.gate?.open()
     // 清空同步基准并重置断线状态，等待新房主心跳重建
     this.follower.resetSyncBasis()
     // 成员端禁止本地操作：把跟随守卫挂回当前同步页签（尚未建立同步时为 null，由后续 state/syncTab 流程建立）
@@ -534,6 +618,13 @@ export class RoomController {
       void this.files.sendFileRanges(msg.fileId, peerId, msg.ranges)
       return
     }
+    // 满员锁定（房主广播）：登记期望人数，成员核对 mesh 完整后自行断开信令中继
+    if (msg.t === 'lock') {
+      if (this.role !== 'follower') return
+      this.pendingLockTotal = msg.total
+      this.tryShutRelay()
+      return
+    }
     // 房主解散指令：成员端先交还控制权再通知 UI 退出（否则守卫/旧快照会让本地暂停失效）
     if (msg.t === 'dissolve') {
       if (this.role === 'follower') {
@@ -637,6 +728,11 @@ export class RoomController {
     this.rtt.stop()
     this.rtt.clear()
     this.clearJoinWatchdog()
+    // 恢复信令中继（锁定态下 leave 会留下关闭的 socket，影响下一次建房/加入的发现能力）
+    this.gate?.open()
+    this.gate = null
+    this.headcount = 0
+    this.pendingLockTotal = 0
     // 解除跟随守卫并清空同步页签指针（页签保留，UI 端随后解锁为普通页签可关闭）
     void videoBus.setSyncTab(null, false)
     this.syncTabId = null

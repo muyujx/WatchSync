@@ -141,12 +141,14 @@ export interface OpenRoomOptions {
 }
 
 /**
- * 打开真实房间（唯一与 @trystero-p2p/nostr 耦合的位置）。
+ * 打开真实房间（唯一与 Trystero nostr 策略耦合的位置）。
+ * 注意：走 src/core/vendor/trystero-nostr（vendor 版），与 relayGate 共享同一模块实例，
+ * 这样满员断开中继后 resetRelayState 才能清到真正生效的退避表；不要改回 @trystero-p2p/nostr。
  * 参数：roomId 房间 ID；opts 中继列表与错误回调。
  * 返回值：Trystero 房间对象。
  */
 export async function openRealRoom(roomId: string, opts: OpenRoomOptions = {}): Promise<TrysteroRoomLike> {
-  const { joinRoom } = await import('@trystero-p2p/nostr')
+  const { joinRoom } = await import('./vendor/trystero-nostr')
   const urls = (opts.relayUrls ?? []).filter(Boolean)
   const config = {
     appId: APP_ID,

@@ -69,6 +69,8 @@ export type SyncMsg =
   | { t: 'ping'; ts: number }
   /** 延迟应答（→全员） */
   | { t: 'pong'; ts: number }
+  /** 满员锁定（房主→全员）：total 为含房主的房间总人数，收到者核对成员齐整后自行断开信令中继 */
+  | { t: 'lock'; total: number }
 
 /** 消息类型到必检数值字段的映射，用于解码校验 */
 const NUMERIC_FIELDS: Record<SyncMsg['t'], string[]> = {
@@ -89,6 +91,7 @@ const NUMERIC_FIELDS: Record<SyncMsg['t'], string[]> = {
   readyState: ['readyBytes', 'totalBytes', 'duration', 'position', 'readyState'],
   ping: ['ts'],
   pong: ['ts'],
+  lock: ['total'],
 }
 
 /** 合法共享模式 */
@@ -148,6 +151,8 @@ export function decodeMsg(raw: string): SyncMsg | null {
     }
     if (t === 'transfer' && typeof o.to !== 'string') return null
     if (t === 'hostChange' && typeof o.host !== 'string') return null
+    // lock 的 total 是含房主的房间总人数，至少 2（房主 + 1 成员）才有意义
+    if (t === 'lock' && (!(o.total as number) || (o.total as number) < 2)) return null
     if (t === 'profile') {
       if (typeof o.name !== 'string') return null
       if (o.host !== undefined && typeof o.host !== 'boolean') return null

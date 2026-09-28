@@ -51,6 +51,8 @@ export interface FollowerSyncCtx {
   readonly onSyncUnlocked: (() => void) | null
   /** 连接断开回调（连续超时未收到房主心跳） */
   readonly onConnectionLost: (() => void) | null
+  /** 成员端断线统一出口：恢复信令中继并触发 onConnectionLost */
+  onFollowerConnectionLost(): void
   /** 连接恢复回调（断线后重新收到房主心跳） */
   readonly onConnectionRestored: (() => void) | null
   /** 标记已与房主建立数据连接（停止加入看门狗并通知 UI） */
@@ -271,7 +273,8 @@ export class FollowerSync {
         this.connectionLost = true
         p2pLog('connection lost (heartbeat timeout)')
         this.releaseLocalControl('heartbeat timeout')
-        this.c.onConnectionLost?.()
+        // 走控制器统一出口：先恢复信令中继（重连必需），再通知 UI
+        this.c.onFollowerConnectionLost()
         return
       }
       const st = await videoBus.videoStatus().catch(() => null)
