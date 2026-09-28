@@ -48,6 +48,9 @@ BUG.md
 docs/superpowers/
 docs/plans/
 
+# 本地功能文档（docs/ 整体不入库）
+docs/
+
 account.md
 
 tmp
