@@ -136,6 +136,10 @@ declare global {
       mediaProgress(fileId: string): Promise<[number, number]>
       /** 查询已就绪区间的字节列表（升序、互不重叠；房主中继优先读本机副本用） */
       mediaReadyRanges(fileId: string): Promise<Array<[number, number]>>
+      /** 渲染进程错误日志落盘（正式构建生效；dev 空操作），级别 WARN/ERROR */
+      appendLog(level: string, message: string): Promise<void>
+      /** 打开日志目录（资源管理器） */
+      openLogDir(): Promise<void>
     }
   }
 }

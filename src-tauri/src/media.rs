@@ -101,13 +101,30 @@ pub fn read_file_chunk(path: &str, offset: u64, length: u64) -> Option<Vec<u8>> 
         if map.len() >= HANDLE_CACHE_MAX {
             map.clear();
         }
-        map.insert(path.to_string(), std::fs::File::open(path).ok()?);
+        match std::fs::File::open(path) {
+            Ok(f) => {
+                map.insert(path.to_string(), f);
+            }
+            // 房主分发断链的首要线索：源文件打开失败（被移动/删除/权限）
+            Err(e) => {
+                crate::applog::write("WARN", &format!("read_file_chunk 打开失败 path={path} err={e}"));
+                return None;
+            }
+        }
     }
     let f = map.get_mut(path)?;
-    f.seek(SeekFrom::Start(offset)).ok()?;
+    if let Err(e) = f.seek(SeekFrom::Start(offset)) {
+        crate::applog::write("WARN", &format!("read_file_chunk seek 失败 path={path} offset={offset} err={e}"));
+        return None;
+    }
     let mut buf = vec![0u8; length as usize];
-    let n = f.read(&mut buf).ok()?;
-    buf.truncate(n);
+    match f.read(&mut buf) {
+        Ok(n) => buf.truncate(n),
+        Err(e) => {
+            crate::applog::write("WARN", &format!("read_file_chunk 读失败 path={path} offset={offset} err={e}"));
+            return None;
+        }
+    }
     Some(buf)
 }
 
@@ -134,12 +151,23 @@ pub fn create_temp_media(file_id: &str, name: &str, size: u64) -> Option<MediaFi
     if reused {
         match std::fs::OpenOptions::new().write(true).open(&p) {
             Ok(_) => {}
-            Err(_) => return None,
+            Err(e) => {
+                crate::applog::write("WARN", &format!("create_temp_media 复用打开失败 path={path_key} err={e}"));
+                return None;
+            }
         }
     } else {
-        let f = std::fs::File::create(&p).ok()?;
+        let f = match std::fs::File::create(&p) {
+            Ok(f) => f,
+            Err(e) => {
+                crate::applog::write("WARN", &format!("create_temp_media 创建失败 path={path_key} err={e}"));
+                return None;
+            }
+        };
         // 预分配到目标长度，便于按偏移随机写入
-        f.set_len(size).ok()?;
+        if let Err(e) = f.set_len(size) {
+            crate::applog::write("WARN", &format!("create_temp_media 预分配失败 path={path_key} size={size} err={e}"));
+        }
     }
     Some(MediaFileInfo {
         url: path_to_file_url(&p),
@@ -163,14 +191,25 @@ pub fn write_temp_chunk(path: &str, offset: u64, data: &[u8]) -> bool {
             Ok(f) => {
                 map.insert(path.to_string(), f);
             }
-            Err(_) => return false,
+            Err(e) => {
+                crate::applog::write("WARN", &format!("write_temp_chunk 打开失败 path={path} err={e}"));
+                return false;
+            }
         }
     }
     let Some(f) = map.get_mut(path) else {
         return false;
     };
-    if f.seek(SeekFrom::Start(offset)).is_err() {
+    if let Err(e) = f.seek(SeekFrom::Start(offset)) {
+        crate::applog::write("WARN", &format!("write_temp_chunk seek 失败 path={path} offset={offset} err={e}"));
         return false;
     }
-    f.write_all(data).is_ok()
+    let ok = f.write_all(data).is_ok();
+    if !ok {
+        crate::applog::write(
+            "WARN",
+            &format!("write_temp_chunk 写入失败 path={path} offset={offset} len={}", data.len()),
+        );
+    }
+    ok
 }

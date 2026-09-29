@@ -17,7 +17,7 @@ import {
 } from '../../core/mediaSource'
 import { readRemoteChunk, streamRemoteRange } from '../remoteMedia'
 import { SpeedMeter } from '../../core/speed'
-import { p2pLog } from '../../core/log'
+import { p2pLog, p2pWarn } from '../../core/log'
 import * as videoBus from '../videoBus'
 import type { MediaStreamReceiver } from '../mediaStream'
 import type { Role } from './constants'
@@ -139,7 +139,7 @@ export class RelayPrefetch {
           await this.c.media.acceptChunk(fileId, off, data)
           return this.c.room() === room
         })
-        if (read <= 0) p2pLog('source pull empty', fileId, a, b - a)
+        if (read <= 0) p2pWarn('source pull empty', fileId, a, b - a)
       }
     } finally {
       for (const [a, b] of plans) this.clearSourceInflight(fileId, a, b)
@@ -154,7 +154,7 @@ export class RelayPrefetch {
   ensureSourcePull(fileId: string, info: { remote?: string; path?: string }, start: number, end: number): void {
     const room = this.c.room()
     if (!info.remote || !room) return
-    void this.sourcePull(room, fileId, info, start, end).catch((e) => p2pLog('source pull failed', e))
+    void this.sourcePull(room, fileId, info, start, end).catch((e) => p2pWarn('source pull failed', e))
   }
 
   /**
@@ -256,7 +256,7 @@ export class RelayPrefetch {
         }
       }
     } catch (e) {
-      p2pLog('relay chase failed', e)
+      p2pWarn('relay chase failed', e)
     } finally {
       this.relayRunning.delete(fileId)
     }

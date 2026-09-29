@@ -8,6 +8,7 @@
 //! - watchsync:// 协议：单实例回调 argv 转发（打包模式）
 //! - IPC：commands.rs 全量命令 + 事件（protocol-url/win-state/page-title/video-fullscreen）
 
+mod applog;
 mod bridge;
 mod commands;
 mod history;
@@ -130,8 +131,12 @@ fn main() {
             commands::media_wanted_peek,
             commands::media_progress,
             commands::media_ready_ranges,
+            commands::append_log,
+            commands::open_log_dir,
         ])
         .setup(move |app| {
+            // 运行日志目录初始化（正式构建把 WARN/ERROR 落盘到 {profile_dir}/logs，见 applog.rs）
+            crate::applog::init(app.handle());
             // 播放历史启动加载（损坏/缺失按空恢复，见 history.rs）；
             // .manage 已在 Builder 链上先于 setup 执行，AppState 必已就绪
             *app.state::<crate::state::AppState>().history.lock().unwrap() =

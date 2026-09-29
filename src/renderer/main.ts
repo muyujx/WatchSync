@@ -1,6 +1,6 @@
 import { createApp } from 'vue'
 import App from './App.vue'
-import { setLogEnabled } from '../core/log'
+import { installErrorCapture, setLogEnabled } from '../core/log'
 import { initDevThrottle } from './devThrottle'
 // Tauri 环境的 p2pApi 兼容层（Electron 环境由 preload 提供，本模块运行时早退）
 import './tauri-shim'
@@ -12,6 +12,10 @@ import './styles/toolbar.css'
 import './styles/home.css'
 import './styles/dialog.css'
 import './styles/history.css'
+
+// 尽早安装全局错误捕获（console.warn/error、未捕获异常、未处理拒绝）：
+// dev 只透传控制台；正式构建转发到运行日志文件（见 core/log.ts），须先于任何业务代码
+installErrorCapture()
 
 // 渲染进程入口；开发模式下打开 P2P 调试日志（生产静默）
 setLogEnabled(import.meta.env.DEV)

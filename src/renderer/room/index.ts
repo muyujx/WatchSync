@@ -15,7 +15,7 @@ import { createRoom, openRealRoom, type RoomHandle } from '../../core/room'
 import type { ShareMode, SyncMsg } from '../../core/protocol'
 import { createRelayGate, type RelayGate } from '../../core/relayGate'
 import { MediaStreamReceiver } from '../mediaStream'
-import { p2pLog } from '../../core/log'
+import { p2pLog, p2pWarn } from '../../core/log'
 import * as videoBus from '../videoBus'
 import { RttProbe } from '../rtt'
 import { FollowerSync } from './followerSync'
@@ -121,7 +121,8 @@ export class RoomController {
     this.media = new MediaStreamReceiver({
       onNeed: (fileId, ranges) => this.handleMediaNeed(fileId, ranges),
       onProgress: () => this.onShareChanged?.(),
-      log: (...args) => p2pLog(...args),
+      // 接收侧只产出失败类日志（pump/attach 失败），走 p2pWarn：正式构建落盘
+      log: (...args) => p2pWarn(...args),
     })
     this.relay = new RelayPrefetch(this)
     this.files = new FileTransfer(this, this.relay)
@@ -249,7 +250,7 @@ export class RoomController {
     this.joinTimer = window.setTimeout(() => {
       this.joinTimer = null
       if (!this.connected) {
-        p2pLog('join timeout', { roomId: this.roomId, relays: this.relayUrls })
+        p2pWarn('join timeout', { roomId: this.roomId, relays: this.relayUrls })
         this.onJoinFailed?.('未连接到房主，可能是中继不通或房主不在线')
       }
     }, JOIN_TIMEOUT_MS)

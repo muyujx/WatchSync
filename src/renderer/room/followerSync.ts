@@ -14,7 +14,7 @@ import { computeTargetPosition, decideCorrection, decidePlayback, isConnectionLo
 import { decideSourceCorrection, type SourceCorrectionState } from '../../core/urlSync'
 import type { ShareMode, SyncMsg } from '../../core/protocol'
 import type { RoomHandle } from '../../core/room'
-import { p2pLog } from '../../core/log'
+import { p2pLog, p2pWarn } from '../../core/log'
 import * as videoBus from '../videoBus'
 import type { MediaStreamReceiver } from '../mediaStream'
 import {
@@ -271,7 +271,7 @@ export class FollowerSync {
       // 断线看门狗：曾与房主建立同步后长时间无心跳 → 判定连接断开并交还本地控制权
       if (!this.connectionLost && isConnectionLost(this.lastStateAt, Date.now(), STATE_TIMEOUT_MS)) {
         this.connectionLost = true
-        p2pLog('connection lost (heartbeat timeout)')
+        p2pWarn('connection lost (heartbeat timeout)')
         this.releaseLocalControl('heartbeat timeout')
         // 走控制器统一出口：先恢复信令中继（重连必需），再通知 UI
         this.c.onFollowerConnectionLost()
@@ -403,7 +403,7 @@ export class FollowerSync {
           if (!s.playing) await videoBus.videoCmd('pause')
         } else {
           // 超时未就绪：保留 bridgeReady=false，下一轮心跳重试（页面过慢/桥未装上时兜底）
-          p2pLog('bridge wait timeout', { url, position: s.position, playing: s.playing })
+          p2pWarn('bridge wait timeout', { url, position: s.position, playing: s.playing })
         }
       } else if (url && this.bridgeReady) {
         // 冻结恢复/房主加载完成：先 seek 到权威进度，再对齐播放（否则可能先播在旧位置）

@@ -16,7 +16,7 @@ import { streamRemoteRange } from '../remoteMedia'
 import { splitRangeByReady } from '../../core/mediaSource'
 import { SpeedMeter } from '../../core/speed'
 import { throttleTakeP2p } from '../devThrottle'
-import { p2pLog } from '../../core/log'
+import { p2pWarn } from '../../core/log'
 import type { MediaStreamReceiver } from '../mediaStream'
 import type { HostFileEntry } from './relayPrefetch'
 import { RELAY_FOLLOW_STALL_MS } from './constants'
@@ -86,7 +86,7 @@ export class FileTransfer {
       }
       await new Promise((r) => setTimeout(r, 300 * (i + 1)))
     }
-    p2pLog('send block truncated, give up', meta.fileId, meta.offset)
+    p2pWarn('send block truncated, give up', meta.fileId, meta.offset)
     return false
   }
 
@@ -135,7 +135,7 @@ export class FileTransfer {
       ])
       return true
     })
-    if (read <= 0) p2pLog('remote range empty', start, end - start)
+    if (read <= 0) p2pWarn('remote range empty', start, end - start)
   }
 
   /**
@@ -238,7 +238,7 @@ export class FileTransfer {
         try {
           await this.fillRange(room, fileId, info, start, end, target)
         } catch (e) {
-          p2pLog('send range failed', e)
+          p2pWarn('send range failed', e)
         } finally {
           inflight.delete(key)
         }

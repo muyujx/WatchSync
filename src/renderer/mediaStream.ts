@@ -76,10 +76,15 @@ export class MediaStreamReceiver {
     }
     const safeName = name + mediaExtension(name, opts?.mime, opts?.url)
     const info = await window.p2pApi.createTempMedia(fileId, safeName, size)
-    if (!info) return ''
+    if (!info) {
+      // 收流断链的首要线索：临时文件建不出来（磁盘满/权限/杀软拦截），成员将永远无源可播
+      this.deps.log?.('attach failed: createTempMedia null', fileId, safeName, size)
+      return ''
+    }
     this.paths.set(fileId, info.path)
     // 渐进媒体源：<video> 指向本机 Range 服务，未就绪区间由服务阻塞等待
     const url = await window.p2pApi.mediaPublish(fileId, info.path)
+    if (!url) this.deps.log?.('attach failed: mediaPublish empty', fileId, info.path)
     this.urls.set(fileId, url || info.url)
     this.ratios.set(fileId, 0)
     this.activeId = fileId

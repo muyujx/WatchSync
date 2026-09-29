@@ -98,7 +98,11 @@ pub fn ensure_started() -> u16 {
     *PORT.get_or_init(|| {
         let listener = match TcpListener::bind("127.0.0.1:0") {
             Ok(l) => l,
-            Err(_) => return 0,
+            // 本机回环监听失败：成员收流整体不可用（罕见，如回环栈异常），落日志定位
+            Err(e) => {
+                crate::applog::write("ERROR", &format!("media_server 监听 127.0.0.1 失败 err={e}"));
+                return 0;
+            }
         };
         let port = listener.local_addr().map(|a| a.port()).unwrap_or(0);
         std::thread::spawn(move || {

@@ -227,6 +227,28 @@ pub async fn create_temp_media(file_id: String, name: String, size: u64) -> Opti
     crate::media::create_temp_media(&file_id, &name, size)
 }
 
+/// 渲染进程错误日志落盘（正式构建生效；dev/debug 空操作，见 applog.rs）。
+/// 参数：level 级别（WARN/ERROR，其余按 INFO）；message 消息原文（落盘前统一单行化）。
+#[tauri::command]
+pub async fn append_log(level: String, message: String) {
+    let level = if level.eq_ignore_ascii_case("warn") {
+        "WARN"
+    } else if level.eq_ignore_ascii_case("error") {
+        "ERROR"
+    } else {
+        "INFO"
+    };
+    tauri::async_runtime::spawn_blocking(move || crate::applog::write(level, &message))
+        .await
+        .ok();
+}
+
+/// 打开日志目录（资源管理器）：设置对话框「打开日志目录」按钮，方便用户找到日志提交反馈
+#[tauri::command]
+pub async fn open_log_dir(app: AppHandle) {
+    crate::applog::open_dir(&app);
+}
+
 /// 按偏移写入临时媒体一块并放行阻塞中的 Range 读（二进制直传：raw body 承载字节，
 /// fileId/offset 走请求头）。合并「落盘 + 标记就绪」为一次 IPC：原先经 JSON 参数传
 /// Vec<u8> 会被 Tauri 序列化成 number[]（Array.from + JSON.stringify，约 10 倍膨胀），
@@ -247,6 +269,8 @@ pub async fn write_temp_chunk(request: tauri::ipc::Request<'_>) -> Result<bool, 
         .unwrap_or(0);
     // 路径由 media_server 按 fileId 反查（避免在请求头里传可能含非 ASCII 的绝对路径）
     let Some(path) = crate::media_server::path_of(&file_id) else {
+        // 成员端收流断链的重要线索：媒体源未注册（未 attach/已被注销）
+        crate::applog::write("WARN", &format!("write_temp_chunk: fileId 未注册 {file_id}"));
         return Ok(false);
     };
     let path = path.to_string_lossy().into_owned();
@@ -257,6 +281,12 @@ pub async fn write_temp_chunk(request: tauri::ipc::Request<'_>) -> Result<bool, 
         .unwrap_or(false);
     if written {
         crate::media_server::mark_have(&file_id, offset, len);
+    } else {
+        // 落盘失败：成员端副本将缺块，播放器缺口轮询会重拉，但根因需要日志定位（如磁盘满/杀软拦截）
+        crate::applog::write(
+            "WARN",
+            &format!("write_temp_chunk 落盘失败 fileId={file_id} offset={offset} len={len}"),
+        );
     }
     Ok(written)
 }

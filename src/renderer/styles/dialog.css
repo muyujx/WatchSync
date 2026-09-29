@@ -22,6 +22,12 @@
 .theme-swatch-light { background: linear-gradient(180deg, #dee1e6 0 40%, #fff 40%); }
 .theme-swatch-dark { background: linear-gradient(180deg, #292a2d 0 40%, #1e1f20 40%); }
 
+/* ===== 设置页：运行日志 ===== */
+/* 打开日志目录行 */
+.log-field { margin-top: 16px; }
+.log-row { display: flex; align-items: center; gap: 10px; }
+.log-row .m-btn { height: 30px; padding: 0 14px; font-size: 12px; flex: none; }
+
 /* ===== 设置页：信令中继列表 ===== */
 /* 设置对话框专属：实心抬升面（与 .dialog / 主题一致）+ 中继/解码双列布局 */
 .settings-dialog { width: 640px; }

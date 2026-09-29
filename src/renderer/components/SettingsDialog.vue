@@ -68,6 +68,14 @@
         </div>
       </div>
 
+      <!-- 运行日志：正式版把警告/错误落盘到 {用户数据目录}/logs/app.log -->
+      <div class="field log-field">
+        <span class="field-label">运行日志</span>
+        <div class="log-row">
+          <button class="m-btn tonal" @click="openLogDir">打开日志目录</button>
+        </div>
+      </div>
+
       <div class="dialog-actions">
         <button class="m-btn" @click="emit('close')">取消</button>
         <button class="m-btn filled" :disabled="!nickInput.trim()" @click="save">保存</button>
@@ -182,6 +190,11 @@ async function probeCodecs(): Promise<void> {
 async function installCodec(c: CodecProbe): Promise<void> {
   if (!c.productId) return
   await window.p2pApi.openStore(c.productId)
+}
+
+/** 打开运行日志目录（资源管理器；日志文件由正式版落盘，见 src-tauri/src/applog.rs） */
+async function openLogDir(): Promise<void> {
+  await window.p2pApi.openLogDir()
 }
 
 // 打开对话框时自动检测一次
