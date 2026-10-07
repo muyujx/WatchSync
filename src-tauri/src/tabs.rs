@@ -224,14 +224,28 @@ pub fn apply_window_fullscreen(app: &tauri::AppHandle, fs: bool) {
     }
 }
 
-/// 延时重排激活页签（兜底）：set_fullscreen/set_size 异步生效，立即读尺寸可能是旧值。
+/// 全屏切换后的收敛式重排：短周期线程按**最新** insets+窗口尺寸反复重设页签 bounds，
+/// 连续 25 轮（约 1s）保证必有一轮在窗口尺寸到达终态后生效——一次性延时兜底赌的是
+/// 固定时长内窗口已稳定，最大化→全屏要经历还原/全屏/对齐显示器多次尺寸变化，赌输
+/// 时白条持续到下次布局变化。每轮无条件 set_bounds：同值 SetWindowPos 是快速空操作，
+/// 且能纠正「读旧尺寸→dispatch 排队→被 Resized 重排乱序覆盖」的残留。
 /// 参数：app 句柄。
 /// 返回值：无。
-pub fn schedule_resize(app: &tauri::AppHandle) {
+pub fn schedule_resize_stabilize(app: &tauri::AppHandle) {
     let handle = app.clone();
     std::thread::spawn(move || {
-        std::thread::sleep(std::time::Duration::from_millis(80));
-        resize_active(&handle);
+        for _round in 0..25 {
+            std::thread::sleep(std::time::Duration::from_millis(40));
+            // 中途页签关/切（无激活或 Vue 页签）即终止收敛
+            let st = state(&handle);
+            let Some(id) = st.active_id.lock().unwrap().clone() else { return };
+            let Some(entry) = st.tabs.lock().unwrap().get(&id).cloned() else { return };
+            drop(st);
+            if entry.is_vue() {
+                return;
+            }
+            set_tab_visible(&handle, id, true);
+        }
     });
 }
 
@@ -388,7 +402,7 @@ pub fn set_active(app: &tauri::AppHandle, tab_id: Option<i64>) {
     if *st.html_fullscreen.lock().unwrap() {
         *st.html_fullscreen.lock().unwrap() = false;
         apply_window_fullscreen(app, false);
-        schedule_resize(app);
+        schedule_resize_stabilize(app);
         let _ = app.emit_to("ui", "video-fullscreen", false);
     }
     let prev = st.active_id.lock().unwrap().clone();
@@ -475,7 +489,7 @@ pub fn close(app: &tauri::AppHandle, tab_id: i64) {
             if *st.html_fullscreen.lock().unwrap() {
                 *st.html_fullscreen.lock().unwrap() = false;
                 apply_window_fullscreen(app, false);
-                schedule_resize(app);
+                schedule_resize_stabilize(app);
                 let _ = app.emit_to("ui", "video-fullscreen", false);
             }
         }

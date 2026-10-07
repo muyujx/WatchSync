@@ -115,9 +115,10 @@ pub fn handle_report(
                         drop(cur);
                         // OS 级全屏：铺满显示器（盖住任务栏）；最大化场景须先还原再全屏
                         crate::tabs::apply_window_fullscreen(app, fs);
-                        // 立刻排一次 + 延时兜底（set_fullscreen 异步，最大化→全屏时尺寸增量小）
+                        // 立即按当下状态重排一次，再用收敛式重排兜底（窗口尺寸异步多次变化，
+                        // 不赌固定延时；连续重设直至终态后必有一轮生效）
                         crate::tabs::resize_active(app);
-                        crate::tabs::schedule_resize(app);
+                        crate::tabs::schedule_resize_stabilize(app);
                         let _ = app.emit_to("ui", "video-fullscreen", fs);
                     }
                 }
