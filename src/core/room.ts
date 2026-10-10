@@ -53,6 +53,13 @@ export interface RoomHandle {
   sendBinary: (data: ArrayBuffer, meta: FileChunkMeta, target?: string) => Promise<boolean>
   /** 订阅收到文件二进制块 */
   onBinary: (cb: (data: ArrayBuffer, meta: FileChunkMeta, peerId: string) => void) => void
+  /**
+   * 发送「文件传输」二进制块（独立 xbin 通道，定向发送；与观看媒体流 fbin 互不干扰）。
+   * 返回值：是否完整送达（判定方式同 sendBinary）。
+   */
+  sendXferBinary: (data: ArrayBuffer, meta: FileChunkMeta, target: string) => Promise<boolean>
+  /** 订阅收到「文件传输」二进制块 */
+  onXferBinary: (cb: (data: ArrayBuffer, meta: FileChunkMeta, peerId: string) => void) => void
   /** 房间内成员 ID 集合（不含本端） */
   peers: Set<string>
   /** 订阅成员加入（叠加在内部成员维护之上，可多次调用） */
@@ -61,6 +68,38 @@ export interface RoomHandle {
   onPeerLeave: (cb: (id: string) => void) => void
   /** 离开房间并释放连接 */
   leave: () => Promise<void>
+}
+
+/** 二进制 action 的最小发送接口（fbin/xbin 通道共用；与 Trystero makeAction 返回值兼容） */
+interface BinaryActionLike {
+  send: (data: ArrayBuffer, options?: unknown) => Promise<void>
+}
+
+/**
+ * 定向发送一个二进制块并用发送进度判定是否完整送达。
+ * Trystero 背压等待超时/通道错误会静默截断消息（send 正常 resolve 但尾部 16KB 分片
+ * 未发出，接收端该块永远拼不齐），用进度是否到达 1 判定：进度=最后发出的分片序号/
+ * 总分片数，正常结束必为 1。
+ * 参数：action 二进制通道；data 块字节；meta 块元数据；target 接收方 peerId。
+ * 返回值：Promise 是否完整送达。
+ */
+function sendWithProgress(
+  action: BinaryActionLike,
+  data: ArrayBuffer,
+  meta: FileChunkMeta,
+  target: string,
+): Promise<boolean> {
+  let complete = false
+  return action
+    .send(data, {
+      target,
+      metadata: meta,
+      onProgress: (p: number) => {
+        if (p >= 1) complete = true
+      },
+    })
+    .then(() => complete)
+    .catch(() => false)
 }
 
 /**
@@ -73,6 +112,7 @@ export function createRoom(trysteroRoom: TrysteroRoomLike, onMessage: (msg: Sync
   const joinCbs: Array<(id: string) => void> = []
   const leaveCbs: Array<(id: string) => void> = []
   const binaryCbs: Array<(data: ArrayBuffer, meta: FileChunkMeta, peerId: string) => void> = []
+  const xferBinaryCbs: Array<(data: ArrayBuffer, meta: FileChunkMeta, peerId: string) => void> = []
 
   // 'sync' 命名空间承载全部 SyncMsg；统一字符串编码，校验集中在 protocol.ts
   const action = trysteroRoom.makeAction<string>('sync')
@@ -87,6 +127,15 @@ export function createRoom(trysteroRoom: TrysteroRoomLike, onMessage: (msg: Sync
     const meta = ctx.metadata
     if (meta && typeof meta.fileId === 'string') {
       binaryCbs.forEach((f) => f(data as ArrayBuffer, meta, ctx.peerId))
+    }
+  }
+
+  // 'xbin' 命名空间承载「文件传输」二进制块（成员互传文件；与观看媒体流 fbin 分流互不干扰）
+  const xbin = trysteroRoom.makeAction<ArrayBuffer>('xbin')
+  xbin.onMessage = (data, ctx) => {
+    const meta = ctx.metadata
+    if (meta && typeof meta.fileId === 'string') {
+      xferBinaryCbs.forEach((f) => f(data as ArrayBuffer, meta, ctx.peerId))
     }
   }
 
@@ -111,20 +160,11 @@ export function createRoom(trysteroRoom: TrysteroRoomLike, onMessage: (msg: Sync
     },
     sendBinary: (data, meta, target) => {
       if (!target) return bin.send(data, { metadata: meta }).then(() => true).catch(() => false)
-      // 定向发送：进度回调逐分片上报（0~1），send 返回后进度 <1 即被截断
-      let complete = false
-      return bin
-        .send(data, {
-          target,
-          metadata: meta,
-          onProgress: (p: number) => {
-            if (p >= 1) complete = true
-          },
-        })
-        .then(() => complete)
-        .catch(() => false)
+      return sendWithProgress(bin, data, meta, target)
     },
+    sendXferBinary: (data, meta, target) => sendWithProgress(xbin, data, meta, target),
     onBinary: (cb) => binaryCbs.push(cb),
+    onXferBinary: (cb) => xferBinaryCbs.push(cb),
     peers,
     onPeerJoin: (cb) => joinCbs.push(cb),
     onPeerLeave: (cb) => leaveCbs.push(cb),

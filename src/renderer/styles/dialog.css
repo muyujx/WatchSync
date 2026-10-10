@@ -27,6 +27,8 @@
 .log-field { margin-top: 16px; }
 .log-row { display: flex; align-items: center; gap: 10px; }
 .log-row .m-btn { height: 30px; padding: 0 14px; font-size: 12px; flex: none; }
+/* 传输保存目录展示：占满剩余宽度，长路径省略 */
+.xfer-dir-label { flex: 1; min-width: 0; font-size: 12px; color: var(--ws-text-2); overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 
 /* ===== 设置页：信令中继列表 ===== */
 /* 设置对话框专属：实心抬升面（与 .dialog / 主题一致）+ 中继/解码双列布局 */
@@ -85,3 +87,52 @@
 .badge-rtt.bad { color: var(--ws-danger-fg); background: var(--ws-danger-bg); }
 .dot { width: 8px; height: 8px; flex: none; border-radius: 50%; background: #bdc1c6; }
 .dot.online { background: #34a853; }
+
+/* ===== 文件传输面板（成员互传） ===== */
+.transfer-dialog { width: 560px; max-height: 82vh; padding: 28px 32px 24px; display: flex; flex-direction: column; }
+.transfer-dialog .dialog-title { margin-bottom: 22px; }
+/* 发送区：成员 chips 横排点选 */
+.xfer-send { display: flex; flex-direction: column; gap: 12px; }
+.xfer-peers { display: flex; flex-wrap: wrap; gap: 10px; min-height: 38px; }
+.xfer-peer-chip { display: inline-flex; align-items: center; gap: 8px; height: 38px; padding: 0 16px 0 5px; border: 1px solid var(--ws-border); border-radius: 19px; background: var(--ws-surface); color: var(--ws-text-2); font-size: 13px; cursor: pointer; transition: background-color 0.12s ease, border-color 0.12s ease; }
+.xfer-peer-chip:hover:not(:disabled) { background: var(--ws-fill); }
+.xfer-peer-chip.on { border-color: var(--ws-accent); background: var(--ws-accent-soft); color: var(--ws-accent-dark); font-weight: 500; }
+.xfer-peer-chip:disabled { opacity: 0.4; cursor: not-allowed; }
+.xfer-send-btn { align-self: flex-start; height: 38px; padding: 0 22px; font-size: 14px; }
+/* 待发文件提示行（视频页「发送文件」按钮带入的暂存文件） */
+.xfer-pending { margin: 0; padding: 10px 14px; border-radius: 10px; background: var(--ws-fill); font-size: 13px; color: var(--ws-text-2); overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.xfer-pending b { color: var(--ws-text); font-weight: 500; }
+.avatar-sm { width: 28px; height: 28px; font-size: 12px; }
+/* 任务列表：进行中 + 历史 */
+.xfer-list-head { display: flex; align-items: center; justify-content: space-between; margin-top: 22px; }
+.xfer-clear { height: 28px; padding: 0 14px; font-size: 12px; }
+.xfer-list { list-style: none; padding: 0; margin: 10px 0 0; overflow-y: auto; border: 1px solid var(--ws-divider); border-radius: 10px; min-height: 140px; max-height: 380px; scrollbar-width: thin; scrollbar-color: var(--ws-scrollbar) transparent; }
+.xfer-list::-webkit-scrollbar { width: 8px; }
+.xfer-list::-webkit-scrollbar-track { background: transparent; }
+.xfer-list::-webkit-scrollbar-thumb { background: var(--ws-scrollbar); border-radius: 4px; border: 2px solid transparent; background-clip: content-box; }
+.xfer-task { padding: 12px 14px; border-bottom: 1px solid var(--ws-divider); }
+.xfer-task:last-child { border-bottom: none; }
+.xfer-task-line { display: flex; align-items: center; gap: 10px; }
+.xfer-sub { margin-top: 6px; }
+.xfer-dir { width: 24px; height: 24px; flex: none; display: inline-flex; align-items: center; justify-content: center; border-radius: 50%; font-size: 13px; background: var(--ws-fill); color: var(--ws-text-2); }
+.xfer-dir.send { background: var(--ws-accent-soft); color: var(--ws-accent-dark); }
+.xfer-dir.recv { background: var(--ws-ok-bg); color: var(--ws-ok-fg); }
+.xfer-name { flex: 1; font-size: 14px; color: var(--ws-text); overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.xfer-size { flex: none; font-size: 12px; color: var(--ws-text-3); font-variant-numeric: tabular-nums; }
+.xfer-peer { flex: none; font-size: 12px; color: var(--ws-text-3); max-width: 40%; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.xfer-status { flex: 1; font-size: 12px; color: var(--ws-text-2); text-align: right; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.xfer-status.done { color: var(--ws-ok-fg); }
+.xfer-status.rejected, .xfer-status.cancelled, .xfer-status.failed, .xfer-status.interrupted { color: var(--ws-danger-fg); }
+/* 进度条：4px 细条 */
+.xfer-bar { height: 4px; margin-top: 8px; border-radius: 2px; background: var(--ws-fill); overflow: hidden; }
+.xfer-bar-fill { height: 100%; border-radius: 2px; background: var(--ws-accent); transition: width 0.2s ease; }
+.xfer-mini { flex: none; font-size: 12px; border: none; border-radius: 9px; padding: 4px 12px; background: var(--ws-fill); color: var(--ws-text-2); cursor: pointer; }
+.xfer-mini:hover { background: var(--ws-fill-strong); color: var(--ws-text-strong); }
+.xfer-empty-hint { padding: 32px 10px; text-align: center; font-size: 13px; color: var(--ws-text-3); }
+
+/* ===== 文件接收确认框 ===== */
+.xfer-confirm { width: 340px; }
+.xfer-confirm-line { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--ws-text); margin: 0 0 10px; }
+.xfer-confirm-file { font-size: 14px; font-weight: 500; color: var(--ws-text); margin: 0; word-break: break-all; }
+.xfer-confirm-size { font-size: 12px; color: var(--ws-text-3); margin: 4px 0 0; }
+.flex-spacer { flex: 1; }

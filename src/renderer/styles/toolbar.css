@@ -18,3 +18,5 @@
 .streambar { flex: 0 0 auto; display: flex; align-items: center; gap: 8px; height: 48px; padding: 0 12px; background: var(--ws-surface); overflow-x: auto; overflow-y: hidden; }
 .stream-idle { flex: 0 1 auto; min-width: 0; padding: 0 4px; font-size: 12px; color: var(--ws-text-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .stream-speed { flex: 0 0 auto; padding: 0 4px; font-size: 12px; color: var(--ws-text-2); font-variant-numeric: tabular-nums; white-space: nowrap; }
+/* 底条「发送文件」按钮（本地文件页专属，路径右侧）：比标准按钮矮一号，贴合 48px 底条 */
+.streambar-send { flex: 0 0 auto; height: 28px; padding: 0 12px; font-size: 12px; border-radius: 14px; }

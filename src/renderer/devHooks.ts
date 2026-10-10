@@ -112,6 +112,53 @@ export function setupDevHooks(deps: DevHooksDeps): { syncDebug(): void } {
     // 本地视频（Vue 页签）联调：同步页签的状态/指令（网页页签仍可用 CDP 直连桥）
     videoStatus: () => deps.videoStatus(),
     videoCmd: (action: string, arg?: number) => deps.videoCmd(action, arg),
+    // ---- 文件传输联调（绕过系统文件对话框：CDP 无法操作系统弹窗）----
+    /** 直接向指定成员发起发送（不经 pick_file 对话框；size=0 时自动探测） */
+    xferSend: async (peerId: string, path: string) => {
+      const size = await window.p2pApi.fileSize(path)
+      const name = path.split(/[\\/]/).pop() || 'file.bin'
+      const task = deps.controller.xfer.offerTo(peerId, { path, name, size })
+      return task ? task.fileId : null
+    },
+    /** 任务列表快照（fileId/方向/状态/进度/对方） */
+    xferTasks: () =>
+      Array.from(deps.controller.xfer.tasks.values(), (t) => ({
+        fileId: t.fileId,
+        dir: t.dir,
+        peerId: t.peerId,
+        peerName: t.peerName,
+        name: t.name,
+        size: t.size,
+        transferred: t.transferred,
+        speed: deps.controller.xfer.speedOf(t.fileId),
+        status: t.status,
+        reason: t.reason,
+        localPath: t.localPath,
+      })),
+    /** 接收端：接受指定要约（绕过确认弹窗） */
+    xferAccept: (fileId: string) => deps.controller.xfer.accept(fileId),
+    /** 接收端：拒绝指定要约 */
+    xferReject: (fileId: string) => deps.controller.xfer.reject(fileId),
+    /** 任一方：取消指定任务 */
+    xferCancel: (fileId: string) => deps.controller.xfer.cancel(fileId),
+    /**
+     * 模拟对端掉线（走真实 onPeerLeave 路径：进行中任务转中断、接收端保留 .part）。
+     * 参数：peerId 模拟掉线的成员；缺省取任务里唯一对端。
+     */
+    xferSimulateLeave: (peerId?: string) => {
+      const pid = peerId || [...deps.controller.peers][0]
+      if (pid) deps.controller.xfer.onPeerLeave(pid)
+      return pid
+    },
+    /**
+     * 模拟对端重连（走真实 onPeerJoin 路径：发送方中断任务自动重发 offer 触发续传握手）。
+     * 参数：peerId 模拟重连的成员；缺省取任务里唯一对端。
+     */
+    xferSimulateJoin: (peerId?: string) => {
+      const pid = peerId || [...deps.controller.peers][0]
+      if (pid) deps.controller.xfer.onPeerJoin(pid)
+      return pid
+    },
   }
 
   return { syncDebug }

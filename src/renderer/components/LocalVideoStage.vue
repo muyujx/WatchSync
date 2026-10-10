@@ -23,6 +23,9 @@ const props = defineProps<{
   active: boolean
 }>()
 
+/** 组件事件：send-file 底条「发送文件」按钮点击（转发 ShareBar 事件，参数为页签 file:// 地址） */
+const emit = defineEmits<{ 'send-file': [url: string] }>()
+
 /** 底部共享条状态（模块级单例，App 装配时已 initShareBar） */
 const sb = useShareBar()
 /** 本页签是否本地文件页：filePath 只显示在本地文件页（条仅激活页签可见，等价按激活页判定） */
@@ -194,7 +197,7 @@ onUnmounted(() => {
   <div v-show="active" class="local-stage">
     <!-- 媒体文档等价样式：视频占满条上方区域、贴底；白底随主题（--ws-surface） -->
     <video ref="videoRef" class="local-video" :src="src" controls playsinline preload="auto" />
-    <!-- 底部共享条：本地视频页专属操作区，随播放面 v-show 显隐 -->
+    <!-- 底部共享条：本地视频页专属操作区，随播放面 v-show 显隐；send-file 转发给 App（暂存待发文件并开面板） -->
     <ShareBar
       :share-mode="sb.shareMode"
       :share-name="sb.shareName"
@@ -202,6 +205,7 @@ onUnmounted(() => {
       :download-speed="sb.speeds.download"
       :upload-speed="sb.speeds.upload"
       :load-speed="sb.speeds.load"
+      @send-file="emit('send-file', props.url)"
     />
   </div>
 </template>

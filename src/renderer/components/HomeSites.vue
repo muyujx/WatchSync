@@ -38,7 +38,8 @@
       </button>
     </div>
 
-    <!-- 本地视频入口：与站点卡片同款式，放在整个站点列表下方（在房且为房主时会自动推流给成员） -->
+    <!-- 本地视频入口：与站点卡片同款式，放在整个站点列表下方（在房且为房主时会自动推流给成员）；
+         右侧「发送本地文件」同款卡片：图标+标题，打开成员互传面板（选成员+文件发送，不依赖房主角色） -->
     <div class="sites local-sites">
       <button class="site-card" title="选择本机视频文件播放（在房且为房主时自动推流给成员）" @click="emit('pickLocal')">
         <span class="site-icon fallback local-icon">
@@ -49,6 +50,18 @@
           </svg>
         </span>
         <span class="site-name">打开本地视频</span>
+      </button>
+      <!-- 发送本地文件：与「打开本地视频」同款卡片（灰白图标 + 标题） -->
+      <button class="site-card" title="发送本机文件给房间成员（任意成员互收发）" @click="emit('sendFile')">
+        <span class="site-icon fallback xfer-icon">
+          <svg viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M17 3l4 4-4 4" />
+            <path d="M21 7H8" />
+            <path d="M7 21l-4-4 4-4" />
+            <path d="M3 17h13" />
+          </svg>
+        </span>
+        <span class="site-name">发送本地文件</span>
       </button>
     </div>
   </div>
@@ -76,6 +89,8 @@ const emit = defineEmits<{
   openSite: [s: { url: string }]
   /** 点击「打开本地视频」入口 */
   pickLocal: []
+  /** 点击「发送本地文件」图标按钮（父级打开传输面板） */
+  sendFile: []
 }>()
 
 const {

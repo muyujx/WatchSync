@@ -334,3 +334,132 @@ pub async fn media_progress(file_id: String) -> (u64, u64) {
 pub async fn media_ready_ranges(file_id: String) -> Vec<(u64, u64)> {
     crate::media_server::ready_ranges(&file_id)
 }
+
+/// 弹出系统对话框选择任意文件（文件传输发送用；不过滤类型，取消返回 null）
+#[tauri::command]
+pub async fn pick_file() -> Option<crate::media::MediaFileInfo> {
+    tauri::async_runtime::spawn_blocking(|| {
+        rfd::FileDialog::new()
+            .set_title("选择要发送的文件")
+            .add_filter("全部", &["*"])
+            .pick_file()
+            .map(|p| {
+                let name = p
+                    .file_name()
+                    .map(|s| s.to_string_lossy().to_string())
+                    .unwrap_or_else(|| String::from("file"));
+                let size = std::fs::metadata(&p).map(|m| m.len()).unwrap_or(0);
+                crate::media::MediaFileInfo {
+                    url: String::new(),
+                    path: p.to_string_lossy().to_string(),
+                    name,
+                    size,
+                }
+            })
+    })
+    .await
+    .ok()
+    .flatten()
+}
+
+/// 弹出系统对话框选择文件夹（设置「传输保存目录」用）；取消返回 None
+#[tauri::command]
+pub async fn pick_folder() -> Option<String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        rfd::FileDialog::new()
+            .set_title("选择传输文件保存目录")
+            .pick_folder()
+            .map(|p| p.to_string_lossy().to_string())
+    })
+    .await
+    .ok()
+    .flatten()
+}
+
+/// 创建/复用文件传输落盘任务，返回 .part 路径与已收区间（续传补缺口依据）
+#[tauri::command]
+pub async fn xfer_begin(app: AppHandle, file_id: String, name: String, size: u64) -> Option<crate::xfer::XferBeginInfo> {
+    tauri::async_runtime::spawn_blocking(move || crate::xfer::begin(&app, &file_id, &name, size))
+        .await
+        .ok()
+        .flatten()
+}
+
+/// 按偏移写入文件传输一块并记账（二进制 raw body + 头携带 fileId/offset，同 write_temp_chunk 模式）
+#[tauri::command]
+pub async fn xfer_write_chunk(request: tauri::ipc::Request<'_>) -> Result<bool, String> {
+    let tauri::ipc::InvokeBody::Raw(data) = request.body() else {
+        return Err("xfer_write_chunk 需要二进制请求体".into());
+    };
+    let headers = request.headers();
+    let file_id = headers.get("x-file-id").and_then(|v| v.to_str().ok()).unwrap_or("").to_string();
+    let offset = headers
+        .get("x-offset")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or(0);
+    let data = data.clone();
+    let ok = tauri::async_runtime::spawn_blocking(move || crate::xfer::write_chunk(&file_id, offset, &data))
+        .await
+        .unwrap_or(false);
+    if ok {
+        Ok(true)
+    } else {
+        Err("xfer_write_chunk 写入失败".into())
+    }
+}
+
+/// 查询传输任务已落盘字节区间（续传握手回给发送端）
+#[tauri::command]
+pub async fn xfer_ranges(file_id: String) -> Vec<(u64, u64)> {
+    crate::xfer::ranges(&file_id)
+}
+
+/// 查询传输任务落盘进度（已落盘, 总长）
+#[tauri::command]
+pub async fn xfer_progress(file_id: String) -> (u64, u64) {
+    crate::xfer::progress(&file_id)
+}
+
+/// 完成传输：校验完整后把 .part 改名为正式文件，返回最终路径（失败返回空串）
+#[tauri::command]
+pub async fn xfer_finish(file_id: String, name: String) -> String {
+    tauri::async_runtime::spawn_blocking(move || crate::xfer::finish(&file_id, &name))
+        .await
+        .unwrap_or_default()
+}
+
+/// 取消传输：删除 .part 半成品并注销任务（幂等）
+#[tauri::command]
+pub async fn xfer_abort(file_id: String) -> bool {
+    tauri::async_runtime::spawn_blocking(move || crate::xfer::abort(&file_id))
+        .await
+        .unwrap_or(false)
+}
+
+/// 用资源管理器打开文件（选中）或文件夹；文件传输完成后的「打开位置」入口
+#[tauri::command]
+pub async fn open_path(path: String) -> bool {
+    let p = std::path::Path::new(&path);
+    let r = if p.is_dir() {
+        std::process::Command::new("explorer").arg(&path).spawn()
+    } else {
+        // /select, 打开所在目录并选中该文件（explorer 的参数解析用引号包住整段）
+        std::process::Command::new("explorer").arg(format!("/select,{path}")).spawn()
+    };
+    if let Err(e) = r {
+        crate::applog::write("WARN", &format!("open_path 失败 path={path} err={e}"));
+        return false;
+    }
+    true
+}
+
+/// 打开文件传输保存目录（资源管理器；未自定义时按默认 {下载}/WatchSync，目录不存在则创建）
+#[tauri::command]
+pub async fn open_xfer_dir(app: AppHandle) {
+    let dir = crate::xfer::save_dir(&app);
+    let path = dir.to_string_lossy().into_owned();
+    if let Err(e) = std::process::Command::new("explorer").arg(&path).spawn() {
+        crate::applog::write("WARN", &format!("open_xfer_dir 失败 path={path} err={e}"));
+    }
+}

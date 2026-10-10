@@ -76,6 +76,20 @@
         </div>
       </div>
 
+      <!-- 文件传输：接收文件的保存目录（点选即存；空 = 默认 {下载}/WatchSync） -->
+      <div class="field log-field">
+        <span class="field-label">传输文件保存目录</span>
+        <div class="log-row">
+          <span class="xfer-dir-label" :title="saveDir || '默认：系统下载目录下的 WatchSync 文件夹'">
+            {{ saveDir || '默认：系统下载目录下的 WatchSync 文件夹' }}
+          </span>
+          <button class="m-btn tonal" :disabled="pickingDir" @click="chooseDir">{{ pickingDir ? '选择中…' : '选择目录' }}</button>
+          <button v-if="saveDir" class="m-btn tonal" @click="resetDir">恢复默认</button>
+          <button class="m-btn tonal" @click="openDir">打开目录</button>
+        </div>
+        <span class="field-hint">接收其他成员发来的文件保存到此目录</span>
+      </div>
+
       <div class="dialog-actions">
         <button class="m-btn" @click="emit('close')">取消</button>
         <button class="m-btn filled" :disabled="!nickInput.trim()" @click="save">保存</button>
@@ -195,6 +209,45 @@ async function installCodec(c: CodecProbe): Promise<void> {
 /** 打开运行日志目录（资源管理器；日志文件由正式版落盘，见 src-tauri/src/applog.rs） */
 async function openLogDir(): Promise<void> {
   await window.p2pApi.openLogDir()
+}
+
+/** 当前传输保存目录（空 = 默认；打开对话框时从设置读取） */
+const saveDir = ref('')
+/** 目录选择对话框进行中 */
+const pickingDir = ref(false)
+
+// 打开对话框时读取当前保存目录设置
+watch(
+  () => props.open,
+  (v) => {
+    if (v) void window.p2pApi.getSettings().then((s) => (saveDir.value = s.xferSaveDir))
+  },
+)
+
+/** 选择保存目录（点选即存；取消不变更） */
+async function chooseDir(): Promise<void> {
+  if (pickingDir.value) return
+  pickingDir.value = true
+  try {
+    const dir = await window.p2pApi.pickFolder()
+    if (dir) {
+      await window.p2pApi.setSettings({ xferSaveDir: dir })
+      saveDir.value = dir
+    }
+  } finally {
+    pickingDir.value = false
+  }
+}
+
+/** 恢复默认保存目录（清空自定义值） */
+async function resetDir(): Promise<void> {
+  await window.p2pApi.setSettings({ xferSaveDir: '' })
+  saveDir.value = ''
+}
+
+/** 打开当前生效的保存目录（未自定义时由 Rust 计算默认目录） */
+async function openDir(): Promise<void> {
+  await window.p2pApi.openXferDir()
 }
 
 // 打开对话框时自动检测一次

@@ -4,6 +4,8 @@
 .sites { display: flex; flex-wrap: wrap; gap: 16px; }
 /* 本地视频入口：独立一行放在整个站点列表下方（与站点卡片同款式） */
 .local-sites { margin-top: 16px; }
+/* 「发送本地文件」入口图标：与本地视频图标同款灰白（不跟随站点 fallback 的主题绿） */
+.site-icon.fallback.xfer-icon { background: var(--ws-fill); color: var(--ws-text-2); }
 .site-card { position: relative; display: flex; flex-direction: column; align-items: center; gap: 8px; width: 128px; padding: 20px 8px 14px; border: none; border-radius: 14px; background: var(--ws-surface); cursor: pointer; box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1); transition: box-shadow 0.2s, transform 0.15s; font-family: inherit; }
 .site-card:hover { box-shadow: 0 4px 16px rgba(0, 0, 0, 0.16); transform: translateY(-2px); }
 .site-card:focus-visible { outline: 2px solid var(--ws-accent); outline-offset: 2px; }

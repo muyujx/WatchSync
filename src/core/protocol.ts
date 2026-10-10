@@ -71,6 +71,16 @@ export type SyncMsg =
   | { t: 'pong'; ts: number }
   /** 满员锁定（房主→全员）：total 为含房主的房间总人数，收到者核对成员齐整后自行断开信令中继 */
   | { t: 'lock'; total: number }
+  /** 文件传输要约（发起方→接收方，定向）：请求向对方传一个文件，接收方弹确认（与观看共享分发无关） */
+  | { t: 'xferOffer'; fileId: string; name: string; size: number; mime: string }
+  /** 文件传输接受（接收方→发起方，定向）：ranges 为接收端已落盘字节区间（升序不重叠；空=全新接收，发送端只补缺口） */
+  | { t: 'xferAccept'; fileId: string; ranges: Array<[number, number]> }
+  /** 文件传输拒绝（接收方→发起方，定向） */
+  | { t: 'xferReject'; fileId: string }
+  /** 文件传输取消（任一方→对方，定向）：用户主动取消，接收方应删除半成品 .part */
+  | { t: 'xferCancel'; fileId: string }
+  /** 文件传输完成回执（接收方→发起方，定向）：接收方已完整落盘并改名 */
+  | { t: 'xferDone'; fileId: string }
 
 /** 消息类型到必检数值字段的映射，用于解码校验 */
 const NUMERIC_FIELDS: Record<SyncMsg['t'], string[]> = {
@@ -92,6 +102,11 @@ const NUMERIC_FIELDS: Record<SyncMsg['t'], string[]> = {
   ping: ['ts'],
   pong: ['ts'],
   lock: ['total'],
+  xferOffer: ['size'],
+  xferAccept: [],
+  xferReject: [],
+  xferCancel: [],
+  xferDone: [],
 }
 
 /** 合法共享模式 */
@@ -134,7 +149,20 @@ export function decodeMsg(raw: string): SyncMsg | null {
       if (typeof o.size !== 'number' || !Number.isFinite(o.size) || o.size < 0) return null
       if (o.asSource !== undefined && typeof o.asSource !== 'boolean') return null
     }
-    if ((t === 'fileNeed' || t === 'readyAsk') && typeof o.fileId !== 'string') return null
+    if ((t === 'fileNeed' || t === 'readyAsk' || t === 'xferOffer') && typeof o.fileId !== 'string') return null
+    if (t === 'xferOffer') {
+      if (typeof o.name !== 'string' || typeof o.mime !== 'string') return null
+    }
+    // xferAccept 的 fileId 与 ranges 必填：续传补缺口的唯一依据，校验与 fileNeed.ranges 一致
+    if (t === 'xferAccept') {
+      if (typeof o.fileId !== 'string' || !Array.isArray(o.ranges)) return null
+      for (const r of o.ranges) {
+        if (!Array.isArray(r) || r.length !== 2) return null
+        if (typeof r[0] !== 'number' || typeof r[1] !== 'number') return null
+        if (!Number.isFinite(r[0]) || !Number.isFinite(r[1]) || r[0] < 0 || r[1] <= r[0]) return null
+      }
+    }
+    if ((t === 'xferReject' || t === 'xferCancel' || t === 'xferDone') && typeof o.fileId !== 'string') return null
     if (t === 'readyState') {
       if (typeof o.fileId !== 'string') return null
       if (typeof o.paused !== 'boolean' || typeof o.syncPaused !== 'boolean') return null

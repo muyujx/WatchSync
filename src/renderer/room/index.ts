@@ -21,6 +21,7 @@ import { RttProbe } from '../rtt'
 import { FollowerSync } from './followerSync'
 import { HostSync } from './hostSync'
 import { FileTransfer } from './fileTransfer'
+import { FileXfer } from './fileXfer'
 import { RelayPrefetch, type HostFileEntry } from './relayPrefetch'
 import { ShareInit } from './shareInit'
 import { JOIN_TIMEOUT_MS, type Role } from './constants'
@@ -116,6 +117,8 @@ export class RoomController {
   private readonly follower: FollowerSync
   /** 共享发起（UI 入口） */
   private readonly shareInit: ShareInit
+  /** 文件传输（成员互传；任意成员间收发，与角色无关） */
+  readonly xfer: FileXfer
 
   constructor() {
     this.media = new MediaStreamReceiver({
@@ -129,6 +132,10 @@ export class RoomController {
     this.hostSync = new HostSync(this)
     this.follower = new FollowerSync(this)
     this.shareInit = new ShareInit(this)
+    this.xfer = new FileXfer({
+      room: () => this.roomHandle,
+      peerName: (id) => this.peerNames.get(id) ?? '',
+    })
   }
 
   /** 当前房间句柄（子系统经此取用；换房后旧句柄失效，在途任务以句柄不一致自行中止） */
@@ -359,9 +366,13 @@ export class RoomController {
     })
     // 文件分块：成员落盘；房主侧理论上不收
     this.roomHandle.onBinary((data, meta) => void this.files.onFileChunk(data, meta))
+    // 文件传输二进制（成员互传）：任意成员可收
+    this.roomHandle.onXferBinary((data, meta, peerId) => void this.xfer.onChunk(data, meta, peerId))
     this.roomHandle.onPeerJoin((id) => {
       this.peers.add(id)
       p2pLog('peerJoin', id)
+      // 文件传输：本端为发送方的中断任务自动重发 offer 续传
+      this.xfer.onPeerJoin(id)
       // 新成员加入：向其自我介绍（对方也会介绍自己）
       this.announceProfile()
       // 满员锁定联动：房主按人数决定断/开中继；成员核对 lock 后自行断开
@@ -399,6 +410,8 @@ export class RoomController {
       this.peerNames.delete(id)
       this.hostSync.forgetPeer(id)
       this.rtt.removePeer(id)
+      // 文件传输：与该成员进行中的任务转中断（重连自动续传）
+      this.xfer.onPeerLeave(id)
       // 离开的是房主：清除房主标记，并交还本地控制权（否则旧快照+守卫会让人无法暂停）
       if (this.hostPeerId === id) {
         this.hostPeerId = ''
@@ -512,6 +525,17 @@ export class RoomController {
   private handleMsg(msg: SyncMsg, peerId: string): void {
     // state/ping/pong 周期消息量大：不进日志，只打其余消息类型，便于排查信令
     if (msg.t !== 'state' && msg.t !== 'ping' && msg.t !== 'pong') p2pLog('recv', msg.t, 'from', peerId, msg)
+    // 文件传输（成员互传）：与观看共享/角色无关，任一端可收发，交由 xfer 子系统处理
+    if (
+      msg.t === 'xferOffer' ||
+      msg.t === 'xferAccept' ||
+      msg.t === 'xferReject' ||
+      msg.t === 'xferCancel' ||
+      msg.t === 'xferDone'
+    ) {
+      this.xfer.handleMsg(msg, peerId)
+      return
+    }
     // 延迟探测：ping/pong 周期消息量大，不进日志，交由 RttProbe 处理
     if (msg.t === 'ping') {
       this.rtt.onPing(msg.ts)
@@ -725,6 +749,8 @@ export class RoomController {
   async leave(): Promise<void> {
     this.follower.stop()
     this.hostSync.stop()
+    // 文件传输：进行中任务转中断（任务列表保留，重进房间可续传）
+    this.xfer.onRoomLeft()
     void this.media.release()
     this.rtt.stop()
     this.rtt.clear()

@@ -18,6 +18,7 @@ mod media_server;
 mod settings;
 mod state;
 mod tabs;
+mod xfer;
 
 use std::sync::OnceLock;
 use tauri::{Emitter, Manager, WebviewBuilder, WebviewUrl};
@@ -131,6 +132,16 @@ fn main() {
             commands::media_wanted_peek,
             commands::media_progress,
             commands::media_ready_ranges,
+            commands::pick_file,
+            commands::pick_folder,
+            commands::xfer_begin,
+            commands::xfer_write_chunk,
+            commands::xfer_ranges,
+            commands::xfer_progress,
+            commands::xfer_finish,
+            commands::xfer_abort,
+            commands::open_path,
+            commands::open_xfer_dir,
             commands::append_log,
             commands::open_log_dir,
         ])

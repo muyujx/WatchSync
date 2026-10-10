@@ -120,6 +120,30 @@ import { parseShareUrl } from '../core/shareLink'
     appendLog: (level: string, message: string) => invoke('append_log', { level, message }),
     /** 打开日志目录（资源管理器；设置对话框「打开日志目录」按钮） */
     openLogDir: () => invoke('open_log_dir'),
+    /** 弹出系统对话框选择任意文件（文件传输发送用；取消返回 null） */
+    pickFile: () => invoke('pick_file'),
+    /** 弹出系统对话框选择文件夹（设置「传输保存目录」用；取消返回 null） */
+    pickFolder: () => invoke('pick_folder'),
+    /** 创建/复用文件传输落盘任务，返回 .part 路径与已收区间（续传补缺口依据） */
+    xferBegin: (fileId: string, name: string, size: number) =>
+      invoke('xfer_begin', { fileId, name, size }) as Promise<{ path: string; ranges: Array<[number, number]> } | null>,
+    /** 按偏移写入文件传输一块并记账（二进制 raw body + 头携带 fileId/offset） */
+    xferWriteChunk: (fileId: string, offset: number, data: ArrayBuffer | Uint8Array) =>
+      invoke('xfer_write_chunk', data instanceof Uint8Array ? data : new Uint8Array(data), {
+        headers: { 'x-file-id': fileId, 'x-offset': String(offset) },
+      }),
+    /** 查询传输任务已落盘字节区间（续传握手用） */
+    xferRanges: (fileId: string) => invoke('xfer_ranges', { fileId }),
+    /** 查询传输任务落盘进度（已落盘, 总长） */
+    xferProgress: (fileId: string) => invoke('xfer_progress', { fileId }),
+    /** 完成传输：.part 改名为正式文件，返回最终路径（失败返回空串） */
+    xferFinish: (fileId: string, name: string) => invoke('xfer_finish', { fileId, name }),
+    /** 取消传输：删除 .part 半成品并注销任务（幂等） */
+    xferAbort: (fileId: string) => invoke('xfer_abort', { fileId }),
+    /** 用资源管理器打开文件（选中）或文件夹 */
+    openPath: (path: string) => invoke('open_path', { path }),
+    /** 打开文件传输保存目录（资源管理器；未自定义时为默认 {下载}/WatchSync） */
+    openXferDir: () => invoke('open_xfer_dir'),
   }
   // 就绪标记（调试用）
   g.__p2pShimReady = true

@@ -22,6 +22,8 @@ pub struct Settings {
     pub reachable_relays: Vec<String>,
     pub relay_checked_at: i64,
     pub custom_sites: Vec<CustomSite>,
+    /// 文件传输保存目录（空 = 默认 {系统下载目录}/WatchSync）
+    pub xfer_save_dir: String,
 }
 
 impl Default for Settings {
@@ -39,6 +41,7 @@ impl Default for Settings {
             reachable_relays: Vec::new(),
             relay_checked_at: 0,
             custom_sites: Vec::new(),
+            xfer_save_dir: String::new(),
         }
     }
 }
@@ -138,6 +141,9 @@ pub fn save_patch(app: &tauri::AppHandle, patch: &Value) -> Settings {
                 Some(CustomSite { name, url })
             })
             .collect();
+    }
+    if let Some(v) = patch.get("xferSaveDir").and_then(|x| x.as_str()) {
+        s.xfer_save_dir = v.to_string();
     }
     let _ = std::fs::write(settings_path(app), serde_json::to_string_pretty(&s).unwrap());
     s

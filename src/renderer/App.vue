@@ -83,6 +83,7 @@
     :url                         页签地址（播放源）
     :active                      是否激活（非激活 v-show 隐藏但视频照常播）
     每个页签常驻一个实例；底部共享条内嵌在播放面里（状态取 useShareBar 单例，随页签显隐）。
+    @send-file                   底条「发送文件」按钮：暂存该本地文件为待发并打开传输面板
   -->
   <div class="stage-layer" :style="{ top: stageTop }">
     <LocalVideoStage
@@ -91,6 +92,7 @@
       :tab-id="t.id"
       :url="t.url"
       :active="t.id === activeTabId"
+      @send-file="onSendLocalFile"
     />
   </div>
 
@@ -101,16 +103,19 @@
   <ToastHost :active-url="activeTabUrl" :chrome-h="chromeH" />
 
   <!--
-    主页站点卡片（无激活页签时显示；含站点书签增删改对话框与「打开本地视频」入口；注释与绑定行同序）
+    主页站点卡片（无激活页签时显示；含站点书签增删改对话框、「打开本地视频」入口与「发送本地文件」图标按钮；
+    注释与绑定行同序）
     ref="homeSites"              组件实例（设置读取后调 .rebuild() 重建自定义卡片）
     :active                      主页显隐（无激活页签 = true）
     @open-site                   点站点卡片 → 填地址并打开页签
     @pick-local                  点「打开本地视频」→ 系统对话框选文件 → 打开并共享
+    @send-file                   点「发送本地文件」图标 → 打开传输面板（选成员发送）
   -->
   <HomeSites ref="homeSites" 
     :active="activeTabId == null" 
     @open-site="openSite" 
-    @pick-local="onPickLocal" />
+    @pick-local="onPickLocal"
+    @send-file="transferApi.togglePanel" />
 
   <!--
     成员面板（注释与绑定行同序）
@@ -158,6 +163,37 @@
     @close="closeHistory"
     @open="openHistoryItem"
   />
+
+  <!--
+    文件传输面板（注释与绑定行同序）
+    :open                        显隐
+    :members                     可选发送目标（在线成员，不含本机）
+    :tasks                       传输任务列表（FileXfer 快照投影）
+    :pending-file                暂存的待发文件（视频页「发送文件」按钮带入；发送区显示提示并直接发此文件）
+    @close                       关闭面板
+    @send                        向选中成员发起「选文件发送」
+    @cancel                      取消进行中的任务
+    @open-path                   打开已完成文件的所在位置
+    @clear-finished              清除已结束任务列表项
+  -->
+  <TransferPanel
+    :open="transferApi.panelOpen.value"
+    :members="transferMembers"
+    :tasks="transferApi.tasks.value"
+    :pending-file="transferApi.pendingFile.value"
+    @close="transferApi.closePanel"
+    @send="transferApi.pickAndSend"
+    @cancel="transferApi.cancelTask"
+    @open-path="onOpenXferPath"
+    @clear-finished="transferApi.clearFinished"
+  />
+
+  <!-- 文件接收确认框：收到成员文件要约时弹出（接受/拒绝） -->
+  <XferConfirmDialog
+    :task="transferApi.incoming.value"
+    @accept="transferApi.acceptIncoming"
+    @reject="transferApi.rejectIncoming"
+  />
 </template>
 
 <script setup lang="ts">
@@ -196,6 +232,9 @@ import { useDirectRelay } from './composables/useDirectRelay'
 import { initShareBar } from './composables/useShareBar'
 import { useChromeLayout } from './composables/useChromeLayout'
 import { useRoomSession } from './composables/useRoomSession'
+import { useFileTransfer } from './composables/useFileTransfer'
+import TransferPanel from './components/TransferPanel.vue'
+import XferConfirmDialog from './components/XferConfirmDialog.vue'
 import { setupDevHooks } from './devHooks'
 
 /** ===== 脊柱状态（组装根持有；各域 composable 经 deps 注入读写） ===== */
@@ -405,6 +444,43 @@ const hostDialogOpen = ref(false)
 function onHostConfirmed(headcount: number): void {
   hostDialogOpen.value = false
   void onHost(headcount)
+}
+
+/** ===== 文件传输（成员互传面板） ===== */
+const transferApi = useFileTransfer({ controller, roomId })
+/** 可选发送目标：在线成员（不含本机），成员表变化时随 tasks 快照一起刷新 */
+const transferMembers = computed(() =>
+  memberList.value
+    .filter((m) => !m.self)
+    .map((m) => ({ id: m.id, name: m.name, online: m.online })),
+)
+/** 打开已完成文件的所在位置（资源管理器选中该文件） */
+function onOpenXferPath(path: string): void {
+  void window.p2pApi.openPath(path)
+}
+
+/**
+ * 本地视频页底条「发送文件」：把当前播放的本地文件暂存为待发并打开传输面板。
+ * 参数：url 页签 file:// 地址（来自 LocalVideoStage 转发）。
+ */
+async function onSendLocalFile(url: string): Promise<void> {
+  // file:// 地址还原本地路径（与 LocalVideoStage.filePathOf 同规则：/F:/x → F:\x）
+  let path = ''
+  try {
+    path = decodeURIComponent(new URL(url).pathname).replace(/^\/(?=[A-Za-z]:\/)/, '').replace(/\//g, '\\')
+  } catch {
+    return
+  }
+  if (!path) return
+  // localFile 与该路径一致时直接用其元数据（打开时已查好 name/size）；否则现查文件大小
+  const known = localFile.value && localFile.value.path.toLowerCase() === path.toLowerCase() ? localFile.value : null
+  const name = known?.name || path.split('\\').pop() || 'file'
+  const size = known?.size ?? (await window.p2pApi.fileSize(path))
+  if (!size) {
+    notify('无法读取文件大小，发送失败')
+    return
+  }
+  transferApi.stageLocalFile({ path, name, size })
 }
 
 /** ===== 联调/诊断钩子（drive.cjs） ===== */

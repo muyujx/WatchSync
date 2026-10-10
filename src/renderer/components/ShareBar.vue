@@ -9,6 +9,9 @@
 import { computed } from 'vue'
 import { formatSpeed } from '../../core/speed'
 
+/** 组件事件：sendFile 点「发送文件」→ 把当前播放的本地文件暂存为待发文件并打开传输面板 */
+const emit = defineEmits<{ sendFile: [] }>()
+
 const props = defineProps<{
   /** 当前共享模式（组件只在本地视频页挂载，网页视频的 url 模式不会出现在这里） */
   shareMode: 'file' | 'none'
@@ -64,6 +67,11 @@ const hasContent = computed(
       <span v-if="(props.loadSpeed ?? -1) >= 0" class="stream-speed" title="从房主接收数据的加载速度">
         ↓ {{ formatSpeed(props.loadSpeed ?? 0) }}
       </span>
+      <!-- 发送本地文件：仅本地文件页（有路径）出现；点击暂存当前文件为待发并打开传输面板 -->
+      <span v-if="props.filePath" class="flex-spacer"></span>
+      <button v-if="props.filePath" class="m-btn tonal streambar-send" title="把当前本地视频文件发送给房间成员" @click="emit('sendFile')">
+        发送文件
+      </button>
     </template>
   </div>
 </template>
