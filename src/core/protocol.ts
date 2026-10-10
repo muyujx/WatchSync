@@ -81,6 +81,27 @@ export type SyncMsg =
   | { t: 'xferCancel'; fileId: string }
   /** 文件传输完成回执（接收方→发起方，定向）：接收方已完整落盘并改名 */
   | { t: 'xferDone'; fileId: string }
+  /** 音乐流式要约（房主→全员）：宣布共享一首音乐（成员边收边缓冲，与视频同步体系完全独立）。
+   *  标签/封面/技术信息随要约下发（房主从源文件读取，封面已压缩为 320px JPEG data URL），
+   *  成员端零解析直接展示；均为可选字段（兼容与缺省回退文件名） */
+  | {
+      t: 'musicOffer'
+      fileId: string
+      name: string
+      size: number
+      mime: string
+      title?: string
+      artist?: string
+      album?: string
+      tech?: string
+      cover?: string
+    }
+  /** 音乐缓冲达标上报（成员→房主）：本机副本已缓冲够起播量（判定在成员侧） */
+  | { t: 'musicReady'; fileId: string }
+  /** 音乐统一开播令（房主→全员）：全员此刻同时 play；开播后互不同步（自由暂停/seek） */
+  | { t: 'musicStart'; fileId: string; at: number }
+  /** 音乐共享结束（房主→全员）：成员停止向房主补拉（已缓冲部分可继续听） */
+  | { t: 'musicEnd'; fileId: string }
 
 /** 消息类型到必检数值字段的映射，用于解码校验 */
 const NUMERIC_FIELDS: Record<SyncMsg['t'], string[]> = {
@@ -107,6 +128,10 @@ const NUMERIC_FIELDS: Record<SyncMsg['t'], string[]> = {
   xferReject: [],
   xferCancel: [],
   xferDone: [],
+  musicOffer: ['size'],
+  musicReady: [],
+  musicStart: ['at'],
+  musicEnd: [],
 }
 
 /** 合法共享模式 */
@@ -179,6 +204,14 @@ export function decodeMsg(raw: string): SyncMsg | null {
     }
     if (t === 'transfer' && typeof o.to !== 'string') return null
     if (t === 'hostChange' && typeof o.host !== 'string') return null
+    // music 消息族：fileId/name/mime 必为字符串，size 已在 NUMERIC_FIELDS 校验
+    if (t === 'musicOffer') {
+      if (typeof o.fileId !== 'string' || typeof o.name !== 'string' || typeof o.mime !== 'string') return null
+      for (const k of ['title', 'artist', 'album', 'tech', 'cover']) {
+        if (o[k] !== undefined && typeof o[k] !== 'string') return null
+      }
+    }
+    if ((t === 'musicReady' || t === 'musicStart' || t === 'musicEnd') && typeof o.fileId !== 'string') return null
     // lock 的 total 是含房主的房间总人数，至少 2（房主 + 1 成员）才有意义
     if (t === 'lock' && (!(o.total as number) || (o.total as number) < 2)) return null
     if (t === 'profile') {

@@ -122,6 +122,23 @@ declare global {
       seekTab(tabId: number, position: number): Promise<void>
       /** 本地媒体文件元数据 */
       pickVideoFile(): Promise<{ path: string; url: string; name: string; size: number } | null>
+      /** 弹出系统对话框选择本地音乐；取消返回 null */
+      pickMusicFile(): Promise<{ path: string; url: string; name: string; size: number } | null>
+      /** 判断文件是否为 DSD（dsf/dff）——共享前先转 FLAC */
+      isDsdFile(path: string): Promise<boolean>
+      /** DSD → FLAC 转码（进度经 dsd-progress 事件推送），返回产物元数据 */
+      convertDsdToFlac(path: string): Promise<{ path: string; url: string; name: string; size: number }>
+      /** 订阅 DSD 转码进度事件（0~1） */
+      onDsdProgress(cb: (v: number) => void): void
+      /** 读取音频元数据与封面（封面已缩放为 320px JPEG data URL；失败返回空字段结构） */
+      readAudioMeta(path: string): Promise<{
+        title: string
+        artist: string
+        album: string
+        tech: string
+        cover: string
+        duration: number
+      }>
       /** 查询文件字节数 */
       fileSize(path: string): Promise<number>
       /** 按偏移读取本地媒体一块 */

@@ -120,6 +120,16 @@ export function useSyncFlow(deps: UseSyncFlowDeps) {
     }
   }
 
+  /**
+   * 解除当前同步跟随（不广播）：清空同步指针并解除守卫，syncEnd 由随后 endShare 广播。
+   * 音乐互斥切换用——发起音乐共享前结束视频共享的 UI 侧联动。
+   */
+  async function releaseSyncTab(): Promise<void> {
+    syncTabId.value = null
+    controller.syncTabId = null
+    await videoBus.setSyncTab(null, false)
+  }
+
   // 成员端：房主切换同步页签 → 复用相同地址页签或新建，置顶第一位并自动跳转显示。
   // 同样适用于首次心跳建立同步（syncTabId 为空时 applySnapshot 也会走这里）
   /** 进行中的同步页签导航（同一 URL 去重）：fileOffer 的 attach 回填与心跳 applySnapshot
@@ -171,5 +181,5 @@ export function useSyncFlow(deps: UseSyncFlowDeps) {
     syncTabId.value = null
   }
 
-  return { setSyncTab, afterTabNavigated, isSyncLocked, onTabClosed }
+  return { setSyncTab, afterTabNavigated, isSyncLocked, onTabClosed, releaseSyncTab }
 }

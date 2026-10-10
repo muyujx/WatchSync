@@ -35,6 +35,21 @@ features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_System_Sy
 [dependencies.rfd]
 version = "0.15"
 
+# DSD→FLAC 转码（「播放本地音乐」）：rubato 做降采样滤波，flacenc 纯 Rust FLAC 编码
+[dependencies.rubato]
+version = "0.16"
+
+[dependencies.flacenc]
+version = "0.5"
+default-features = false
+
+# 音频封面缩放（musicOffer 下发前压到 320px JPEG，控制 DataChannel 消息体积）：
+# 只开 jpeg/png 解码，避免默认全格式的大依赖
+[dependencies.image]
+version = "0.25"
+default-features = false
+features = ["jpeg", "png"]
+
 # 注：WGC 抓屏 / H.264 编码 / WebRTC 推流链路已删除（改用"无损文件流 + 原画直链共享"），
 # 不再依赖 windows / openh264 / webrtc / tokio / bytes。
 
@@ -49,6 +64,11 @@ incremental = true
 # 本 crate 在 dev 下也开优化（纯 Rust 媒体/协议逻辑；依赖仍按默认编译）
 [profile.dev.package.watchsync]
 opt-level = 3
+
+# 第三方依赖在 dev 下同样开优化：DSD 转码（rubato/flacenc/image）等重计算依赖
+# 无优化会慢一个量级，真实音乐转码不可用；只影响首次 dev 编译时长
+[profile.dev.package."*"]
+opt-level = 2
 
 [profile.release]
 strip = true

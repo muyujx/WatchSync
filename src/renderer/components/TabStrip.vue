@@ -88,6 +88,8 @@ export interface TabInfo {
   title: string
   /** favicon 地址 */
   favicon: string
+  /** 音乐播放页签（成员收流回环地址无扩展名，靠此标记路由到音乐播放面） */
+  music?: boolean
 }
 
 /** 页签角色语义：host=可切换同步目标；follower=只读同步绿点；none=普通页签 */

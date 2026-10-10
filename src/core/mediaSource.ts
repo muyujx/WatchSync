@@ -315,6 +315,44 @@ export function subtractRanges(
   return out
 }
 
+/** WebView2（Chromium）可直接解码的音频扩展名（小写、无点） */
+const AUDIO_EXTS: readonly string[] = ['mp3', 'flac', 'm4a', 'aac', 'wav', 'ogg', 'opus', 'weba']
+
+/**
+ * 音频文件/地址判定（「播放本地音乐」页签用它路由到音乐播放面而非视频面）。
+ * 参数：urlOrName file:// 地址、回环媒体地址或纯文件名（按扩展名识别）。
+ * 返回值：true=可由 Chromium 直接解码的音频。
+ */
+export function isAudioUrl(urlOrName: string): boolean {
+  const m = urlOrName.toLowerCase().match(/\.([a-z0-9]{2,5})(?:\?|#|$)/)
+  return !!m && AUDIO_EXTS.includes(m[1])
+}
+
+/**
+ * 由文件名取音频 MIME（音乐要约携带；成员端 mediaExtension 兜底扩展名用）。
+ * 参数：name 文件名。
+ * 返回值：audio/* mime；不认识的扩展名按 audio/mpeg 处理。
+ */
+export function audioMimeOf(name: string): string {
+  const m = name.toLowerCase().match(/\.([a-z0-9]{2,5})(?:\?|#|$)/)
+  switch (m?.[1]) {
+    case 'flac':
+      return 'audio/flac'
+    case 'm4a':
+    case 'aac':
+      return 'audio/mp4'
+    case 'wav':
+      return 'audio/wav'
+    case 'ogg':
+      return 'audio/ogg'
+    case 'opus':
+    case 'weba':
+      return 'audio/ogg'
+    default:
+      return 'audio/mpeg' // mp3 与未知扩展名兜底
+  }
+}
+
 /**
  * 由 MIME/地址推导媒体文件扩展名（缺省空串表示沿用原文件名）。
  * 成员端媒体服务的 Content-Type 由临时文件扩展名推导：网页视频中继时标题常无扩展名，
@@ -324,9 +362,18 @@ export function subtractRanges(
  */
 export function mediaExtension(name: string, mime = '', url = ''): string {
   if (/\.[a-z0-9]{2,5}$/i.test(name)) return ''
-  const fromUrl = url.match(/\.(mp4|m4v|webm|mkv|mov|avi|ts|mp3|m4a|aac|flac)(?=\?|#|$)/i)
+  const fromUrl = url.match(/\.(mp4|m4v|webm|mkv|mov|avi|ts|mp3|m4a|aac|flac|wav|ogg|opus)(?=\?|#|$)/i)
   if (fromUrl) return `.${fromUrl[1].toLowerCase()}`
   const m = (mime || '').toLowerCase()
+  // 音频 mime 先判：audio/mpeg 落到下面视频分支会被误判成 .mpg（成员落盘扩展名错、webview 拒播）
+  if (m.startsWith('audio/')) {
+    if (m.includes('mpeg')) return '.mp3'
+    if (m.includes('flac')) return '.flac'
+    if (m.includes('mp4') || m.includes('aac')) return '.m4a'
+    if (m.includes('wav')) return '.wav'
+    if (m.includes('ogg') || m.includes('opus')) return '.ogg'
+    return '.mp3'
+  }
   if (m.includes('mp4')) return '.mp4'
   if (m.includes('webm')) return '.webm'
   if (m.includes('matroska')) return '.mkv'

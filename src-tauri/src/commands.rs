@@ -204,6 +204,68 @@ pub async fn pick_video_file() -> Option<crate::media::MediaFileInfo> {
         .flatten()
 }
 
+/// 弹出系统对话框选择本地音乐；取消返回 null
+#[tauri::command]
+pub async fn pick_music_file() -> Option<crate::media::MediaFileInfo> {
+    tauri::async_runtime::spawn_blocking(crate::media::pick_music_file)
+        .await
+        .ok()
+        .flatten()
+}
+
+/// 判断文件是否为 DSD（dsf/dff）——前端据此决定共享前是否先转 FLAC
+#[tauri::command]
+pub async fn is_dsd_file(path: String) -> bool {
+    tauri::async_runtime::spawn_blocking(move || crate::dsd::is_dsd_file(&path))
+        .await
+        .ok()
+        .unwrap_or(false)
+}
+
+/// 读取音频元数据与封面（foobar 风格界面；失败返回空字段结构）
+#[tauri::command]
+pub async fn read_audio_meta(path: String) -> crate::audio_meta::AudioMeta {
+    tauri::async_runtime::spawn_blocking(move || crate::audio_meta::read_audio_meta(&path))
+        .await
+        .unwrap_or(crate::audio_meta::AudioMeta {
+            title: String::new(),
+            artist: String::new(),
+            album: String::new(),
+            tech: String::new(),
+            cover: String::new(),
+            duration: 0.0,
+        })
+}
+
+/// DSD → FLAC 转码（「播放本地音乐」前置步骤）。进度经 dsd-progress 事件推送（0~1）。
+/// 返回值：产物元数据（临时目录下 .flac）；格式不支持/失败返回错误文案。
+#[tauri::command]
+pub async fn convert_dsd_to_flac(app: tauri::AppHandle, path: String) -> Result<crate::media::MediaFileInfo, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        use tauri::Emitter;
+        let src = std::path::PathBuf::from(&path);
+        let result = crate::dsd::convert_to_flac(&src, &|v: f32| {
+            let _ = app.emit("dsd-progress", v.clamp(0.0, 1.0));
+        })?;
+        let p = std::path::PathBuf::from(&result.path);
+        let name = p
+            .file_name()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_else(|| String::from("audio.flac"));
+        let size = std::fs::metadata(&p).map(|m| m.len()).unwrap_or(0);
+        Ok(crate::media::MediaFileInfo {
+            url: tauri::Url::from_file_path(&p)
+                .map(|u| u.to_string())
+                .unwrap_or_default(),
+            path: result.path,
+            name,
+            size,
+        })
+    })
+    .await
+    .map_err(|e| format!("转码任务失败: {e}"))?
+}
+
 /// 查询文件字节数（联调/分发前探测）
 #[tauri::command]
 pub async fn file_size(path: String) -> u64 {

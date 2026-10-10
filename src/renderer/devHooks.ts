@@ -28,6 +28,8 @@ export interface DevHooksDeps {
   onShareWeb(): void
   onDirectRelay(): Promise<void>
   onPickLocal(): Promise<void>
+  /** 按路径打开并共享本地音乐（绕过系统文件对话框；联调用） */
+  openSharedMusic(info: { path: string; url: string; name: string; size: number }): Promise<number | null>
   /** 查询同步页签视频状态（按页签类型路由：Vue 本地页签走本地面，网页页签走桥） */
   videoStatus(): Promise<unknown>
   /** 向同步页签下发播放指令（同上路由） */
@@ -109,6 +111,28 @@ export function setupDevHooks(deps: DevHooksDeps): { syncDebug(): void } {
     webShareMode: () => (deps.syncTabId() === deps.relayTabId() ? 'relay' : 'progress'),
     diag: diagSnapshot,
     openLocalPick: () => deps.onPickLocal(),
+    // ---- 音乐共享联调（绕过系统文件对话框：CDP 无法操作系统弹窗）----
+    /** 按路径打开并共享本地音乐（与「播放本地音乐」同一条路径；DSD 会先转码） */
+    shareMusicPath: async (path: string) => {
+      const name = path.split(/[\\/]/).pop() || 'audio.flac'
+      const size = await window.p2pApi.fileSize(path)
+      const url = path.startsWith('file:') ? path : 'file:///' + path.replace(/\\/g, '/')
+      const tabId = await deps.openSharedMusic({ path, url, name, size })
+      return { path, url, name, size, tabId }
+    },
+    /** 音乐共享状态快照（房主等待 x/y/已开播；成员侧缓冲比例由页签自管） */
+    musicState: () => {
+      const st = deps.controller.music.hostState()
+      return {
+        active: !!st.info,
+        name: st.info?.name ?? '',
+        fileId: st.info?.fileId ?? '',
+        waiting: st.waiting,
+        readyCount: st.readyCount,
+        totalCount: st.totalCount,
+        playing: st.playing,
+      }
+    },
     // 本地视频（Vue 页签）联调：同步页签的状态/指令（网页页签仍可用 CDP 直连桥）
     videoStatus: () => deps.videoStatus(),
     videoCmd: (action: string, arg?: number) => deps.videoCmd(action, arg),

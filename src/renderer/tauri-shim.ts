@@ -90,6 +90,18 @@ import { parseShareUrl } from '../core/shareLink'
     seekTab: (tabId: number, position: number) => invoke('seek_tab', { tabId, position }),
     /** 弹出系统对话框选择本地视频；取消返回 null */
     pickVideoFile: () => invoke('pick_video_file'),
+    /** 弹出系统对话框选择本地音乐；取消返回 null */
+    pickMusicFile: () => invoke('pick_music_file'),
+    /** 判断文件是否为 DSD（dsf/dff）——「播放本地音乐」共享前先转 FLAC */
+    isDsdFile: (path: string) => invoke('is_dsd_file', { path }) as Promise<boolean>,
+    /** DSD → FLAC 转码（进度经 dsd-progress 事件推送 0~1），返回产物元数据 */
+    convertDsdToFlac: (path: string) => invoke('convert_dsd_to_flac', { path }),
+    /** 订阅 DSD 转码进度事件（0~1） */
+    onDsdProgress: (cb: (v: number) => void) => {
+      void listen('dsd-progress', (e: { payload: number }) => cb(e.payload))
+    },
+    /** 读取音频元数据与封面（封面已缩放为 320px JPEG data URL；失败返回空字段结构） */
+    readAudioMeta: (path: string) => invoke('read_audio_meta', { path }),
     /** 查询文件字节数 */
     fileSize: (path: string) => invoke('file_size', { path }),
     /** 按偏移读取本地媒体一块（ArrayBuffer） */

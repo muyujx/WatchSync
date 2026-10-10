@@ -24,6 +24,7 @@ import { FileTransfer } from './fileTransfer'
 import { FileXfer } from './fileXfer'
 import { RelayPrefetch, type HostFileEntry } from './relayPrefetch'
 import { ShareInit } from './shareInit'
+import { MusicSession } from './musicSync'
 import { JOIN_TIMEOUT_MS, type Role } from './constants'
 
 export type { Role } from './constants'
@@ -117,6 +118,10 @@ export class RoomController {
   private readonly follower: FollowerSync
   /** 共享发起（UI 入口） */
   private readonly shareInit: ShareInit
+  /** 音乐共享会话（播放本地音乐；与视频同步体系独立） */
+  readonly music: MusicSession
+  /** 成员端收到音乐要约回调（UI 打开/复用音乐页签；独立于同步页签；meta 为歌曲信息） */
+  onMusicTab: ((url: string, name: string, meta: { title?: string; artist?: string; album?: string; tech?: string; cover?: string }) => void | Promise<void>) | null = null
   /** 文件传输（成员互传；任意成员间收发，与角色无关） */
   readonly xfer: FileXfer
 
@@ -132,6 +137,14 @@ export class RoomController {
     this.hostSync = new HostSync(this)
     this.follower = new FollowerSync(this)
     this.shareInit = new ShareInit(this)
+    this.music = new MusicSession({
+      room: () => this.roomHandle,
+      peers: this.peers,
+      hostPeerId: () => this.hostPeerId,
+      hostFiles: this.hostFiles,
+      peerRttOf: (id) => this.peerRtt.get(id)?.rtt,
+    })
+    this.music.onMusicTab = (url, name, meta) => this.onMusicTab?.(url, name, meta)
     this.xfer = new FileXfer({
       room: () => this.roomHandle,
       peerName: (id) => this.peerNames.get(id) ?? '',
@@ -409,6 +422,7 @@ export class RoomController {
       this.peers.delete(id)
       this.peerNames.delete(id)
       this.hostSync.forgetPeer(id)
+      this.music.forgetPeer(id)
       this.rtt.removePeer(id)
       // 文件传输：与该成员进行中的任务转中断（重连自动续传）
       this.xfer.onPeerLeave(id)
@@ -541,6 +555,11 @@ export class RoomController {
       this.rtt.onPing(msg.ts)
       return
     }
+    // 音乐共享（播放本地音乐）：独立于视频同步体系的一次性起播协调
+    if (msg.t === 'musicOffer' || msg.t === 'musicReady' || msg.t === 'musicStart' || msg.t === 'musicEnd') {
+      this.handleMusicMsg(msg, peerId)
+      return
+    }
     if (msg.t === 'pong') {
       this.rtt.onPong(peerId, msg.ts)
       return
@@ -555,8 +574,26 @@ export class RoomController {
         this.hostPeerId = peerId
         this.markConnected()
       }
-      // 首次得知该成员即视为加入，供 UI 提示
-      if (first) this.onPeerJoined?.(peerId, name)
+      // 首次得知该成员即视为加入，供 UI 提示；房主若正在共享音乐，向新成员补发要约
+      // （已开播场景下新成员缓冲达标后由 noteMusicReady 定向补发开播令，从头听）
+      if (first) {
+        this.onPeerJoined?.(peerId, name)
+        const mi = this.role === 'host' ? this.music.hostState().info : null
+        if (mi && this.role === 'host') {
+          this.roomHandle?.sendTo(peerId, {
+            t: 'musicOffer',
+            fileId: mi.fileId,
+            name: mi.name,
+            size: mi.size,
+            mime: mi.mime,
+            title: mi.title,
+            artist: mi.artist,
+            album: mi.album,
+            tech: mi.tech,
+            cover: mi.cover,
+          })
+        }
+      }
       this.onPeersChanged?.()
       return
     }
@@ -683,6 +720,42 @@ export class RoomController {
   }
 
   /**
+   * 处理音乐共享消息（与视频同步体系独立的通道）。
+   * musicOffer 仅成员消费（attach 本机源后回调 UI 开音乐页签）；
+   * musicReady 仅房主消费（起播协调）；musicStart/musicEnd 仅成员消费。
+   * 参数：msg 音乐消息；peerId 发送方。
+   */
+  private handleMusicMsg(msg: SyncMsg, peerId: string): void {
+    if (msg.t === 'musicOffer') {
+      if (this.role !== 'follower') return
+      // attach 复用无损文件流收通道（边收边缓冲）；就绪后回调 UI 打开音乐页签
+      void this.media.attach(msg.fileId, msg.name, msg.size, { mime: msg.mime }).then((url) => {
+        if (!url || this.role !== 'follower') return
+        void this.onMusicTab?.(url, msg.name, {
+          title: msg.title,
+          artist: msg.artist,
+          album: msg.album,
+          tech: msg.tech,
+          cover: msg.cover,
+        })
+      })
+      return
+    }
+    if (msg.t === 'musicReady') {
+      if (this.role === 'host') this.music.noteMusicReady(peerId, msg.fileId)
+      return
+    }
+    if (msg.t === 'musicStart') {
+      if (this.role === 'follower') this.music.handleMusicStart(msg.fileId, msg.at)
+      return
+    }
+    if (msg.t === 'musicEnd') {
+      if (this.role === 'follower') this.music.handleMusicEnd(msg.fileId)
+      return
+    }
+  }
+
+  /**
    * 房主：结束当前共享（关闭同步页签/停止本地文件推流）。
    * 清空本端共享与同步目标，并广播 syncEnd，成员据此解锁同步页签可自由关闭。
    * 返回值：无。
@@ -771,6 +844,7 @@ export class RoomController {
     this.relay.reset()
     this.hostSync.reset()
     this.follower.reset()
+    this.music.reset()
     await this.roomHandle?.leave()
     this.roomHandle = null
     // 重置连接与房主识别状态

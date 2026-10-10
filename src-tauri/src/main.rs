@@ -9,8 +9,10 @@
 //! - IPC：commands.rs 全量命令 + 事件（protocol-url/win-state/page-title/video-fullscreen）
 
 mod applog;
+mod audio_meta;
 mod bridge;
 mod commands;
+mod dsd;
 mod history;
 mod media;
 mod media_bitmap;
@@ -121,6 +123,10 @@ fn main() {
             commands::tab_status,
             commands::seek_tab,
             commands::pick_video_file,
+            commands::pick_music_file,
+            commands::is_dsd_file,
+            commands::convert_dsd_to_flac,
+            commands::read_audio_meta,
             commands::file_size,
             commands::read_file_chunk,
             commands::create_temp_media,

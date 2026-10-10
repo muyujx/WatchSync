@@ -305,6 +305,158 @@ async function main() {
     }
     a.close()
     b.close()
+  } else if (stage === 'music-test') {
+    // 音乐共享全链路（DSD 场景）：A 建房 → B 加入 → A 共享带标签/封面的 dsf（触发 DSD→FLAC 转码）
+    // → 等待同步起播 → 验证封面/标题展示 → 起播后 B 暂停不影响 A
+    // 音乐页签由 UI 壳渲染（.music-audio 在主文档），两侧状态都能从主页面 eval 读取
+    const fs = require('node:fs')
+    const wait = (ms) => new Promise((r) => setTimeout(r, ms))
+
+    // 生成 1x1 红色 PNG（封面占位）
+    const PNG_RED_1PX = Buffer.from(
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
+      'base64',
+    )
+    /** syncsafe 整数编码（ID3v2 头/帧长度：每字节 7 位） */
+    const syncsafe = (n) => Buffer.from([(n >> 21) & 0x7f, (n >> 14) & 0x7f, (n >> 7) & 0x7f, n & 0x7f])
+    /** ID3v2.3 文本帧（encoding=3 UTF-8） */
+    const textFrame = (id, text) => {
+      const body = Buffer.concat([Buffer.from([3]), Buffer.from(text, 'utf8')])
+      return Buffer.concat([Buffer.from(id, 'latin1'), Buffer.from([0, 0, 0, body.length]), Buffer.from([0, 0]), body])
+    }
+    /** ID3v2.3 APIC 封面帧：encoding(3) mime image/png picType 3(front) 空描述 数据 */
+    const apicFrame = () => {
+      const body = Buffer.concat([
+        Buffer.from([3]),
+        Buffer.from('image/png\0', 'latin1'),
+        Buffer.from([3]),
+        Buffer.from([0]),
+        PNG_RED_1PX,
+      ])
+      return Buffer.concat([Buffer.from('APIC', 'latin1'), Buffer.from([0, 0, 0, body.length]), Buffer.from([0, 0]), body])
+    }
+    /** 构造带 ID3v2 标签与封面的 DSF（DSD64 立体声，sec 秒 0x55 方波；真实规范布局：'DSD ' 28 + 'fmt ' 52 + data 头 12 = 音频自 92 起，data 无 reserved） */
+    const makeDsf = (path, sec) => {
+      const bytesPerCh = Math.floor((2822400 / 8) * sec)
+      const payload = Buffer.alloc(bytesPerCh * 2, 0x55)
+      const id3Body = Buffer.concat([textFrame('TIT2', '联调测试曲'), textFrame('TPE1', '联调歌手'), textFrame('TALB', '联调专辑'), apicFrame()])
+      const id3 = Buffer.concat([Buffer.from('ID3', 'latin1'), Buffer.from([3, 0, 0]), syncsafe(id3Body.length), id3Body])
+      const head = Buffer.alloc(92)
+      head.write('DSD ', 0, 'latin1')
+      head.writeBigUInt64LE(28n, 4) // 'DSD ' chunk size（含 ID 总长）
+      head.writeBigUInt64LE(BigInt(92 + payload.length + id3.length), 12) // 总文件大小
+      head.writeBigUInt64LE(BigInt(92 + payload.length), 20) // id3 指针
+      head.write('fmt ', 28, 'latin1')
+      head.writeBigUInt64LE(52n, 32) // fmt chunk size（含 ID 总长）
+      head.writeUInt32LE(1, 40) // version
+      head.writeUInt32LE(0, 44) // format id = DSD raw
+      head.writeUInt32LE(2, 48) // channel type stereo
+      head.writeUInt32LE(2, 52) // channel num
+      head.writeUInt32LE(2822400, 56) // sampling freq = DSD64
+      head.writeUInt32LE(1, 60) // bits per sample = LSB first
+      head.writeBigUInt64LE(BigInt(bytesPerCh * 2 * 8), 64) // sample count per ch
+      head.writeUInt32LE(4096, 72) // block size
+      head.writeUInt32LE(0, 76) // reserved
+      head.write('data', 80, 'latin1')
+      head.writeBigUInt64LE(BigInt(12 + payload.length), 84) // data size = 头 12 + 音频
+      return fs.writeFileSync(path, Buffer.concat([head, payload, id3])) || path
+    }
+    const dsfPath = makeDsf('F:/Project/WatchSync/tmp/music-test.dsf', 30)
+
+    const setInput = (sel, val) => {
+      const el = document.querySelector(sel)
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set
+      setter.call(el, val)
+      el.dispatchEvent(new Event('input', { bubbles: true }))
+    }
+    const clickBtn = (text) =>
+      [...document.querySelectorAll('.toolbar button')].find((b) => b.textContent.includes(text)).click()
+
+    // 复位两侧（清持久化房间/页签状态）
+    const a0 = await attachMainPage(9222)
+    await a0.eval('localStorage.clear(); location.reload(); "ok"').catch(() => {})
+    a0.close()
+    const b0 = await attachMainPage(9223)
+    await b0.eval('localStorage.clear(); location.reload(); "ok"').catch(() => {})
+    b0.close()
+    await wait(3000)
+
+    // A 建房（无需视频地址；音乐共享不占用 syncTab）。先弹人数弹窗，需再点弹窗内「创建」确认
+    const a = await attachMainPage(9222)
+    await a.eval('new Promise(r => setTimeout(r, 1200))')
+    await a.eval(`(${clickBtn.toString()})('创建房间')`)
+    await wait(800)
+    await a.eval(`[...document.querySelectorAll('.dialog-actions button')].find(x => x.textContent.includes('创建')).click()`)
+    await wait(5000)
+    const roomId = await a.eval('JSON.stringify((window.__p2pDebug || {}).roomId || "")').then((s) => JSON.parse(s))
+    if (!roomId) throw new Error('A 未建房成功')
+
+    // B 加入并等建连
+    const b = await attachMainPage(9223)
+    await b.eval('new Promise(r => setTimeout(r, 1200))')
+    await b.eval(`(${setInput.toString()})('.toolbar .join', 'watchsync://join?room=${roomId}')`)
+    await b.eval(`(${clickBtn.toString()})('加入')`)
+    for (let i = 0; i < 20; i++) {
+      await wait(2000)
+      const connected = await b
+        .eval(`window.__p2pDiag ? window.__p2pDiag().then((d) => !!d.hostConnected) : false`)
+      if (connected) break
+    }
+    await wait(2000)
+    console.log('[pair] A/B 已建连')
+
+    // A 共享 dsf（绕过文件对话框；shareMusicPath 内部含 DSD→FLAC 转码，await 阻塞到转码完成）
+    const shareResult = await a.eval(`window.__p2pE2e.shareMusicPath(${JSON.stringify(dsfPath)})`)
+    console.log('[share] A:', JSON.stringify(shareResult))
+
+    // 轮询 60s：等同步起播（A musicState.playing=true 且 B audio 在播），同时校验 B 端封面/标题展示
+    let started = false
+    for (let t = 3; t <= 60; t += 3) {
+      await wait(3000)
+      const snap = await Promise.all([
+        a.eval('JSON.stringify(window.__p2pE2e.musicState())').then((s) => JSON.parse(s)),
+        b.eval(`JSON.stringify((() => {
+          const au = document.querySelector('.music-audio')
+          return {
+            hasAudio: !!au, paused: au ? au.paused : null, t: au ? Math.round(au.currentTime * 10) / 10 : 0,
+            title: document.querySelector('.song-title')?.textContent || '',
+            hasCover: !!document.querySelector('.art-img'),
+            artist: document.querySelector('.song-artist')?.textContent || '',
+          }
+        })())`).then((s) => JSON.parse(s)),
+      ])
+      console.log(`[t+${t}s] A:`, JSON.stringify(snap[0]), ' B:', JSON.stringify(snap[1]))
+      if (snap[0].playing && snap[1].hasAudio && !snap[1].paused) {
+        started = true
+        if (snap[1].title !== '联调测试曲') throw new Error('B 端标题未展示（期望 联调测试曲，实际 ' + snap[1].title + '）')
+        if (!snap[1].hasCover) throw new Error('B 端封面未展示')
+        if (snap[1].artist !== '联调歌手') throw new Error('B 端艺术家未展示')
+        console.log('[meta] B 端标题/艺术家/封面展示 OK')
+        break
+      }
+    }
+    if (!started) throw new Error('同步起播失败（60s 内 A/B 均未进入播放）')
+    await wait(2000)
+
+    // 起播同步性：两侧 currentTime 应接近（RTT 补偿后 <1s）
+    const pos = async (port) =>
+      attachMainPage(port).then((c) =>
+        c.eval(`JSON.stringify((() => { const au = document.querySelector('.music-audio'); return au ? au.currentTime : -1 })())`).then((s) => { c.close(); return JSON.parse(s) }),
+      )
+    const [pa, pb] = await Promise.all([pos(9222), pos(9223)])
+    const drift = Math.abs(pa - pb)
+    console.log(`[sync] 起播后 A=${pa.toFixed(1)}s B=${pb.toFixed(1)}s 偏差=${drift.toFixed(1)}s ${drift < 1.5 ? 'OK' : 'DRIFT!'}`)
+
+    // 起播后零同步：B 暂停 → A 继续走、B 停住
+    await b.eval(`(() => { const au = document.querySelector('.music-audio'); au.pause(); return 'paused' })()`)
+    await wait(3000)
+    const [pa2, pb2] = await Promise.all([pos(9222), pos(9223)])
+    const aAdvanced = pa2 > pa + 1
+    const bFrozen = Math.abs(pb2 - pb) < 0.5
+    console.log(`[free] 3s后 A=${pa2.toFixed(1)}s（${aAdvanced ? '继续走 OK' : '未走 FAIL'}） B=${pb2.toFixed(1)}s（${bFrozen ? '停住 OK' : '仍走 FAIL'}）`)
+    console.log(aAdvanced && bFrozen ? 'SUCCESS: 音乐共享同步起播 + 起播后互不同步' : 'FAIL: 行为不符合预期')
+    a.close()
+    b.close()
   } else if (stage === 'front') {
     // 把指定实例窗口置前（CDP Page.bringToFront）：消除后台遮挡节流对 perf/截图测量的影响
     // 用法：front [port]

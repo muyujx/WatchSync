@@ -38,8 +38,9 @@
       </button>
     </div>
 
-    <!-- 本地视频入口：与站点卡片同款式，放在整个站点列表下方（在房且为房主时会自动推流给成员）；
+    <!-- 本地功能分组（与「视频网站」同级标题）：本地视频播放共享 / 成员互传 / 本地音乐共享；
          右侧「发送本地文件」同款卡片：图标+标题，打开成员互传面板（选成员+文件发送，不依赖房主角色） -->
+    <h3 class="home-title local-title">本地功能</h3>
     <div class="sites local-sites">
       <button class="site-card" title="选择本机视频文件播放（在房且为房主时自动推流给成员）" @click="emit('pickLocal')">
         <span class="site-icon fallback local-icon">
@@ -63,6 +64,17 @@
         </span>
         <span class="site-name">发送本地文件</span>
       </button>
+      <!-- 播放本地音乐：选一首本机音乐进入音乐播放面；在房且为房主时流式共享给成员（同步起播后自由听） -->
+      <button class="site-card" title="播放本机音乐（在房且为房主时与成员同步开播，DSD 自动转 FLAC）" :disabled="converting != null" @click="emit('playMusic')">
+        <span class="site-icon fallback music-icon">
+          <svg viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M9 18V6l10-2v12" />
+            <circle cx="6.5" cy="18" r="2.5" />
+            <circle cx="16.5" cy="16" r="2.5" />
+          </svg>
+        </span>
+        <span class="site-name">{{ converting ? `转码 ${Math.round(converting * 100)}%` : '播放本地音乐' }}</span>
+      </button>
     </div>
   </div>
 
@@ -82,6 +94,8 @@ import { useSiteBookmarks } from '../composables/useSiteBookmarks'
 defineProps<{
   /** 是否显示主页（无激活页签时为 true；组件常驻以保持书签对话框生命周期不变） */
   active: boolean
+  /** DSD 转码进度（null=非转码中；0~1，转码中按钮禁用并显示百分比） */
+  converting?: number | null
 }>()
 
 const emit = defineEmits<{
@@ -91,6 +105,8 @@ const emit = defineEmits<{
   pickLocal: []
   /** 点击「发送本地文件」图标按钮（父级打开传输面板） */
   sendFile: []
+  /** 点击「播放本地音乐」入口 */
+  playMusic: []
 }>()
 
 const {

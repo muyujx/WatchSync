@@ -88,6 +88,29 @@ pub fn pick_video_file() -> Option<MediaFileInfo> {
     })
 }
 
+/// 弹出系统文件对话框选择本地音乐；取消返回 None
+pub fn pick_music_file() -> Option<MediaFileInfo> {
+    let picked = rfd::FileDialog::new()
+        .set_title("选择本地音乐")
+        .add_filter(
+            "音频",
+            &["mp3", "flac", "m4a", "aac", "wav", "ogg", "opus", "dsf", "dff", "ape", "wv"],
+        )
+        .add_filter("全部", &["*"])
+        .pick_file()?;
+    let name = picked
+        .file_name()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_else(|| String::from("audio"));
+    let size = std::fs::metadata(&picked).map(|m| m.len()).unwrap_or(0);
+    Some(MediaFileInfo {
+        url: path_to_file_url(&picked),
+        path: picked.to_string_lossy().to_string(),
+        name,
+        size,
+    })
+}
+
 /// 查询文件字节数；不存在返回 0
 pub fn file_size(path: &str) -> u64 {
     std::fs::metadata(path).map(|m| m.len()).unwrap_or(0)

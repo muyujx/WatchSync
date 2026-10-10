@@ -86,14 +86,26 @@
     @send-file                   底条「发送文件」按钮：暂存该本地文件为待发并打开传输面板
   -->
   <div class="stage-layer" :style="{ top: stageTop }">
-    <LocalVideoStage
-      v-for="t in vueTabs"
-      :key="t.id"
-      :tab-id="t.id"
-      :url="t.url"
-      :active="t.id === activeTabId"
-      @send-file="onSendLocalFile"
-    />
+    <template v-for="t in vueTabs" :key="t.id">
+      <!-- 音频页签走音乐播放面（不进同步体系；@buffered 成员缓冲达标上报） -->
+      <LocalMusicStage
+        v-if="isAudioUrl(t.url) || t.music"
+        :tab-id="t.id"
+        :url="t.url"
+        :active="t.id === activeTabId"
+        :music-host="t.id === musicTabId ? musicHostState : null"
+        :meta="t.id === musicTabId ? musicApi.currentMeta.value : musicMemberMeta"
+        @skip-wait="controller.music.skipWait()"
+        @buffered="(fid: string) => controller.music.noteBuffered(fid)"
+      />
+      <LocalVideoStage
+        v-else
+        :tab-id="t.id"
+        :url="t.url"
+        :active="t.id === activeTabId"
+        @send-file="onSendLocalFile"
+      />
+    </template>
   </div>
 
   <!--
@@ -103,19 +115,23 @@
   <ToastHost :active-url="activeTabUrl" :chrome-h="chromeH" />
 
   <!--
-    主页站点卡片（无激活页签时显示；含站点书签增删改对话框、「打开本地视频」入口与「发送本地文件」图标按钮；
-    注释与绑定行同序）
+    主页站点卡片（无激活页签时显示；含站点书签增删改对话框、「打开本地视频」入口、
+    「发送本地文件」与「播放本地音乐」卡片；注释与绑定行同序）
     ref="homeSites"              组件实例（设置读取后调 .rebuild() 重建自定义卡片）
     :active                      主页显隐（无激活页签 = true）
+    :converting                  DSD 转码进度（null=非转码中；音乐入口按钮显示百分比并禁用）
     @open-site                   点站点卡片 → 填地址并打开页签
     @pick-local                  点「打开本地视频」→ 系统对话框选文件 → 打开并共享
     @send-file                   点「发送本地文件」图标 → 打开传输面板（选成员发送）
+    @play-music                  点「播放本地音乐」→ 选音乐 → 打开音乐页签（在房为房主时共享）
   -->
-  <HomeSites ref="homeSites" 
-    :active="activeTabId == null" 
-    @open-site="openSite" 
+  <HomeSites ref="homeSites"
+    :active="activeTabId == null"
+    :converting="musicApi.converting.value"
+    @open-site="openSite"
     @pick-local="onPickLocal"
-    @send-file="transferApi.togglePanel" />
+    @send-file="transferApi.togglePanel"
+    @play-music="musicApi.onPickMusic" />
 
   <!--
     成员面板（注释与绑定行同序）
@@ -217,16 +233,19 @@ import HeadcountDialog from './components/HeadcountDialog.vue'
 import SettingsDialog from './components/SettingsDialog.vue'
 import HistoryPanel from './components/HistoryPanel.vue'
 import LocalVideoStage from './components/LocalVideoStage.vue'
+import LocalMusicStage from './components/LocalMusicStage.vue'
 import ToastHost from './components/ToastHost.vue'
 import { WebShareFeature } from './webShare'
 import { notify } from './notify'
 import * as videoBus from './videoBus'
-import { isVuePlaybackUrl } from '../core/mediaSource'
+import { isVuePlaybackUrl, isAudioUrl } from '../core/mediaSource'
 import { useTheme } from './composables/useTheme'
 import { useTabs } from './composables/useTabs'
 import { useHistoryResume } from './composables/useHistoryResume'
 import { useSettings } from './composables/useSettings'
 import { useLocalFileShare } from './composables/useLocalFileShare'
+import { useMusicShare, type SongMeta } from './composables/useMusicShare'
+import type { MusicHostState } from './room/musicSync'
 import { useSyncFlow } from './composables/useSyncFlow'
 import { useDirectRelay } from './composables/useDirectRelay'
 import { initShareBar } from './composables/useShareBar'
@@ -349,6 +368,52 @@ const { localFile, localFileId, openSharedLocalFile, onPickLocal } = useLocalFil
     afterTabNavigated: (id, url) => syncApi.afterTabNavigated(id, url),
     setSyncTab: (id) => syncApi.setSyncTab(id),
   })
+
+/** ===== 播放本地音乐（房主发起；起播协调走 music* 消息族，独立于视频同步） ===== */
+const musicApi = useMusicShare({
+  controller,
+  videoUrl,
+  roomId,
+  isHost,
+  syncTabId,
+  ensureTab,
+  activateTab,
+  afterTabNavigated: (id, url) => syncApi.afterTabNavigated(id, url),
+  // 结束视频共享时解除成员跟随守卫与同步页签指针（与 onTabClosed 的解锁序列一致）
+  releaseSyncTab: () => syncApi.releaseSyncTab(),
+  notify,
+})
+/** 当前音乐共享源页签（模板判定 musicHost 注入；关页签时结束共享） */
+const musicTabId = musicApi.musicTabId
+/** 房主音乐共享状态（MusicSession 非响应式，经 onStateChanged 触发快照刷新） */
+const musicHostState = ref<MusicHostState | null>(null)
+controller.music.onStateChanged = () => {
+  musicHostState.value = controller.music.hostState()
+}
+// 成员端：收到音乐要约并已建本机源 → 复用/新建音乐页签（独立于同步页签，可自由关闭）；
+// 歌曲信息存 musicMemberMeta 供音乐播放面展示
+const musicMemberMeta = ref<SongMeta | null>(null)
+controller.onMusicTab = async (url: string, name: string, meta: { title?: string; artist?: string; album?: string; tech?: string; cover?: string }) => {
+  // 要约负载转展示结构（缺失字段留空，组件内回退文件名/时长兜底）
+  musicMemberMeta.value = {
+    title: meta.title || '',
+    artist: meta.artist || '',
+    album: meta.album || '',
+    tech: meta.tech || '',
+    cover: meta.cover || '',
+    duration: 0,
+  }
+  let t = tabs.value.find((x) => x.url === url)
+  if (!t) {
+    const id = await window.p2pApi.openVideo(url)
+    t = ensureTab(id, url) ?? undefined
+  }
+  if (!t) return
+  if (t.title !== name) t.title = name
+  // 回环媒体地址无扩展名：打音乐标记供播放面路由（模板 isAudioUrl || music）
+  t.music = true
+  await activateTab(t.id)
+}
 
 /** 网页视频共享特性（同步进度 / 直接推流；详见 src/renderer/webShare.ts） */
 const webShare = new WebShareFeature({
@@ -498,6 +563,7 @@ const devHooks = setupDevHooks({
   onJoinLink,
   onCancelJoin,
   openSharedLocalFile,
+  openSharedMusic: musicApi.openSharedMusic,
   onShareWeb,
   onDirectRelay,
   onPickLocal,
@@ -508,11 +574,16 @@ const devHooks = setupDevHooks({
 /** ===== 跨域胶水 ===== */
 
 /**
- * 页签关闭后的房间联动：清推流页签标记；关掉的是同步页签则清目标，房主广播结束共享。
+ * 页签关闭后的房间联动：清推流页签标记；关掉的是同步页签则清目标，房主广播结束共享；
+ * 关掉的是音乐共享源页签则结束音乐共享（广播 musicEnd，成员停补拉）。
  * 参数：id 被关闭的页签 ID。
  */
 async function onTabClosed(id: number): Promise<void> {
   clearRelayTab(id)
+  if (musicTabId.value === id) {
+    musicTabId.value = null
+    controller.music.endMusicShare('tab closed')
+  }
   await onSyncTabClosed(id)
 }
 
