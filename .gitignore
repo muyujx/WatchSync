@@ -55,3 +55,7 @@ account.md
 
 tmp
 
+
+# 测试资源（媒体/大文件不入库，仅保留说明文档）
+test/fixtures/*
+!test/fixtures/README.md
