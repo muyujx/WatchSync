@@ -87,6 +87,8 @@ declare global {
         relayCheckedAt: number
         /** 用户自定义站点书签（主页展示） */
         customSites: { name: string; url: string }[]
+        /** 本机媒体音量 0~1（音乐/本地视频页签挂载应用、拖原生控件后回写） */
+        volume: number
         /** 文件传输保存目录（空 = 默认 {系统下载目录}/WatchSync） */
         xferSaveDir: string
       }>
@@ -99,6 +101,7 @@ declare global {
         relayCheckedAt?: number
         customSites?: { name: string; url: string }[]
         xferSaveDir?: string
+        volume?: number
       }): Promise<{
         nickname: string
         theme: 'light' | 'dark'

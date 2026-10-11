@@ -34,6 +34,8 @@ export interface MusicShareDeps {
   afterTabNavigated(id: number, url: string): Promise<void>
   /** 解除成员端同步跟随（结束视频共享的 UI 侧联动） */
   releaseSyncTab(): Promise<void>
+  /** 关闭页签（走 App.closeTab：UI 移除 + onTabClosed 联动结束旧音乐共享） */
+  closeTab(id: number): Promise<void>
   /** 轻提示（转码失败等） */
   notify(msg: string): void
 }
@@ -64,6 +66,11 @@ export function useMusicShare(deps: MusicShareDeps) {
    * 参数：info 音乐文件元数据。返回值：音乐页签 ID（转换/解密失败返回 null）。
    */
   async function openSharedMusic(info: MusicFileInfo): Promise<number | null> {
+    // 换歌互斥：先关上一首的音乐页签（onTabClosed 联动结束旧共享并广播 musicEnd，
+    // 成员端同步关旧开新）——避免新旧两首歌同时出声
+    if (musicTabId.value != null) {
+      await deps.closeTab(musicTabId.value)
+    }
     // ncm（网易云加密壳）先解密：拆出壳内原始 flac/mp3（无转码无音损），元数据用壳内 JSON/封面
     let src = info
     let ncm: { title: string; artist: string; album: string; cover: string } | null = null

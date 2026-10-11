@@ -381,6 +381,7 @@ const musicApi = useMusicShare({
   afterTabNavigated: (id, url) => syncApi.afterTabNavigated(id, url),
   // 结束视频共享时解除成员跟随守卫与同步页签指针（与 onTabClosed 的解锁序列一致）
   releaseSyncTab: () => syncApi.releaseSyncTab(),
+  closeTab,
   notify,
 })
 /** 当前音乐共享源页签（模板判定 musicHost 注入；关页签时结束共享） */
@@ -412,6 +413,11 @@ controller.onMusicTab = async (url: string, name: string, meta: { title?: string
   if (t.title !== name) t.title = name
   // 回环媒体地址无扩展名：打音乐标记供播放面路由（模板 isAudioUrl || music）
   t.music = true
+  // 换歌互斥：关掉其他音乐页签（房主换曲 musicEnd 只停补拉不关页签，旧歌会继续出声，
+  // 这里统一关旧开新，保证任意时刻至多一个音乐页签在响）
+  for (const s of tabs.value.filter((x) => x.music && x.id !== t.id)) {
+    await closeTab(s.id)
+  }
   await activateTab(t.id)
 }
 

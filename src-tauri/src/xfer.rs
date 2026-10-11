@@ -256,7 +256,11 @@ pub fn finish(file_id: &str, name: &str) -> String {
         }
     }
     match std::fs::rename(&t.path, &target) {
-        Ok(_) => target.to_string_lossy().into_owned(),
+        Ok(_) => {
+            // 传输完成：资源管理器定位到收到的文件（与媒体下载完成行为一致）
+            crate::shell::reveal_in_explorer(&target);
+            target.to_string_lossy().into_owned()
+        }
         Err(e) => {
             // 改名失败（磁盘/权限）：part 保留，前端按失败处理（任务已注销，同 id 可重新 begin 续传）
             crate::applog::write("WARN", &format!("xfer_finish 改名失败 part={part} err={e}"));

@@ -19,6 +19,7 @@ mod media_bitmap;
 mod media_server;
 mod ncm;
 mod settings;
+mod shell;
 mod state;
 mod tabs;
 mod xfer;
@@ -194,7 +195,10 @@ fn main() {
             let ui = win.add_child(
                 WebviewBuilder::new("ui", WebviewUrl::App("index.html".into()))
                     .additional_browser_args(&args)
-                    .data_directory(data_dir),
+                    .data_directory(data_dir)
+                    // 下载接管：音乐/视频播放面（Vue 面板在 UI 壳内）的原生 controls 下载
+                    // 落传输保存目录、完成后资源管理器定位（tabs::download_hook 与页签共用）
+                    .on_download(tabs::download_hook),
                 tauri::LogicalPosition::new(0.0, 0.0),
                 tauri::LogicalSize::new(w, h),
             )?;

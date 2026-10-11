@@ -532,17 +532,17 @@ pub async fn xfer_abort(file_id: String) -> bool {
 #[tauri::command]
 pub async fn open_path(path: String) -> bool {
     let p = std::path::Path::new(&path);
-    let r = if p.is_dir() {
-        std::process::Command::new("explorer").arg(&path).spawn()
+    if p.is_dir() {
+        match std::process::Command::new("explorer").arg(&path).spawn() {
+            Ok(_) => true,
+            Err(e) => {
+                crate::applog::write("WARN", &format!("open_path 失败 path={path} err={e}"));
+                false
+            }
+        }
     } else {
-        // /select, 打开所在目录并选中该文件（explorer 的参数解析用引号包住整段）
-        std::process::Command::new("explorer").arg(format!("/select,{path}")).spawn()
-    };
-    if let Err(e) = r {
-        crate::applog::write("WARN", &format!("open_path 失败 path={path} err={e}"));
-        return false;
+        crate::shell::reveal_in_explorer(p)
     }
-    true
 }
 
 /// 打开文件传输保存目录（资源管理器；未自定义时按默认 {下载}/WatchSync，目录不存在则创建）

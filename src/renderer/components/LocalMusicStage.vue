@@ -63,17 +63,49 @@ const title = computed(() => {
 const cover = computed(() => props.meta?.cover || '')
 /** 技术信息行（格式 | 采样率 | 位深 | 声道） */
 const techLine = computed(() => props.meta?.tech || '')
-/** 时长（秒；标签没有用 audio 元素 metadata 兜底） */
-const duration = computed(() => props.meta?.duration || audioRef.value?.duration || 0)
+/** 时长（秒；标签没有用音频元数据兜底） */
+const duration = computed(() => props.meta?.duration || audioDuration.value || 0)
 /** 时长格式化 m:ss */
 const durationText = computed(() => {
   const d = Math.round(duration.value)
   return d > 0 ? `${Math.floor(d / 60)}:${String(d % 60).padStart(2, '0')}` : ''
 })
+/** 音频时长（秒；loadedmetadata/durationchange 驱动——audio.duration 属性非响应式，读不到兜底） */
+const audioDuration = ref(0)
 /** 缓冲判定与进度刷新循环 */
 let progressTimer: number | null = null
+/** 音量回写防抖定时器（拖动过程中不高频写盘） */
+let volumeTimer: number | null = null
 /** 事件总线订阅清理 */
 let unsubs: Array<() => void> = []
+
+/** 音量变化回写（原生 controls 拖动/程序赋值触发；防抖合并后落盘，跨页签/重启保持） */
+function onVolumeChange(): void {
+  const el = audioRef.value
+  if (!el) return
+  const v = el.volume
+  if (volumeTimer !== null) clearTimeout(volumeTimer)
+  volumeTimer = window.setTimeout(() => {
+    volumeTimer = null
+    void window.p2pApi.setSettings({ volume: v })
+  }, 300)
+}
+
+/**
+ * 挂载音量：应用上次的本机媒体音量（设置缺失/读失败按默认 0.5），再订阅变化回写。
+ * 赋值在前、监听在后，挂载应用不产生多余写盘。
+ */
+async function setupVolume(): Promise<void> {
+  const el = audioRef.value
+  if (!el) return
+  try {
+    const v = Number((await window.p2pApi.getSettings()).volume)
+    el.volume = Number.isFinite(v) ? Math.min(1, Math.max(0, v)) : 0.5
+  } catch {
+    el.volume = 0.5
+  }
+  el.addEventListener('volumechange', onVolumeChange)
+}
 
 /** file:// 地址还原成本地路径（媒体服务按路径发布；Windows 盘符路径为 /F:/x 形式） */
 function filePathOf(url: string): string {
@@ -130,6 +162,18 @@ async function pollProgress(): Promise<void> {
 
 onMounted(() => {
   void resolveSrc()
+  void setupVolume()
+  // 音频时长驱动（audio.duration 属性非响应式；技术行时长兜底用）
+  const el = audioRef.value
+  if (el) {
+    const onDur = () => (audioDuration.value = Number.isFinite(el.duration) ? el.duration : 0)
+    el.addEventListener('loadedmetadata', onDur)
+    el.addEventListener('durationchange', onDur)
+    unsubs.push(
+      () => el.removeEventListener('loadedmetadata', onDur),
+      () => el.removeEventListener('durationchange', onDur),
+    )
+  }
   // 开播令：成员按 fileId 过滤（防残留旧页签误播）；房主本机源无 fileId 匹配（单活跃会话）
   unsubs.push(
     onMusicPlay((fileId: string) => {
@@ -159,6 +203,9 @@ onMounted(() => {
 onUnmounted(() => {
   if (progressTimer !== null) clearInterval(progressTimer)
   progressTimer = null
+  if (volumeTimer !== null) clearTimeout(volumeTimer)
+  volumeTimer = null
+  audioRef.value?.removeEventListener('volumechange', onVolumeChange)
   for (const u of unsubs) u()
   unsubs = []
   if (publishedFileId) void window.p2pApi.mediaUnpublish(publishedFileId)
@@ -213,8 +260,10 @@ onUnmounted(() => {
         <template v-else>本机播放</template>
       </div>
 
-      <!-- 原生控制条：播放/暂停/进度/音量；开播后各端自由操作，互不影响 -->
-      <audio ref="audioRef" class="music-audio" :src="src" controls preload="auto" />
+      <!-- 原生控制条：播放/暂停/进度/音量；开播后各端自由操作，互不影响。
+           音量持久化经 volumechange 防抖回写（挂载时应用已存音量）；
+           controlsList 隐藏「播放速度」菜单（对音乐无意义），保留下载 -->
+      <audio ref="audioRef" class="music-audio" :src="src" controls controlsList="noplaybackrate" preload="auto" />
     </div>
   </div>
 </template>

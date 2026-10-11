@@ -295,13 +295,77 @@ pub fn browser_args(cdp_port: u16) -> String {
     )
 }
 
+/// 下载目标重名时追加 " (n)" 序号（对齐浏览器下载习惯，不覆盖既有文件）。
+/// 参数：dir 目标目录；name 文件名。返回值：不冲突的目标路径。
+fn dedup_download_path(dir: &std::path::Path, name: &std::ffi::OsStr) -> std::path::PathBuf {
+    let p = std::path::Path::new(name);
+    let stem = p.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+    let ext = p.extension().map(|s| s.to_string_lossy().into_owned());
+    let mut target = dir.join(name);
+    let mut n = 1;
+    while target.exists() {
+        target = match &ext {
+            Some(e) => dir.join(format!("{stem} ({n}).{e}")),
+            None => dir.join(format!("{stem} ({n})")),
+        };
+        n += 1;
+    }
+    target
+}
+
+/// 是否本机媒体源 URL（127.0.0.1 媒体服务的 /media/ 路径）——下载接管只作用于它
+fn is_local_media_url(url: &tauri::Url) -> bool {
+    url.host_str() == Some("127.0.0.1")
+        && url.port() == Some(crate::media_server::port())
+        && url.path().starts_with("/media/")
+}
+
+/// 下载接管钩子（UI 壳与视频页签共用）：本机媒体下载（原生 controls「下载媒体」）改落
+/// 传输保存目录并去重命名，完成后资源管理器定位；非本机媒体 URL 保持浏览器默认行为。
+/// 参数：webview 触发下载的页签；event 下载事件。返回值：true = 允许下载。
+pub fn download_hook(
+    webview: tauri::Webview,
+    event: tauri::webview::DownloadEvent<'_>,
+) -> bool {
+    match event {
+        tauri::webview::DownloadEvent::Requested { url, destination } => {
+            if is_local_media_url(&url) {
+                let dir = crate::xfer::save_dir(&webview.app_handle());
+                *destination = dir.join(
+                    destination
+                        .file_name()
+                        .map(std::ffi::OsStr::to_os_string)
+                        .unwrap_or_default(),
+                );
+                // 文件名来自 Content-Disposition；理论上不会为空——兜底拒绝空名下载
+                if destination.file_name().map(|s| s.is_empty()).unwrap_or(true) {
+                    return false;
+                }
+                *destination = dedup_download_path(&dir, destination.file_name().unwrap());
+            }
+            true
+        }
+        tauri::webview::DownloadEvent::Finished { url, path, success } => {
+            if success && path.as_ref().is_some_and(|_| is_local_media_url(&url)) {
+                if let Some(p) = path {
+                    crate::shell::reveal_in_explorer(&p);
+                }
+            }
+            true
+        }
+        // DownloadEvent 标记 non_exhaustive：未来新增变体按默认放行（保持浏览器行为）
+        _ => true,
+    }
+}
+
 /// 创建视频页签 webview（隐藏创建；激活时由 set_tab_visible 显示并套用内容区）。
 fn create_webview(app: &tauri::AppHandle, tab_id: i64, url: &str, args: &str) -> String {
     let label = format!("video-{tab_id}");
     let parsed: tauri::Url = url.parse().unwrap_or_else(|_| "about:blank".parse().unwrap());
     let builder = WebviewBuilder::new(&label, WebviewUrl::External(parsed))
         .additional_browser_args(args)
-        .data_directory(crate::webview_data_dir(app));
+        .data_directory(crate::webview_data_dir(app))
+        .on_download(download_hook);
     // UI 未上报留白时以 1x1 占位创建（正常流程 Vue 先挂载上报，不会走到）
     let (pos, size) = content_bounds(app)
         .unwrap_or_else(|| (LogicalPosition::new(0.0, 0.0), LogicalSize::new(1.0, 1.0)));

@@ -37,6 +37,8 @@ pub fn port() -> u16 {
 
 struct Source {
     path: PathBuf,
+    /// 下载展示名（剥 fileId 前缀的原文件名；Content-Disposition filename* 用）
+    name: String,
     size: u64,
     mime: String,
     state: Mutex<State>,
@@ -122,6 +124,13 @@ pub fn ensure_started() -> u16 {
 pub fn publish(file_id: &str, path: &str) -> String {
     let p = PathBuf::from(path);
     let size = std::fs::metadata(&p).map(|m| m.len()).unwrap_or(0);
+    // 下载展示名：成员端落盘名是 "{fileId}-{原名}"，剥掉前缀还原原名（房主本机源无前缀原样用）
+    let raw_name = p
+        .file_name()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let prefix = format!("{file_id}-");
+    let name = raw_name.strip_prefix(&prefix).map(|s| s.to_string()).unwrap_or(raw_name);
     // 幂等：同一文件重复注册（前端重复 attach / 页面重载）保留原 State，
     // 否则就绪位图清零、have_bytes 凭空回退，已收数据会被迫重新拉取
     if let Ok(reg) = registry().lock() {
@@ -135,6 +144,7 @@ pub fn publish(file_id: &str, path: &str) -> String {
     }
     let src = Arc::new(Source {
         path: p,
+        name,
         size,
         mime: mime_for(path),
         state: Mutex::new(State {
@@ -280,8 +290,23 @@ pub fn progress(file_id: &str) -> (u64, u64) {
     }
 }
 
-fn write_head(sock: &mut TcpStream, head: &str) -> std::io::Result<()> {
-    sock.write_all(head.as_bytes())?;
+/// RFC 5987 filename* 值编码：attr-char 保留，其余字节按 UTF-8 百分号转义（支持中日文/空格文件名）。
+/// 参数：s 原文件名。返回值：可放入 Content-Disposition 头的编码串。
+fn rfc5987_encode(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() * 2);
+    for &b in s.as_bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9'
+            | b'!' | b'#' | b'$' | b'&' | b'+' | b'-' | b'.' | b'^' | b'_' | b'`' | b'|' | b'~' => {
+                out.push(b as char)
+            }
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
+}
+
+fn write_head(sock: &mut TcpStream, head: &str) -> std::io::Result<()> {    sock.write_all(head.as_bytes())?;
     sock.flush()
 }
 
@@ -405,6 +430,12 @@ fn serve(mut sock: TcpStream) -> std::io::Result<()> {
             "HTTP/1.1 200 OK\r\n"
         });
         head.push_str(&format!("Content-Type: {}\r\n", src.mime));
+        // 下载文件名（原生 controls「下载媒体」用）：inline 保证播放器仍按流处理，
+        // filename*（RFC 5987）携带原文件名，Chromium 下载时据此命名
+        head.push_str(&format!(
+            "Content-Disposition: inline; filename*=UTF-8''{}\r\n",
+            rfc5987_encode(&src.name)
+        ));
         head.push_str(&format!("Content-Length: {}\r\n", end - start));
         if partial {
             head.push_str(&format!(
@@ -471,4 +502,19 @@ fn stream_body(src: &Source, sock: &mut TcpStream, start: u64, end: u64) -> std:
         idle = Instant::now();
     }
     Ok(true)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rfc5987编码() {
+        // ASCII 保留字符原样
+        assert_eq!(rfc5987_encode("King Gnu - Prayer X.mp3"), "King%20Gnu%20-%20Prayer%20X.mp3");
+        assert_eq!(rfc5987_encode("a.b_1~c-d"), "a.b_1~c-d");
+        // 中文/日文按 UTF-8 百分号转义
+        assert_eq!(rfc5987_encode("歌.mp3"), "%E6%AD%8C.mp3");
+        assert_eq!(rfc5987_encode(""), "");
+    }
 }

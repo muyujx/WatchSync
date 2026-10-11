@@ -24,6 +24,15 @@ pub struct Settings {
     pub custom_sites: Vec<CustomSite>,
     /// 文件传输保存目录（空 = 默认 {系统下载目录}/WatchSync）
     pub xfer_save_dir: String,
+    /// 本机媒体音量 0~1（音乐/本地视频页签挂载应用、拖原生控件后回写；字段级 serde default：
+    /// 旧 settings.json 缺该字段时按 0.5，避免走结构体级 default 的 0 静音）
+    #[serde(default = "default_volume")]
+    pub volume: f64,
+}
+
+/// 本机媒体音量默认值（50%，满格过大）
+fn default_volume() -> f64 {
+    0.5
 }
 
 impl Default for Settings {
@@ -42,6 +51,7 @@ impl Default for Settings {
             relay_checked_at: 0,
             custom_sites: Vec::new(),
             xfer_save_dir: String::new(),
+            volume: 0.5,
         }
     }
 }
@@ -144,6 +154,9 @@ pub fn save_patch(app: &tauri::AppHandle, patch: &Value) -> Settings {
     }
     if let Some(v) = patch.get("xferSaveDir").and_then(|x| x.as_str()) {
         s.xfer_save_dir = v.to_string();
+    }
+    if let Some(v) = patch.get("volume").and_then(|x| x.as_f64()) {
+        s.volume = v.clamp(0.0, 1.0);
     }
     let _ = std::fs::write(settings_path(app), serde_json::to_string_pretty(&s).unwrap());
     s

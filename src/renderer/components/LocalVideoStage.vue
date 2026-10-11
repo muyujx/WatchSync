@@ -160,6 +160,26 @@ onMounted(() => {
   v.addEventListener('playing', onPlaying)
   v.addEventListener('timeupdate', reportTick)
   v.addEventListener('play', reportTick)
+  // 本机媒体音量：变化防抖回写（与音乐播放面共用同一偏好）；先订阅后应用（见 setupVolume 语义）
+  let volumeTimer: number | null = null
+  const onVolumeChange = (): void => {
+    const nv = v.volume
+    if (volumeTimer !== null) clearTimeout(volumeTimer)
+    volumeTimer = window.setTimeout(() => {
+      volumeTimer = null
+      void window.p2pApi.setSettings({ volume: nv })
+    }, 300)
+  }
+  v.addEventListener('volumechange', onVolumeChange)
+  void window.p2pApi
+    .getSettings()
+    .then((s) => {
+      const vol = Number(s.volume)
+      v.volume = Number.isFinite(vol) ? Math.min(1, Math.max(0, vol)) : 0.5
+    })
+    .catch(() => {
+      v.volume = 0.5
+    })
   cleanup = () => {
     v.removeEventListener('play', onPlay)
     v.removeEventListener('pause', onPause)
@@ -168,6 +188,8 @@ onMounted(() => {
     v.removeEventListener('playing', onPlaying)
     v.removeEventListener('timeupdate', reportTick)
     v.removeEventListener('play', reportTick)
+    v.removeEventListener('volumechange', onVolumeChange)
+    if (volumeTimer !== null) clearTimeout(volumeTimer)
     document.removeEventListener('pointerdown', markGesture, true)
     document.removeEventListener('pointerup', markGesture, true)
   }
