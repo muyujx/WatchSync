@@ -240,6 +240,8 @@ export function useRoomSession(deps: UseRoomSessionDeps) {
     deps.roomId.value = ''
     deps.isHost.value = true
     deps.connectionLost.value = false
+    // 清空邀请输入框：解散/退出后残留旧链接会导致下次粘贴前误以为仍可直连旧房间
+    deps.joinInput.value = ''
     // 解散/退出/加入失败均回到空闲态，解除按钮 loading
     deps.busy.value = ''
     // 同步目标解除：跟随守卫清空，页签全部解锁为普通页签（成员端同步页签恢复可关闭）

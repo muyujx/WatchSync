@@ -352,6 +352,10 @@ export class RoomController {
    */
   private async attach(): Promise<boolean> {
     const seq = ++this.attachSeq
+    // 信令中继模块须在 createRoom 之前 import：createRoom→注册 join/leave 回调之间不允许有 await
+    // 让出——否则 trystero 的 join 事件会落在回调注册前的空窗里丢失（表现为成员表/人数永远为空，
+    // 实测首加与重进都会中招，重进时中继 socket 热、握手快、概率更高）
+    const nostr = await import('../../core/vendor/trystero-nostr')
     const raw = await openRealRoom(this.roomId, {
       relayUrls: this.relayUrls,
       // 中继/ICE 建连失败：离开房间后由 UI 提示（避免成员端静默停在“房间里没人”）
@@ -367,9 +371,8 @@ export class RoomController {
       return false
     }
     this.roomHandle = createRoom(raw, (msg, peerId) => this.handleMsg(msg, peerId))
-    // 信令中继开关：必须引用与 openRealRoom 同一个 vendor nostr 模块实例，
+    // 信令中继开关：必须引用与 openRealRoom 同一个 vendor 模块实例（上方已 import），
     // 否则退避/退役状态（模块级）清不到真正生效的那份
-    const nostr = await import('../../core/vendor/trystero-nostr')
     this.gate = createRelayGate({
       getSockets: () => nostr.getRelaySockets() as Record<string, { close(): void }>,
       pauseReconnection: () => nostr.pauseRelayReconnection(),
