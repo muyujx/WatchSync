@@ -30,8 +30,6 @@ export interface MusicShareDeps {
   ensureTab(id: number, url: string): TabInfo | null
   /** 激活页签（App.activateTab） */
   activateTab(id: number): Promise<void>
-  /** 页签打开后的房间联动（App.afterTabNavigated） */
-  afterTabNavigated(id: number, url: string): Promise<void>
   /** 解除成员端同步跟随（结束视频共享的 UI 侧联动） */
   releaseSyncTab(): Promise<void>
   /** 关闭页签（走 App.closeTab：UI 移除 + onTabClosed 联动结束旧音乐共享） */
@@ -118,7 +116,8 @@ export function useMusicShare(deps: MusicShareDeps) {
     const t = deps.ensureTab(id, src.url)
     if (t) t.title = src.name
     await deps.activateTab(id)
-    await deps.afterTabNavigated(id, src.url)
+    // 音乐页签独立于视频同步体系：不走 afterTabNavigated——它会在无同步目标时把本页签
+    // 自动设为同步目标（触发误共享旧视频/提示噪音），音乐互斥统一在下方 startMusicShare 前处理
     if (deps.roomId.value && deps.isHost.value) {
       // 互斥切换：结束进行中的视频共享（解除同步指针/守卫，endShare 广播 syncEnd 解锁成员）
       if (deps.syncTabId.value != null) {

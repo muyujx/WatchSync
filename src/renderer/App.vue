@@ -378,7 +378,6 @@ const musicApi = useMusicShare({
   syncTabId,
   ensureTab,
   activateTab,
-  afterTabNavigated: (id, url) => syncApi.afterTabNavigated(id, url),
   // 结束视频共享时解除成员跟随守卫与同步页签指针（与 onTabClosed 的解锁序列一致）
   releaseSyncTab: () => syncApi.releaseSyncTab(),
   closeTab,
