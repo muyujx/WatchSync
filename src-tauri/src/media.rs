@@ -94,7 +94,7 @@ pub fn pick_music_file() -> Option<MediaFileInfo> {
         .set_title("选择本地音乐")
         .add_filter(
             "音频",
-            &["mp3", "flac", "m4a", "aac", "wav", "ogg", "opus", "dsf", "dff", "ape", "wv"],
+            &["mp3", "flac", "m4a", "aac", "wav", "ogg", "opus", "dsf", "dff", "ape", "wv", "ncm"],
         )
         .add_filter("全部", &["*"])
         .pick_file()?;

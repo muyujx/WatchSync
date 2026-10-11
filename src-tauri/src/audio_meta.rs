@@ -520,8 +520,8 @@ fn utf8_or_utf16(v: &[u8]) -> String {
 
 // ---- 公共 ----
 
-/// 封面字节 → 缩放到 320px 的 JPEG data URL（解码失败/无效返回空串）
-fn to_cover_data_url(bytes: &[u8]) -> String {
+/// 封面字节 → 缩放到 320px 的 JPEG data URL（解码失败/无效返回空串；ncm.rs 复用）
+pub(crate) fn to_cover_data_url(bytes: &[u8]) -> String {
     let Ok(img) = image::load_from_memory(bytes) else {
         return String::new();
     };
@@ -535,8 +535,8 @@ fn to_cover_data_url(bytes: &[u8]) -> String {
 }
 
 /// base64 编码（tauri 自带 base64 依赖不可直用，这里走标准库外最简实现——项目内既有依赖没有；
-/// 用数据量可控的封面字节，手写实现并配单测）
-fn use_base64(data: &[u8]) -> String {
+/// 用数据量可控的封面字节，手写实现并配单测；ncm.rs 单测构造 ncm 字节流复用）
+pub(crate) fn use_base64(data: &[u8]) -> String {
     const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
     for chunk in data.chunks(3) {

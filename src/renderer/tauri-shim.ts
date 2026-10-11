@@ -100,6 +100,10 @@ import { parseShareUrl } from '../core/shareLink'
     onDsdProgress: (cb: (v: number) => void) => {
       void listen('dsd-progress', (e: { payload: number }) => cb(e.payload))
     },
+    /** 判断文件是否为 ncm（网易云音乐加密容器）——「播放本地音乐」共享前先解密 */
+    isNcmFile: (path: string) => invoke('is_ncm_file', { path }) as Promise<boolean>,
+    /** ncm 解密为明文音频（flac/mp3 原样拆壳，无转码；进度经 ncm-progress 事件推送 0~1），返回产物与内嵌元数据 */
+    convertNcm: (path: string) => invoke('convert_ncm', { path }),
     /** 读取音频元数据与封面（封面已缩放为 320px JPEG data URL；失败返回空字段结构） */
     readAudioMeta: (path: string) => invoke('read_audio_meta', { path }),
     /** 查询文件字节数 */

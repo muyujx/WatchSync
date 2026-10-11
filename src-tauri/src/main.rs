@@ -17,6 +17,7 @@ mod history;
 mod media;
 mod media_bitmap;
 mod media_server;
+mod ncm;
 mod settings;
 mod state;
 mod tabs;
@@ -126,6 +127,8 @@ fn main() {
             commands::pick_music_file,
             commands::is_dsd_file,
             commands::convert_dsd_to_flac,
+            commands::is_ncm_file,
+            commands::convert_ncm,
             commands::read_audio_meta,
             commands::file_size,
             commands::read_file_chunk,

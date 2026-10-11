@@ -130,6 +130,20 @@ declare global {
       convertDsdToFlac(path: string): Promise<{ path: string; url: string; name: string; size: number }>
       /** 订阅 DSD 转码进度事件（0~1） */
       onDsdProgress(cb: (v: number) => void): void
+      /** 判断文件是否为 ncm（网易云音乐加密容器）——共享前先解密 */
+      isNcmFile(path: string): Promise<boolean>
+      /** ncm 解密为明文音频（flac/mp3 原样拆壳，无转码；进度经 ncm-progress 事件推送），返回产物与内嵌元数据 */
+      convertNcm(path: string): Promise<{
+        path: string
+        url: string
+        name: string
+        size: number
+        format: string
+        title: string
+        artist: string
+        album: string
+        cover: string
+      }>
       /** 读取音频元数据与封面（封面已缩放为 320px JPEG data URL；失败返回空字段结构） */
       readAudioMeta(path: string): Promise<{
         title: string

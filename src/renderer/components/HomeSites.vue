@@ -65,7 +65,7 @@
         <span class="site-name">发送本地文件</span>
       </button>
       <!-- 播放本地音乐：选一首本机音乐进入音乐播放面；在房且为房主时流式共享给成员（同步起播后自由听） -->
-      <button class="site-card" title="播放本机音乐（在房且为房主时与成员同步开播，DSD 自动转 FLAC）" :disabled="converting != null" @click="emit('playMusic')">
+      <button class="site-card" title="播放本机音乐（在房且为房主时与成员同步开播；NCM 自动解密、DSD 自动转 FLAC）" :disabled="converting != null" @click="emit('playMusic')">
         <span class="site-icon fallback music-icon">
           <svg viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <path d="M9 18V6l10-2v12" />
@@ -73,7 +73,7 @@
             <circle cx="16.5" cy="16" r="2.5" />
           </svg>
         </span>
-        <span class="site-name">{{ converting ? `转码 ${Math.round(converting * 100)}%` : '播放本地音乐' }}</span>
+        <span class="site-name">{{ converting ? `转换 ${Math.round(converting * 100)}%` : '播放本地音乐' }}</span>
       </button>
     </div>
   </div>

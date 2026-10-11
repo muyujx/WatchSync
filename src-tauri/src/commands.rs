@@ -222,6 +222,35 @@ pub async fn is_dsd_file(path: String) -> bool {
         .unwrap_or(false)
 }
 
+/// 判断文件是否为 ncm（网易云音乐加密容器）——前端据此决定共享前是否先解密
+#[tauri::command]
+pub async fn is_ncm_file(path: String) -> bool {
+    tauri::async_runtime::spawn_blocking(move || crate::ncm::is_ncm_file(&path))
+        .await
+        .ok()
+        .unwrap_or(false)
+}
+
+/// ncm 解密为明文音频（flac/mp3 原样拆壳，无转码）。进度经 ncm-progress 事件推送（0~1）。
+/// 返回值：产物元数据（临时目录）+ ncm 内嵌曲名/艺术家/专辑/封面；失败返回错误文案。
+#[tauri::command]
+pub async fn convert_ncm(app: tauri::AppHandle, path: String) -> Result<crate::ncm::NcmConvertInfo, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        use tauri::Emitter;
+        let src = std::path::PathBuf::from(&path);
+        let mut info = crate::ncm::convert_ncm(&src, &|v: f32| {
+            let _ = app.emit("ncm-progress", v.clamp(0.0, 1.0));
+        })?;
+        let p = std::path::PathBuf::from(&info.path);
+        info.url = tauri::Url::from_file_path(&p)
+            .map(|u| u.to_string())
+            .unwrap_or_default();
+        Ok(info)
+    })
+    .await
+    .map_err(|e| format!("解密任务失败: {e}"))?
+}
+
 /// 读取音频元数据与封面（foobar 风格界面；失败返回空字段结构）
 #[tauri::command]
 pub async fn read_audio_meta(path: String) -> crate::audio_meta::AudioMeta {

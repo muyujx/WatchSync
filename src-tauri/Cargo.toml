@@ -43,6 +43,11 @@ version = "0.16"
 version = "0.5"
 default-features = false
 
+# NCM（网易云音乐加密容器）解密（「播放本地音乐」）：仅头部 key/meta 段用 AES-128-ECB
+# （几百字节）；音频体为 RC4 变体逐字节异或，手写实现见 ncm.rs
+[dependencies.aes]
+version = "0.8"
+
 # 音频封面缩放（musicOffer 下发前压到 320px JPEG，控制 DataChannel 消息体积）：
 # 只开 jpeg/png 解码，避免默认全格式的大依赖
 [dependencies.image]
