@@ -3,6 +3,7 @@
 // announce 循环每轮 send 失败会把退避翻倍累计到 15 分钟；之后即使恢复中继重连成功，
 // announce 仍会被卡在退避表里长达十几分钟，掉线重连等于失效。
 // 故 vendor 此文件，把退避/退役表改为可重置，并导出 resetRelayState 供恢复时调用。
+// 另新增 setAnnounceFast：断线重连期间把 announce 节奏从稳态 60s 提到约 3s（见下方常量区）。
 // 升级 @trystero-p2p/nostr 时需同步重新 vendor。
 import { schnorr } from "@noble/secp256k1";
 import { createRelayManager, createTopicStrategy, fromJson, genId, getRelays, hashWith, libName, makeSocket, pauseRelayReconnection, resumeRelayReconnection, selfId, strToNum, toHex, toJson } from "@trystero-p2p/core";
@@ -20,6 +21,20 @@ const maxTopicsPerSubscription = 250;
 const steadyAnnounceIntervalMs = 6e4;
 const maxRelayBackoffMs = 15 * 6e4;
 const relayAckTimeoutMs = 5333;
+// announce 加速间隔（本地 vendor 新增）：断线重连期间以短节奏补发 announce，
+// 把「重新发现房主」从稳态 60s 缩到秒级；由 setAnnounceFast 开关
+const fastAnnounceIntervalMs = 3e3;
+// 加速开关（模块级）：true 期间 publishTopic 的 announce 返回短间隔
+let fastAnnounce = false;
+/**
+ * 开关 announce 加速（本地 vendor 新增）。
+ * 场景：成员端心跳超时/房主离开后开启，促进与房主在信令中继上重新发现；
+ * 重连成功或放弃重连时必须关闭，否则 announce 会一直以 3s 节奏空转。
+ * 参数：on true=加速（约 3s 一轮），false=恢复稳态（60s 一轮）。返回值：无。
+ */
+export function setAnnounceFast(on) {
+	fastAnnounce = on;
+}
 // 可重置：见文件头说明
 let relayBackoffs = /* @__PURE__ */ new WeakMap();
 // 可重置：见文件头说明
@@ -235,7 +250,7 @@ const joinRoom = createTopicStrategy({
 		if (retiredRelays.has(client) || client.isClosed) return context.kind === "announce" ? stopAnnouncing : void 0;
 		if (context.kind === "announce") {
 			const remainingBackoffMs = getRelayBackoffMs(client);
-			if (remainingBackoffMs > 0) return nextAnnounce(Math.max(steadyAnnounceIntervalMs, remainingBackoffMs));
+			if (remainingBackoffMs > 0) return nextAnnounce(fastAnnounce ? fastAnnounceIntervalMs : Math.max(steadyAnnounceIntervalMs, remainingBackoffMs));
 		}
 		const event = await createEvent(topic, typeof msg === "string" ? msg : toJson(msg));
 		const didSend = client.socket.readyState === 1;
@@ -244,7 +259,7 @@ const joinRoom = createTopicStrategy({
 		if (!didSend) return nextAnnounce(backoffRelay(client));
 		const eventId = fromJson(event)[1].id;
 		trackAnnouncementAck(client, eventId);
-		return nextAnnounce(steadyAnnounceIntervalMs);
+		return nextAnnounce(fastAnnounce ? fastAnnounceIntervalMs : steadyAnnounceIntervalMs);
 	}
 });
 const getRelaySockets = relayManager.getSockets;

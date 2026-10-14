@@ -69,8 +69,6 @@ export type SyncMsg =
   | { t: 'ping'; ts: number }
   /** 延迟应答（→全员） */
   | { t: 'pong'; ts: number }
-  /** 满员锁定（房主→全员）：total 为含房主的房间总人数，收到者核对成员齐整后自行断开信令中继 */
-  | { t: 'lock'; total: number }
   /** 文件传输要约（发起方→接收方，定向）：请求向对方传一个文件，接收方弹确认（与观看共享分发无关） */
   | { t: 'xferOffer'; fileId: string; name: string; size: number; mime: string }
   /** 文件传输接受（接收方→发起方，定向）：ranges 为接收端已落盘字节区间（升序不重叠；空=全新接收，发送端只补缺口） */
@@ -122,7 +120,6 @@ const NUMERIC_FIELDS: Record<SyncMsg['t'], string[]> = {
   readyState: ['readyBytes', 'totalBytes', 'duration', 'position', 'readyState'],
   ping: ['ts'],
   pong: ['ts'],
-  lock: ['total'],
   xferOffer: ['size'],
   xferAccept: [],
   xferReject: [],
@@ -212,8 +209,6 @@ export function decodeMsg(raw: string): SyncMsg | null {
       }
     }
     if ((t === 'musicReady' || t === 'musicStart' || t === 'musicEnd') && typeof o.fileId !== 'string') return null
-    // lock 的 total 是含房主的房间总人数，至少 2（房主 + 1 成员）才有意义
-    if (t === 'lock' && (!(o.total as number) || (o.total as number) < 2)) return null
     if (t === 'profile') {
       if (typeof o.name !== 'string') return null
       if (o.host !== undefined && typeof o.host !== 'boolean') return null

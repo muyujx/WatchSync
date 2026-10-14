@@ -5,3 +5,5 @@
 export type * from '@trystero-p2p/nostr'
 export * from '@trystero-p2p/nostr'
 export declare function resetRelayState(): void
+/** 开关 announce 加速（本地 vendor 新增）：true 约 3s 一轮，false 恢复稳态 60s */
+export declare function setAnnounceFast(on: boolean): void

@@ -6,6 +6,7 @@
  *   房主加载状态经 waiting/playing 事件映射的 pause/play 即时跟随，
  *   成员暂停期间元素照常取数缓冲，自身加载不受影响
  * - 校准循环 start（2s 对表：断线判定/播放状态对齐/位置偏差 seek）
+ * - 断线判定（自适应超时 + RTT 探测二次确认）与软断线（保留同步状态等待自动重连）
  * - 就绪应答（房主 readyAsk 探询时回原始状态数据，「加载是否足够」由房主判定）
  * - 观看源地址漂移自愈（correctSourceDrift）与桥就绪等待（waitForBridge）
  * - 暂停/恢复同步（pauseSync/resumeSync）与同步页签解锁（unlockSyncTab）
@@ -49,12 +50,18 @@ export interface FollowerSyncCtx {
   readonly onSyncTab: ((url: string) => void | Promise<void>) | null
   /** 同步结束回调（UI 清空 syncTabId，同步页签恢复可关闭） */
   readonly onSyncUnlocked: (() => void) | null
-  /** 连接断开回调（连续超时未收到房主心跳） */
+  /** 连接断开回调（心跳超时且探测链路也失效；触发自动重连流程） */
   readonly onConnectionLost: (() => void) | null
-  /** 成员端断线统一出口：恢复信令中继并触发 onConnectionLost */
+  /** 成员端断线统一出口：恢复信令中继+加速 announce，进入自动重连（软断线，不动同步状态） */
   onFollowerConnectionLost(): void
-  /** 连接恢复回调（断线后重新收到房主心跳） */
-  readonly onConnectionRestored: (() => void) | null
+  /** 连接恢复统一出口（幂等）：关信令中继、停 announce 加速并触发 onConnectionRestored 通知 UI */
+  restoreConnection(): void
+  /** 心跳停滞但 RTT 探测链路仍活：只加速信令不判死（拥塞/抖动防误判） */
+  onHeartbeatStalled(): void
+  /** 房主 RTT 探测链路是否仍活（最近收到过房主 pong） */
+  hostLinkAlive(): boolean
+  /** 房主当前 RTT（ms；无测量为 0） */
+  hostRttMs(): number
   /** 标记已与房主建立数据连接（停止加入看门狗并通知 UI） */
   markConnected(): void
   /** 按房主 state 心跳同步共享元数据（mode/fileId）并通知 UI */
@@ -185,7 +192,7 @@ export class FollowerSync {
     }
   }
 
-  /** 成员端收到房主心跳：刷新存活时间戳；若此前处于断线态则恢复跟随并触发恢复回调 */
+  /** 成员端收到房主心跳：刷新存活时间戳；若此前处于断线态则恢复跟随并走统一恢复出口 */
   private markAlive(): void {
     this.lastStateAt = Date.now()
     if (this.connectionLost) {
@@ -194,7 +201,7 @@ export class FollowerSync {
       if (this.c.role === 'follower' && this.c.syncTabId != null) {
         void videoBus.setSyncTab(this.c.syncTabId, true)
       }
-      this.c.onConnectionRestored?.()
+      this.c.restoreConnection()
     }
   }
 
@@ -215,10 +222,9 @@ export class FollowerSync {
   }
 
   /**
-   * 房主消失（退出/断线/peer leave）时交还成员本地控制权。
+   * 房主解散房间时交还成员本地控制权（当前唯一调用点；普通断线走软断线+自动重连，不经此路径）。
    * 参数：reason 日志原因（仅诊断用）。
    * 说明：解锁同步页签（可关闭），并下发一次 pause 冻结在当前位置。
-   * 若房主随后重连，applySnapshot 经 onSyncTab 重建同步。
    */
   releaseLocalControl(reason: string): void {
     p2pLog('release local control', reason)
@@ -264,19 +270,31 @@ export class FollowerSync {
     this.sourceCorrection = { target: '', attempts: 0, lastAt: 0 }
   }
 
-  /** 成员：开启校准循环（每 2s 对表，超过阈值 seek）+ 就绪上报 */
+  /** 成员：开启校准循环（每 2s 对表：断线判定/播放状态对齐/位置偏差 seek）+ 就绪上报 */
   start(): void {
     if (this.followTimer) return
     this.followTimer = window.setInterval(async () => {
-      // 断线看门狗：曾与房主建立同步后长时间无心跳 → 判定连接断开并交还本地控制权
-      if (!this.connectionLost && isConnectionLost(this.lastStateAt, Date.now(), STATE_TIMEOUT_MS)) {
-        this.connectionLost = true
-        p2pWarn('connection lost (heartbeat timeout)')
-        this.releaseLocalControl('heartbeat timeout')
-        // 走控制器统一出口：先恢复信令中继（重连必需），再通知 UI
-        this.c.onFollowerConnectionLost()
-        return
+      // 断线看门狗：曾与房主建立同步后长时间无心跳 → 判定连接断开并进入自动重连
+      // 阈值自适应：max(基础值, 6×房主RTT)，高延迟链路自动放宽；
+      // 二次确认：心跳超时但 RTT 探测链路仍活（pong 正常到达）→ 只加速信令不判死，
+      // 避免大文件推流拥塞/网络抖动导致的心跳延迟被误判为断线
+      if (!this.connectionLost) {
+        const timeoutMs = Math.max(STATE_TIMEOUT_MS, this.c.hostRttMs() * 6)
+        if (isConnectionLost(this.lastStateAt, Date.now(), timeoutMs)) {
+          if (this.c.hostLinkAlive()) {
+            this.c.onHeartbeatStalled()
+            return
+          }
+          this.connectionLost = true
+          p2pWarn('connection lost (heartbeat timeout)')
+          // 软断线：只冻结本地播放，保留页签/快照/守卫等待自动重连（重建失败才交还控制权）
+          void videoBus.videoCmd('pause')
+          this.c.onFollowerConnectionLost()
+          return
+        }
       }
+      // 断线重连中：快照已过期，不做任何校准动作（恢复后 markAlive 重新对齐）
+      if (this.connectionLost) return
       const st = await videoBus.videoStatus().catch(() => null)
       if (!this.lastSnapshot) return
       // 暂停同步：不做校准与状态对齐（本地自由控制）

@@ -6,11 +6,22 @@
 /** 房间角色 */
 export type Role = 'host' | 'follower'
 
-/** 成员端断线判定阈值（ms）：超过该时长未收到房主 state 心跳即视为连接断开 */
+/** 成员端断线判定基础阈值（ms）：超过该时长未收到房主 state 心跳即视为连接断开；
+ *  实际阈值取 max(该值, 6×房主RTT)，高延迟链路自动放宽，避免拥塞误判 */
 export const STATE_TIMEOUT_MS = 8000
 
-/** 成员端加入超时（ms）：超过该时长仍未与房主建立任何数据往来即判定加入失败 */
-export const JOIN_TIMEOUT_MS = 15000
+/** 心跳超时但 RTT 探测仍活的判定窗（ms）：最近该时长内收到过房主 pong 视为链路仍活，
+ *  只加速信令不判死（DataChannel 拥塞/抖动时心跳延迟但通道未断） */
+export const LINK_ALIVE_MS = 6000
+
+/** 成员端加入超时（ms）：超过该时长仍未与房主建立任何数据往来则重试（自动重建房间再试） */
+export const JOIN_TIMEOUT_MS = 12000
+
+/** 成员端建连最大尝试次数：初次加入 + 重试共用计数，超过即判定失败交 UI 退出 */
+export const JOIN_MAX_ATTEMPTS = 3
+
+/** 成员端断线后免重建恢复窗（ms）：窗口内靠信令重发现自动重连，超过仍失联则全量重建房间 */
+export const RECONNECT_REBUILD_MS = 30000
 
 /** 成员端等待视频桥就绪的时长（ms）：播放器异步创建 video，需轮询注入 */
 export const BRIDGE_WAIT_MS = 8000

@@ -181,6 +181,17 @@ export interface OpenRoomOptions {
 }
 
 /**
+ * ICE 服务器列表：实测国内可达的 STUN 优先（2026-10 实测 miwifi/nextcloud/t-online 通），
+ * 保留 Cloudflare 兜底；Trystero 默认的 Google STUN 国内全部不可达（实测 FAIL），
+ * 而 rtcConfig.iceServers 会整体覆盖默认值，故必须在此列出全部可用项。
+ * 无 TURN：对称 NAT/严格防火墙下打洞仍可能失败，属已知限制。
+ */
+const ICE_SERVERS: RTCIceServer[] = [
+  { urls: ['stun:stun.miwifi.com:3478', 'stun:stun.nextcloud.com:443', 'stun:stun.t-online.de:3478'] },
+  { urls: 'stun:stun.cloudflare.com:3478' },
+]
+
+/**
  * 打开真实房间（唯一与 Trystero nostr 策略耦合的位置）。
  * 注意：走 src/core/vendor/trystero-nostr（vendor 版），与 relayGate 共享同一模块实例，
  * 这样满员断开中继后 resetRelayState 才能清到真正生效的退避表；不要改回 @trystero-p2p/nostr。
@@ -194,6 +205,11 @@ export async function openRealRoom(roomId: string, opts: OpenRoomOptions = {}): 
     appId: APP_ID,
     // 显式给出中继列表时 Trystero 会全部使用（不再按 appId 随机挑选）
     ...(urls.length ? { relayConfig: { urls } } : {}),
+    // ICE：注入实测可达的 STUN（见 ICE_SERVERS 注释）
+    rtcConfig: { iceServers: ICE_SERVERS },
+    // 仅 dev：本机多实例联调时 WebView2 的 mDNS 混淆 host 候选互相解析不了（无组播路由），
+    // 把 mDNS 候选重写为 loopback 才能直连；生产跨机场景不受影响，保持真实候选
+    ...(import.meta.env.DEV ? { _test_only_mdnsHostFallbackToLoopback: true } : {}),
   }
   // 始终注册回调：即使 UI 未订阅也要留日志，便于排查信令/ICE 失败
   const callbacks = {

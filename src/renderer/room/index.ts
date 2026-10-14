@@ -25,7 +25,7 @@ import { FileXfer } from './fileXfer'
 import { RelayPrefetch, type HostFileEntry } from './relayPrefetch'
 import { ShareInit } from './shareInit'
 import { MusicSession } from './musicSync'
-import { JOIN_TIMEOUT_MS, type Role } from './constants'
+import { JOIN_MAX_ATTEMPTS, JOIN_TIMEOUT_MS, LINK_ALIVE_MS, RECONNECT_REBUILD_MS, type Role } from './constants'
 
 export type { Role } from './constants'
 
@@ -88,12 +88,21 @@ export class RoomController {
   private attachSeq = 0
   /** 媒体共享模式（url=各端拉网页/直链；file=成员用本地副本播放） */
   shareMode: ShareMode = 'url'
-  /** 满员人数（含房主）；0 = 不限（永不断开信令中继） */
-  headcount = 0
-  /** 信令中继开关（attach 时惰性创建；满员断开/掉线恢复） */
+  /** 信令中继开关（attach 时惰性创建）：房主常开（始终监听加入）；
+   *  成员建连成功后关闭（中继只服务于加入），断线重连时重开 */
   private gate: RelayGate | null = null
-  /** 成员端：最近一次 lock 消息声明的房间总人数（0=尚无；用于核对 mesh 完整后再断中继） */
-  private pendingLockTotal = 0
+  /** vendor nostr 模块引用（attach 时落地；announce 加速开关用） */
+  private nostr: typeof import('../../core/vendor/trystero-nostr') | null = null
+  /** 成员端：是否处于自动重连中（断线→重开中继+加速 announce→30s 未恢复则全量重建） */
+  private reconnecting = false
+  /** 重连重建定时器（断线后免重建恢复窗） */
+  private reconnectTimer: number | null = null
+  /** 心跳停滞兜底定时器（加速 announce 的关闭兜底；未断线场景链路自行恢复时用） */
+  private fastOffTimer: number | null = null
+  /** 成员端建连尝试计数（初次加入与重试/重建共用；成功后清零，超过上限判定失败） */
+  private joinAttempts = 0
+  /** 重试循环防重入标志（watchdog 与 onJoinError 可能同时触发） */
+  private retrying = false
   /** 当前共享媒体 ID（仅 file 模式） */
   shareFileId = ''
   /** 当前共享展示名 */
@@ -209,24 +218,22 @@ export class RoomController {
 
   /**
    * 创建房间（房主）。
-   * 参数：roomId 指定房间号（UI 重载后恢复房间用，缺省随机生成）；headcount 满员人数（含房主，0=不限）。
+   * 参数：roomId 指定房间号（UI 重载后恢复房间用，缺省随机生成）。
    * 返回值：分享链接（仅含房间号）。
    * 说明：建房不依赖视频地址；地址随心跳 state 消息在连接建立后同步给成员。
-   * 恢复房间（roomId 传入）时 headcount 无法恢复，按不限处理。
+   * 房主信令中继常开（不再有满员断开机制），始终监听新成员加入。
    */
-  async host(roomId?: string, headcount = 0): Promise<string> {
+  async host(roomId?: string): Promise<string> {
     this.role = 'host'
     this.roomId = roomId || generateRoomId()
-    this.headcount = headcount
     // 房主不需要识别他人为房主；切换角色时清掉上一轮的加入状态
     this.hostPeerId = ''
     this.connected = false
-    this.pendingLockTotal = 0
     this.clearJoinWatchdog()
     // cancelJoin 仅作用于成员端，房主端 attach 不会失配；防御分支只为类型完备
     if (!(await this.attach())) throw new Error('房间建立被中断')
     this.hostSync.start()
-    p2pLog('host ready', { roomId: this.roomId, headcount, relays: this.relayUrls })
+    p2pLog('host ready', { roomId: this.roomId, relays: this.relayUrls })
     return buildShareUrl(this.roomId)
   }
 
@@ -240,7 +247,7 @@ export class RoomController {
     // 重置断线监控与房主识别：首次收到房主心跳/profile 后再建立
     this.connected = false
     this.hostPeerId = ''
-    this.pendingLockTotal = 0
+    this.joinAttempts = 0
     this.follower.reset()
     const landed = await this.attach()
     // 建连等待期间被取消：cancelJoin 已清理并复位 UI，这里静默收场（不起看门狗、不发 hello）
@@ -264,15 +271,12 @@ export class RoomController {
     await this.leave()
   }
 
-  /** 启动加入看门狗：超时仍未见房主数据往来则判定加入失败 */
+  /** 启动加入看门狗：超时仍未见房主数据往来则进入重试循环（离开旧房间重新建连） */
   private startJoinWatchdog(): void {
     this.clearJoinWatchdog()
     this.joinTimer = window.setTimeout(() => {
       this.joinTimer = null
-      if (!this.connected) {
-        p2pWarn('join timeout', { roomId: this.roomId, relays: this.relayUrls })
-        this.onJoinFailed?.('未连接到房主，可能是中继不通或房主不在线')
-      }
+      if (!this.connected) void this.retryJoinCycle()
     }, JOIN_TIMEOUT_MS)
   }
 
@@ -284,57 +288,125 @@ export class RoomController {
     }
   }
 
-  /** 标记已与房主建立数据连接：停止看门狗并通知 UI（仅成员端；子系统收到房主消息时回调） */
+  /**
+   * 成员端建连重试循环：离开旧房间→重新 attach→广播 hello→重启看门狗。
+   * 看门狗超时与 onJoinError 都会进入本循环（retrying 防重入）；累计超过
+   * JOIN_MAX_ATTEMPTS 次判定失败，经 onJoinFailed 交 UI 退出。
+   * 初次加入超时重试与断线后的全量重建（reconnectTimer 到期）共用本循环。
+   */
+  private async retryJoinCycle(): Promise<void> {
+    if (this.role !== 'follower' || this.retrying || this.connected) return
+    this.retrying = true
+    try {
+      if (++this.joinAttempts > JOIN_MAX_ATTEMPTS) {
+        p2pWarn('join failed after retries', { roomId: this.roomId, attempts: this.joinAttempts })
+        this.onJoinFailed?.('多次尝试后仍未连接到房主，可能是网络不通或房主已离线')
+        return
+      }
+      p2pLog('join retry', { roomId: this.roomId, attempt: this.joinAttempts })
+      // 拆掉旧房间（announce 循环/握手状态全部作废），重新 joinRoom 换全新建连机会
+      this.follower.stop()
+      await this.roomHandle?.leave().catch(() => {})
+      this.roomHandle = null
+      this.connected = false
+      this.hostPeerId = ''
+      this.peers.clear()
+      this.peerNames.clear()
+      this.rtt.clear()
+      if (!(await this.attach())) return // 期间被取消：静默收场
+      this.room()?.broadcast({ t: 'hello' })
+      this.follower.start()
+      this.startJoinWatchdog()
+    } finally {
+      this.retrying = false
+    }
+  }
+
+  /** 标记已与房主建立数据连接：停止看门狗、关闭信令中继（成员中继只服务于加入）并通知 UI */
   markConnected(): void {
     if (this.role !== 'follower' || this.connected) return
     this.connected = true
+    this.joinAttempts = 0
     this.clearJoinWatchdog()
     p2pLog('host connected')
+    // 建连成功：数据都走 P2P 直连，关掉信令中继（断线时由 onFollowerConnectionLost 重开）
+    this.gate?.shut()
+    this.restoreConnection()
     this.onHostConnected?.()
   }
 
   /**
-   * 成员端断线统一出口（followerSync 心跳超时时调用）。
-   * 先恢复信令中继（断开态下重连房主必需信令通道），再通知 UI。
+   * 成员端断线统一出口（心跳超时判定或房主离开时调用）。
+   * 软断线：恢复信令中继 + 加速 announce 促进重发现，同步状态保留（页签/快照不动），
+   * 30 秒内重连上则原地恢复；超过恢复窗仍未连上则全量重建房间（retryJoinCycle）。
+   * 幂等：已在重连流程中时重复调用无副作用。
    */
   onFollowerConnectionLost(): void {
+    if (this.reconnecting) return
+    this.reconnecting = true
+    p2pWarn('connection lost, reconnecting', { roomId: this.roomId })
     this.gate?.open()
+    this.nostr?.setAnnounceFast(true)
     this.onConnectionLost?.()
+    this.reconnectTimer = window.setTimeout(() => {
+      this.reconnectTimer = null
+      void this.retryJoinCycle()
+    }, RECONNECT_REBUILD_MS)
   }
 
   /**
-   * 房主：按当前人数驱动信令中继开关。
-   * 满（peers ≥ headcount-1）且中继开着 → 广播 lock 并断开；不满且中继断着 → 恢复等待补员/重连。
-   * headcount 为 0（不限）时永不断开。无返回值。
+   * 成员端连接恢复统一出口（markConnected 或 followerSync.markAlive 触发）。
+   * 关闭信令中继、停 announce 加速、取消重建定时并通知 UI。幂等：非重连态直接返回。
    */
-  private maybeRelayGate(): void {
-    if (this.role !== 'host' || !this.gate || !this.headcount) return
-    const full = this.peers.size >= this.headcount - 1
-    if (full && this.gate.isOpen) {
-      // 广播走 DataChannel（不受随后断中继影响）；各成员核对人数后自行断开
-      this.roomHandle?.broadcast({ t: 'lock', total: this.headcount })
-      this.gate.shut()
-      p2pLog('relay shut (room full)', this.headcount)
-    } else if (!full && !this.gate.isOpen) {
-      this.gate.open()
-      p2pLog('relay reopen (waiting for members)')
+  restoreConnection(): void {
+    if (!this.reconnecting) return
+    this.reconnecting = false
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer)
+      this.reconnectTimer = null
+    }
+    if (this.fastOffTimer) {
+      clearTimeout(this.fastOffTimer)
+      this.fastOffTimer = null
+    }
+    this.nostr?.setAnnounceFast(false)
+    this.gate?.shut()
+    p2pLog('connection restored')
+    this.onConnectionRestored?.()
+  }
+
+  /**
+   * 心跳停滞但 RTT 探测链路仍活：只加速信令 announce 促进链路自愈，不触发断线流程。
+   * 加速的关闭由 restoreConnection（真断线又恢复）或 fastOffTimer 兜底完成。
+   */
+  onHeartbeatStalled(): void {
+    p2pLog('heartbeat stalled but link alive, accelerating announce')
+    this.nostr?.setAnnounceFast(true)
+    if (!this.fastOffTimer) {
+      this.fastOffTimer = window.setTimeout(() => {
+        this.fastOffTimer = null
+        if (!this.reconnecting) this.nostr?.setAnnounceFast(false)
+      }, RECONNECT_REBUILD_MS)
     }
   }
 
   /**
-   * 成员端：核对收到 lock 后房间是否齐整，齐了才断开信令中继。
-   * 不齐（仍有握手在途）时保持中继开启，等下一个 onPeerJoin 再试（有人握手失败则中继一直开，安全侧）。
-   * 无返回值。
+   * 成员端与房主的 RTT 探测链路是否仍活（最近 LINK_ALIVE_MS 内收到过房主 pong）。
+   * 返回值：true 链路仍活（心跳丢失只按拥塞处理）；未识别房主或探测过期返回 false。
    */
-  private tryShutRelay(): void {
-    if (this.role !== 'follower' || !this.pendingLockTotal || !this.gate) return
-    // 房间内除自己应看到 total-1 个成员（含房主）
-    if (this.peers.size < this.pendingLockTotal - 1) return
-    this.pendingLockTotal = 0
-    if (this.gate.isOpen) {
-      this.gate.shut()
-      p2pLog('relay shut (room full)')
-    }
+  hostLinkAlive(): boolean {
+    if (!this.hostPeerId) return false
+    const r = this.peerRtt.get(this.hostPeerId)
+    return !!r && Date.now() - r.at <= LINK_ALIVE_MS
+  }
+
+  /**
+   * 房主当前 RTT（ms）。
+   * 返回值：最近一次测得的往返延迟；无测量记录为 0。
+   */
+  hostRttMs(): number {
+    if (!this.hostPeerId) return 0
+    return this.peerRtt.get(this.hostPeerId)?.rtt ?? 0
   }
 
   /** 按房主 state 心跳同步共享元数据（mode/fileId）并通知 UI（followerSync 消费 state 分支用） */
@@ -358,11 +430,13 @@ export class RoomController {
     const nostr = await import('../../core/vendor/trystero-nostr')
     const raw = await openRealRoom(this.roomId, {
       relayUrls: this.relayUrls,
-      // 中继/ICE 建连失败：离开房间后由 UI 提示（避免成员端静默停在“房间里没人”）
+      // 中继/ICE 建连失败（SDP 交换后仍连不上对端）：进入重试循环换全新房间再试，
+      // 次数用尽才经 onJoinFailed 交 UI 退出（retrying 防与看门狗重入）
       onJoinError: (reason) => {
-        if (!this.roomHandle || this.role !== 'follower') return
+        if (!this.roomHandle || this.role !== 'follower' || this.connected) return
+        p2pWarn('join error', reason)
         this.clearJoinWatchdog()
-        this.onJoinFailed?.(reason)
+        void this.retryJoinCycle()
       },
     })
     // 等待建连期间发生取消/重入（代次失配）：丢弃本次房间连接，防悬挂会话泄漏
@@ -370,6 +444,7 @@ export class RoomController {
       void raw.leave().catch(() => {})
       return false
     }
+    this.nostr = nostr
     this.roomHandle = createRoom(raw, (msg, peerId) => this.handleMsg(msg, peerId))
     // 信令中继开关：必须引用与 openRealRoom 同一个 vendor 模块实例（上方已 import），
     // 否则退避/退役状态（模块级）清不到真正生效的那份
@@ -391,9 +466,6 @@ export class RoomController {
       this.xfer.onPeerJoin(id)
       // 新成员加入：向其自我介绍（对方也会介绍自己）
       this.announceProfile()
-      // 满员锁定联动：房主按人数决定断/开中继；成员核对 lock 后自行断开
-      if (this.role === 'host') this.maybeRelayGate()
-      else this.tryShutRelay()
       // 房主：已有共享中的文件时对新成员定向补要约（中途加入不丢片；与观看模式无关）。
       // 分发只有流式：成员建好本机媒体源后按缺口自行补拉，不整份推送
       if (this.role === 'host' && this.shareFileId) {
@@ -429,16 +501,12 @@ export class RoomController {
       this.rtt.removePeer(id)
       // 文件传输：与该成员进行中的任务转中断（重连自动续传）
       this.xfer.onPeerLeave(id)
-      // 离开的是房主：清除房主标记，并交还本地控制权（否则旧快照+守卫会让人无法暂停）
+      // 离开的是房主：清除房主标记并进入自动重连流程（信令重开+加速 announce，
+      // 30s 恢复窗内原地恢复；重建失败才交还本地控制权）
       if (this.hostPeerId === id) {
         this.hostPeerId = ''
-        if (this.role === 'follower') this.follower.releaseLocalControl('host left')
+        if (this.role === 'follower') this.onFollowerConnectionLost()
       }
-      // 满员锁定联动：房主按剩余人数决定断/开中继；成员端房主离开必须重开中继（重连必需信令），
-      // 其他成员离开只作废旧 lock（人数已不满，等房主重新锁定），中继维持现状
-      if (this.role === 'host') this.maybeRelayGate()
-      else if (this.hostPeerId === id || !this.hostPeerId) this.gate?.open()
-      else this.pendingLockTotal = 0
       this.onPeerLeft?.(id, name)
       this.onPeersChanged?.()
     })
@@ -493,9 +561,7 @@ export class RoomController {
     // 房主自身即权威，无需识别他人为房主
     this.hostPeerId = ''
     this.connected = true
-    this.pendingLockTotal = 0
-    // 接管后不继承锁定职责（headcount 清零）：恢复中继保守安全侧，缺员可补、掉线可重连
-    this.headcount = 0
+    // 接管为房主：信令中继必须常开（始终监听新成员加入）；此前若是成员态中继已关，这里恢复
     this.gate?.open()
     // 清空跟随基准：本端已是权威，不再采纳他人进度
     this.follower.resetSyncBasis()
@@ -520,9 +586,7 @@ export class RoomController {
     this.hostPeerId = newHostPeerId
     // 房主侧状态作废：清空成员就绪表，重置本端上报基准（作为成员重新上报）
     this.hostSync.reset()
-    // 降级后锁定职责移交新房主：本端恢复中继（安全侧），收到新房主 lock 后再核对断开
-    this.headcount = 0
-    this.gate?.open()
+    // 降级后信令中继维持开启（房主期间恒开，安全侧）：与新成员的发现继续可用
     // 清空同步基准并重置断线状态，等待新房主心跳重建
     this.follower.resetSyncBasis()
     // 成员端禁止本地操作：把跟随守卫挂回当前同步页签（尚未建立同步时为 null，由后续 state/syncTab 流程建立）
@@ -683,13 +747,6 @@ export class RoomController {
       void this.files.sendFileRanges(msg.fileId, peerId, msg.ranges)
       return
     }
-    // 满员锁定（房主广播）：登记期望人数，成员核对 mesh 完整后自行断开信令中继
-    if (msg.t === 'lock') {
-      if (this.role !== 'follower') return
-      this.pendingLockTotal = msg.total
-      this.tryShutRelay()
-      return
-    }
     // 房主解散指令：成员端先交还控制权再通知 UI 退出（否则守卫/旧快照会让本地暂停失效）
     if (msg.t === 'dissolve') {
       if (this.role === 'follower') {
@@ -831,11 +888,23 @@ export class RoomController {
     this.rtt.stop()
     this.rtt.clear()
     this.clearJoinWatchdog()
-    // 恢复信令中继（锁定态下 leave 会留下关闭的 socket，影响下一次建房/加入的发现能力）
+    // 停止重连流程：取消重建定时与 announce 加速（退出房间即放弃自动重连）
+    this.reconnecting = false
+    this.joinAttempts = 0
+    this.retrying = false
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer)
+      this.reconnectTimer = null
+    }
+    if (this.fastOffTimer) {
+      clearTimeout(this.fastOffTimer)
+      this.fastOffTimer = null
+    }
+    this.nostr?.setAnnounceFast(false)
+    // 恢复信令中继（成员建连后 shut 会留下关闭的 socket，影响下一次建房/加入的发现能力）
     this.gate?.open()
     this.gate = null
-    this.headcount = 0
-    this.pendingLockTotal = 0
+    this.nostr = null
     // 解除跟随守卫并清空同步页签指针（页签保留，UI 端随后解锁为普通页签可关闭）
     void videoBus.setSyncTab(null, false)
     this.syncTabId = null

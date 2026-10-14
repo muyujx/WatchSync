@@ -38,6 +38,8 @@ export interface UseRoomSessionDeps {
   historyOpen: Ref<boolean>
   /** 打开视频网页（建房后顺带打开地址栏地址） */
   openInTab(raw: string): Promise<void>
+  /** 确保中继列表就绪（为空时先探测一次，避免建房/加入落入默认中继抽签） */
+  ensureRelays(): Promise<void>
   /** 调试状态刷新（devHooks.syncDebug，晚绑定） */
   syncDebug(): void
 }
@@ -88,10 +90,10 @@ export function useRoomSession(deps: UseRoomSessionDeps) {
     if (nowHost) notify('已成为房主')
     deps.syncDebug()
   }
-  // 成员端断线：仅提示，房间状态与后续操作交给用户自己决定
+  // 成员端断线：进入自动重连（软断线，同步状态保留；重建失败会走 onJoinFailed 退出）
   controller.onConnectionLost = () => {
     deps.connectionLost.value = true
-    notify('与房主连接已断开')
+    notify('与房主连接断开，正在重连…')
   }
   // 断线后重新收到房主心跳：清除提示
   controller.onConnectionRestored = () => {
@@ -168,13 +170,15 @@ export function useRoomSession(deps: UseRoomSessionDeps) {
 
   /**
    * 房主：创建房间并复制邀请链接（不依赖视频地址；有地址则顺带打开并注入桥）。
-   * 参数：headcount 满员人数（含房主，0=不限；到员后自动断开信令中继）。
+   * 无参数；房主信令中继常开，始终监听成员加入（无满员限制）。
    */
-  async function onHost(headcount = 0): Promise<void> {
+  async function onHost(): Promise<void> {
     deps.busy.value = 'hosting'
     try {
+      // 中继列表为空（探测从未完成）时先探测：避免落入 Trystero 默认中继抽签
+      await deps.ensureRelays()
       // 建房只依赖房间号；视频地址在连接建立后由心跳同步给成员
-      const link = await controller.host(undefined, headcount)
+      const link = await controller.host()
       deps.isHost.value = true
       deps.roomId.value = controller.roomId
       controller.myName = deps.myName.value
@@ -202,8 +206,8 @@ export function useRoomSession(deps: UseRoomSessionDeps) {
       notify('链接无效')
       return
     }
-    // 进入连接中状态：由 onHostConnected / onJoinFailed 回调解除（最长等待看门狗 15s）
-    // 此处不写 roomId，保持加入按钮 loading；连上房主后由 onHostConnected 切入房间 UI
+    // 中继列表为空时先探测（同建房）；进入连接中状态：由 onHostConnected / onJoinFailed 回调解除
+    await deps.ensureRelays()
     deps.busy.value = 'joining'
     deps.isHost.value = false
     controller.myName = deps.myName.value
