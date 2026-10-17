@@ -37,3 +37,7 @@ cycani 需要登录账号才能播放，账号在 account.md 中
 - 开发限速（仅 dev，正式构建被摇树移除）：改根目录 `dev.jsonc`（可写注释）——`p2pKBs`=实例间通信、`sourceKBs`=回源访问网络，单位 KB/s，0=不限；改后重载实例页面即可
 - 限速实现：`src/renderer/devThrottle.ts` 应用层令牌桶（按块 `await` 排队，非浏览器/CDP 限速）；`p2pKBs` 作用于 `room.ts`（sendBlockReliable/onFileChunk 等发送与接收落盘），`sourceKBs` 作用于 `remoteMedia.ts`（streamRemoteRange/readRemoteChunk 回源读取）；dev server 剥注释后以 `/dev.jsonc` 暴露配置
 - 截图/操作实例：用 `cdp-a` / `cdp-b` MCP 工具（opencode.json 已配置连接 9222/9223）
+
+
+## 常用语
+构建：构建应用为 exe
