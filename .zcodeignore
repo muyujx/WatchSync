@@ -1,0 +1,85 @@
+# 依赖
+node_modules/
+
+# 构建产物
+dist/
+release/
+
+# Tauri
+src-tauri/target/
+src-tauri/gen/schemas/
+
+# PoC（本地参考，不入库）
+tauri-poc/
+
+# 日志
+*.log
+logs/
+
+# 环境变量与密钥
+.env
+.env.*
+*.pem
+
+# 编辑器与系统文件
+.vscode/
+.idea/
+.zcode/
+.DS_Store
+Thumbs.db
+
+# 临时文件
+*.tmp
+cache/
+
+# git worktree 本地目录（并列检出，不入库）
+worktree/
+
+# local test credentials (not committed)
+*.local.json
+
+# 本地 bug 记录本（记录发现的 bug：原因/方案/改动文件，只留本地）
+BUG.md
+
+# brainstorm visual companion session
+.superpowers/
+
+# superpowers 规划/设计文档（本地工作稿，不入库）
+docs/superpowers/
+docs/plans/
+
+account.md
+
+tmp
+
+
+# ===== ↑ 以上同步自 .gitignore（「从 .gitignore 同步」只重写以上部分）=====
+.git/
+.hg/
+.svn/
+bower_components/
+jspm_packages/
+__pycache__/
+site-packages/
+venv/
+coverage/
+htmlcov/
+lcov-report/
+cmakefiles/
+cmake-build-*/
+bazel-*/
+pods/
+deriveddata/
+storybook-static/
+playwright-report/
+test-results/
+allure-results/
+allure-report/
+cdk.out/
+*.egg-info/
+*.dist-info/
+eggs/
+pip-wheel-metadata/
+wheels/
+# ----- ↑ 以上为 ZCode 默认排除规则（自定义规则请写在本行下方，不会被同步/恢复改动）-----
+# 自定义规则写在下方（本行提示可删除）

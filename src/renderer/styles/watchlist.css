@@ -21,8 +21,9 @@
   min-height: 0;
   overflow-y: auto;
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
-  gap: 14px;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 12px;
+  align-items: start;
   padding: 4px 18px 18px;
   align-content: start;
   scrollbar-width: thin;
@@ -31,10 +32,11 @@
 .wl-grid::-webkit-scrollbar { width: 8px; }
 .wl-grid::-webkit-scrollbar-thumb { background: var(--ws-scrollbar); border-radius: 4px; background-clip: content-box; border: 2px solid transparent; }
 
-/* 单张作品卡 */
+/* 单张作品卡：内边距让封面不顶满卡片边缘（海报内嵌留白效果） */
 .wl-card {
   position: relative;
   border-radius: 10px;
+  padding: 6px;
   background: var(--ws-surface);
   border: 1px solid var(--ws-divider);
   overflow: hidden;
@@ -44,10 +46,12 @@
 .wl-card:hover { box-shadow: 0 2px 10px rgba(0, 0, 0, 0.12); transform: translateY(-1px); }
 
 /* 封面 16:9：图片 → 首字母色块降级 */
-.wl-cover { position: relative; aspect-ratio: 16 / 9; background: var(--ws-fill); display: flex; align-items: center; justify-content: center; }
-.wl-cover img { width: 100%; height: 100%; object-fit: cover; display: block; }
+/* 封面：图片按原比例完整显示（不裁切不拉伸，宽度撑满、高度自适应），容器高度随图；
+   自身圆角配合卡片留白；无图时色块兜底 2:3 竖版比例 */
+.wl-cover { position: relative; border-radius: 6px; overflow: hidden; background: var(--ws-fill); display: flex; align-items: center; justify-content: center; }
+.wl-cover img { width: 100%; height: auto; display: block; }
 .wl-cover-fallback {
-  width: 100%; height: 100%;
+  width: 100%; aspect-ratio: 2 / 3;
   display: flex; align-items: center; justify-content: center;
   font-size: 34px; font-weight: 600; color: #fff;
   background: linear-gradient(135deg, var(--ws-primary-dark), var(--ws-accent-dark));
@@ -55,17 +59,17 @@
 }
 /* 链接标记：左上角（右上角留给悬停的编辑/删除按钮） */
 
-/* 标题两行截断 */
+/* 标题两行截断（左右留白由卡片 padding 提供） */
 .wl-name {
-  padding: 8px 10px 10px;
-  font-size: 12px;
+  padding: 8px 4px 4px;
+  font-size: 14px;
   color: var(--ws-text);
-  line-height: 1.4;
+  line-height: 20px;
   display: -webkit-box;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
-  min-height: 44px;
+  min-height: 48px;
 }
 
 /* 悬停浮出的编辑/删除按钮：卡片右上角 */
@@ -128,10 +132,10 @@
   mask-image: linear-gradient(to right, transparent, #000 18%, #000 82%, transparent);
 }
 
-/* 中央指示框：最终定格位置的视觉锚（纯边框不泛光；尺寸须包住放大的结果卡 224x150） */
+/* 中央指示框：最终定格位置的视觉锚（纯边框不泛光；尺寸须包住放大的结果卡 168x295） */
 .roll-pointer {
   position: absolute; left: 50%; top: 50%;
-  width: 232px; height: 158px;
+  width: 176px; height: 303px;
   transform: translate(-50%, -50%);
   border: 2px solid var(--ws-primary);
   border-radius: 12px;
@@ -141,12 +145,24 @@
 /* 滚动带：GPU 合成位移（rAF 每帧写 translate3d） */
 .roll-strip { display: flex; gap: 16px; will-change: transform; }
 
-/* 滚动卡片（宽 200 + 间距 16 与 RollOverlay 脚本常量一致） */
-.roll-card { width: 200px; flex: none; display: flex; flex-direction: column; gap: 6px; }
-.roll-cover { width: 200px; height: 112px; border-radius: 10px; overflow: hidden; background: var(--ws-fill); border: 1px solid var(--ws-divider); }
-.roll-cover img { width: 100%; height: 100%; object-fit: cover; display: block; }
-.roll-cover .roll-cover-fallback { font-size: 26px; }
-.roll-name { font-size: 12px; color: var(--ws-text-2); text-align: center; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 滚动卡片（宽 150 + 间距 16 与 RollOverlay 脚本常量一致；留白圆角与片单卡同款） */
+.roll-card {
+  width: 150px; flex: none;
+  display: flex; flex-direction: column; gap: 4px;
+  padding: 6px;
+  background: var(--ws-surface);
+  border: 1px solid var(--ws-divider);
+  border-radius: 10px;
+}
+/* 封面定高容器（138x207 = 2:3）：图 contain 原比例完整显示不裁不拉伸，横版图居中留色块底 */
+.roll-cover { width: 138px; height: 207px; border-radius: 6px; overflow: hidden; background: var(--ws-fill); }
+.roll-cover img { width: 100%; height: 100%; object-fit: contain; display: block; }
+.roll-cover .roll-cover-fallback { font-size: 34px; width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; font-weight: 600; color: #fff; background: linear-gradient(135deg, var(--ws-primary-dark), var(--ws-accent-dark)); user-select: none; }
+.roll-name {
+  font-size: 14px; color: var(--ws-text-2); text-align: center;
+  line-height: 20px; min-height: 40px;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+}
 
 /* 定格：命中卡放大高亮上浮，标题提亮（纯边框，不泛光） */
 .roll-card.hit { transition: transform 0.35s cubic-bezier(0.2, 1.4, 0.4, 1); transform: scale(1.12); }

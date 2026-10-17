@@ -60,7 +60,7 @@ const emit = defineEmits<{
 }>()
 
 /** 单张滚动卡片宽度（px，与样式 .roll-card 保持一致） */
-const CARD_W = 200
+const CARD_W = 150
 /** 卡片间距（px，与样式 gap 保持一致） */
 const CARD_GAP = 16
 /** 滚动总时长（ms）：全员一致的动画参数 */

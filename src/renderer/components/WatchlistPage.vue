@@ -47,7 +47,8 @@
     <!-- 添加/编辑对话框（Teleport 到 body：本组件渲染在 stage-layer（z-index:1）内，
          不逃逸的话对话框遮罩会被钳在该层、压不过工具栏（z-index:2）出现顶部白条） -->
     <Teleport to="body">
-      <div v-if="dialogOpen" class="dialog-mask" @click.self="dialogOpen = false">
+      <!-- 遮罩不响应点击关闭：输入框拖选文字释放到遮罩上会误关弹窗，只能经取消/保存按钮退出 -->
+      <div v-if="dialogOpen" class="dialog-mask">
       <div class="dialog">
         <h3 class="dialog-title">{{ editingId ? '编辑作品' : '添加作品' }}</h3>
         <label class="field">
@@ -73,7 +74,7 @@
 
     <!-- 历史导入选择对话框：勾选要导入的记录（默认全不选，由用户自行勾选） -->
     <Teleport to="body">
-      <div v-if="importOpen" class="dialog-mask" @click.self="importOpen = false">
+      <div v-if="importOpen" class="dialog-mask">
       <div class="dialog wl-import">
         <h3 class="dialog-title">从播放记录导入</h3>
         <div v-if="importCandidates.length" class="wl-import-list">
