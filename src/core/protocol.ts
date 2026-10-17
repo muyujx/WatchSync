@@ -2,6 +2,7 @@
  * 同步消息协议（DataChannel 应用层）。
  * at: 发送方墙钟时间戳（ms），接收方据此推算当前应处的播放位置。
  */
+import type { WlItem } from './watchlist'
 
 /** 媒体共享模式：url=各端自行打开网页/直链；file=房主无损文件流（成员本机 Range 播放） */
 export type ShareMode = 'url' | 'file'
@@ -100,6 +101,13 @@ export type SyncMsg =
   | { t: 'musicStart'; fileId: string; at: number }
   /** 音乐共享结束（房主→全员）：成员停止向房主补拉（已缓冲部分可继续听） */
   | { t: 'musicEnd'; fileId: string }
+  /** 计划片单全量同步（任意端→全员）：修改方携带全量列表（LWW-Element-Set：
+   *  条目带 updatedAt，删除记 tombstones 墓碑），各端并集合并可交换收敛；
+   *  新成员加入时也定向补发本消息 */
+  | { t: 'wlSync'; rev: number; modifiedAt: number; items: WlItem[]; tombstones?: Record<string, number> }
+  /** 计划片单开奖（任意端→全员）：发起端已定结果广播 rollId/resultId，
+   *  各端播放同一段滚动动画停在 resultId（动画只是表现，结果早已一致） */
+  | { t: 'wlRoll'; rollId: string; resultId: string }
 
 /** 消息类型到必检数值字段的映射，用于解码校验 */
 const NUMERIC_FIELDS: Record<SyncMsg['t'], string[]> = {
@@ -129,6 +137,8 @@ const NUMERIC_FIELDS: Record<SyncMsg['t'], string[]> = {
   musicReady: [],
   musicStart: ['at'],
   musicEnd: [],
+  wlSync: ['rev', 'modifiedAt'],
+  wlRoll: [],
 }
 
 /** 合法共享模式 */
@@ -212,6 +222,29 @@ export function decodeMsg(raw: string): SyncMsg | null {
     if (t === 'profile') {
       if (typeof o.name !== 'string') return null
       if (o.host !== undefined && typeof o.host !== 'boolean') return null
+    }
+    // 计划片单：wlSync.items 必为合法条目数组（逐项清洗级校验），
+    // tombstones 可选（旧消息兼容）且必须为 id→数字 表；wlRoll 双 ID 必为字符串
+    if (t === 'wlSync') {
+      if (!Array.isArray(o.items)) return null
+      for (const it of o.items) {
+        if (!it || typeof it !== 'object') return null
+        const w = it as Record<string, unknown>
+        if (typeof w.id !== 'string' || typeof w.title !== 'string') return null
+        if (w.cover !== undefined && typeof w.cover !== 'string') return null
+        if (w.url !== undefined && typeof w.url !== 'string') return null
+        if (w.addedAt !== undefined && typeof w.addedAt !== 'number') return null
+        if (w.updatedAt !== undefined && typeof w.updatedAt !== 'number') return null
+      }
+      if (o.tombstones !== undefined) {
+        if (!o.tombstones || typeof o.tombstones !== 'object' || Array.isArray(o.tombstones)) return null
+        for (const v of Object.values(o.tombstones as Record<string, unknown>)) {
+          if (typeof v !== 'number' || !Number.isFinite(v)) return null
+        }
+      }
+    }
+    if (t === 'wlRoll') {
+      if (typeof o.rollId !== 'string' || typeof o.resultId !== 'string') return null
     }
     return o as unknown as SyncMsg
   } catch {

@@ -47,12 +47,23 @@ export function isLoopbackMediaUrl(url: string): boolean {
 /**
  * 本地媒体播放页判定（Vue 壳内渲染的页签，不建子 webview）：
  * 本地文件（file://）与本机回环媒体服务地址（推流回放/成员收流）。
- * 判定须与 src-tauri/src/tabs.rs 的 is_local_media_tab 保持一致。
+ * 判定须与 src-tauri/src/tabs.rs 的 is_vue_tab 保持一致。
  * 参数：url 页签地址。返回值：true=由 UI 壳直接渲染播放。
  */
 export function isVuePlaybackUrl(url: string): boolean {
   if (url.startsWith('file:')) return true
   return isLoopbackMediaUrl(url) && url.includes('/media/')
+}
+
+/** 计划片单页签的内部地址（Rust 侧 tabs.rs 同名常量对应，不建 webview 由 UI 壳渲染） */
+export const WATCHLIST_TAB_URL = 'watchsync://watchlist'
+
+/**
+ * 计划片单页签判定（内部地址页签，与本地媒体页签同为「UI 壳渲染、不建 webview」）。
+ * 参数：url 页签地址。返回值：true=计划片单页签。
+ */
+export function isShellTabUrl(url: string): boolean {
+  return url === WATCHLIST_TAB_URL
 }
 
 /**

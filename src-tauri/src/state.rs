@@ -61,7 +61,7 @@ pub struct TabEntry {
 }
 
 impl TabEntry {
-    /// 是否为 Vue 本地媒体页签（file:// 或本机回环媒体地址；播放面由 UI 壳渲染，Rust 不建 webview）
+    /// 是否为 Vue 页签（本地媒体/随机片单等 UI 壳渲染页签；Rust 不建 webview，播放面/页面在 UI 壳内）
     pub fn is_vue(&self) -> bool {
         self.label.is_empty()
     }

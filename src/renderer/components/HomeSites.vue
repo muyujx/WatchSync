@@ -76,6 +76,20 @@
         <span class="site-name">{{ converting ? `转换 ${Math.round(converting * 100)}%` : '播放本地音乐' }}</span>
       </button>
     </div>
+
+    <!-- 观影计划分组：计划片单（协作待看清单 + 开奖动画），与本地功能同级 -->
+    <h3 class="home-title local-title">观影计划</h3>
+    <div class="sites local-sites">
+      <button class="site-card" title="维护想看的作品清单（房内协作同步），随机抽一部开看" @click="emit('openWatchlist')">
+        <span class="site-icon fallback watchlist-icon">
+          <svg viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M4 6.5h11M4 12h11M4 17.5h7" />
+            <path d="M15.5 14.2 21 17.5l-5.5 3.3z" fill="currentColor" stroke="none" />
+          </svg>
+        </span>
+        <span class="site-name">计划片单</span>
+      </button>
+    </div>
   </div>
 
   <!-- 站点书签增删改对话框（挂在主页组件下；始终存在以保持与拆分前相同的生命周期） -->
@@ -107,6 +121,8 @@ const emit = defineEmits<{
   sendFile: []
   /** 点击「播放本地音乐」入口 */
   playMusic: []
+  /** 点击「计划片单」入口（父级打开片单页） */
+  openWatchlist: []
 }>()
 
 const {

@@ -76,7 +76,7 @@
   </div>
 
   <!--
-    本地视频播放面层（Vue 本地媒体页签：file:// / 推流回放与成员收流；
+    本地媒体/片单播放面层（Vue 页签：file:// / 推流回放与成员收流 / 计划片单独立页签；
     网页页签仍为 Rust 托管 webview，按 useChromeLayout 上报的留白摆放。
     注释与绑定行同序）
     :tab-id                      页签 ID（videoBus 登记 / 同步链路路由用）
@@ -87,9 +87,20 @@
   -->
   <div class="stage-layer" :style="{ top: stageTop }">
     <template v-for="t in vueTabs" :key="t.id">
+      <!-- 计划片单独立页签：内部地址页签，页面由 UI 壳渲染 -->
+      <WatchlistPage
+        v-if="t.watchlist"
+        :active="t.id === activeTabId && !videoFullscreen"
+        :items="watchlistApi.items.value"
+        :rolling="watchlistApi.roll.value?.phase === 'rolling'"
+        @roll="watchlistApi.startRoll"
+        @save="(p) => (p.id ? watchlistApi.updateItem(p.id, p.title, p.cover, p.url) : watchlistApi.addItem(p.title, p.cover, p.url))"
+        @remove="watchlistApi.removeItem"
+        @import="(urls) => watchlistApi.importUrls(urls)"
+      />
       <!-- 音频页签走音乐播放面（不进同步体系；@buffered 成员缓冲达标上报） -->
       <LocalMusicStage
-        v-if="isAudioUrl(t.url) || t.music"
+        v-else-if="isAudioUrl(t.url) || t.music"
         :tab-id="t.id"
         :url="t.url"
         :active="t.id === activeTabId"
@@ -131,7 +142,8 @@
     @open-site="openSite"
     @pick-local="onPickLocal"
     @send-file="transferApi.togglePanel"
-    @play-music="musicApi.onPickMusic" />
+    @play-music="musicApi.onPickMusic"
+    @open-watchlist="openWatchlistTab" />
 
   <!--
     成员面板（注释与绑定行同序）
@@ -199,6 +211,19 @@
     @clear-finished="transferApi.clearFinished"
   />
 
+  <!--
+    开奖全屏动画层：全员同帧滚动定格同一结果。
+    :items/:result  候选与选中条目；@done 动画完毕切操作态；@watch 开始观看；@close 收起。
+  -->
+  <RollOverlay
+    v-if="watchlistApi.roll.value && watchlistApi.rollItem.value"
+    :items="watchlistApi.items.value"
+    :result="watchlistApi.roll.value.resultId"
+    @done="watchlistApi.rollDone"
+    @watch="watchlistApi.watchResult"
+    @close="watchlistApi.closeRoll"
+  />
+
   <!-- 文件接收确认框：收到成员文件要约时弹出（接受/拒绝） -->
   <XferConfirmDialog
     :task="transferApi.incoming.value"
@@ -218,7 +243,7 @@
 import { computed, onMounted, ref } from 'vue'
 import { RoomController } from './room'
 import { setRelaySink, useRelays } from './composables/useRelays'
-import { isLoopbackMediaUrl } from '../core/mediaSource'
+import { isLoopbackMediaUrl, WATCHLIST_TAB_URL, isShellTabUrl } from '../core/mediaSource'
 import { isWatchsyncLink } from '../core/shareLink'
 import TopBar from './components/TopBar.vue'
 import HomeSites from './components/HomeSites.vue'
@@ -249,6 +274,9 @@ import { useRoomSession } from './composables/useRoomSession'
 import { useFileTransfer } from './composables/useFileTransfer'
 import TransferPanel from './components/TransferPanel.vue'
 import XferConfirmDialog from './components/XferConfirmDialog.vue'
+import WatchlistPage from './components/WatchlistPage.vue'
+import RollOverlay from './components/RollOverlay.vue'
+import { useWatchlist } from './composables/useWatchlist'
 import { setupDevHooks } from './devHooks'
 
 /** ===== 脊柱状态（组装根持有；各域 composable 经 deps 注入读写） ===== */
@@ -314,8 +342,8 @@ const { chromeH } = useChromeLayout({
   // web 页签 HTML 全屏时视频铺满整窗（顶部留白归零）；本地元素全屏不影响 web 页签布局
   videoFullscreen,
 })
-/** 本地媒体页签（file:// / 本机回环媒体；播放面由 UI 壳渲染） */
-const vueTabs = computed(() => tabs.value.filter((t) => isVuePlaybackUrl(t.url)))
+/** 本地媒体/片单页签（file:// / 本机回环媒体 / 计划片单内部页；播放面由 UI 壳渲染） */
+const vueTabs = computed(() => tabs.value.filter((t) => isVuePlaybackUrl(t.url) || isShellTabUrl(t.url)))
 /** 播放面层顶部偏移（顶栏高度；web 全屏时铺满整窗） */
 const stageTop = computed(() => (videoFullscreen.value ? '0px' : `${chromeH.value}px`))
 /** 激活页签地址（ToastHost 判断是否镜像到网页页签） */
@@ -476,8 +504,7 @@ const { tabTitleOf, onShareWeb } = initShareBar({
   localFile,
 })
 
-/** ===== 房间会话（建房/加入/退出/成员面板） ===== */
-const {
+/** ===== 房间会话（建房/加入/退出/成员面板） ===== */const {
   membersOpen,
   memberList,
   openMembers,
@@ -510,6 +537,49 @@ const {
   },
   syncDebug: () => devHooks.syncDebug(),
 })
+
+/** ===== 计划片单（协作待看清单 + 开奖动画；独立页签，见下方 open/closeWatchlistTab） ===== */
+const watchlistApi = useWatchlist({
+  controller,
+  isHost,
+  // 「就看它」= 明确的全员观看意图：打开页签后房主把同步目标切过去
+  // （普通导航只在尚无同步目标时自动同步，见 useSyncFlow.afterTabNavigated）
+  openSite: async (url) => {
+    await openSite({ url })
+    if (roomId.value && isHost.value && activeTabId.value != null) await setSyncTab(activeTabId.value)
+  },
+  // 关闭片单页签（「就看它」等场景；运行期解引用，函数声明提升在后）
+  closePage: () => closeWatchlistTab(),
+  notify: (msg) => notify(msg),
+})
+
+/**
+ * 打开计划片单页签：已存在则直接激活，否则经 Rust 登记内部地址页签（不建 webview）后激活。
+ * 无参数。无返回值。
+ */
+async function openWatchlistTab(): Promise<void> {
+  const existing = tabs.value.find((x) => isShellTabUrl(x.url))
+  if (existing) {
+    await activateTab(existing.id)
+    return
+  }
+  const id = await window.p2pApi.openVideo(WATCHLIST_TAB_URL)
+  const t = ensureTab(id, WATCHLIST_TAB_URL)
+  if (t) {
+    t.title = '计划片单'
+    t.watchlist = true
+  }
+  await activateTab(id)
+}
+
+/**
+ * 关闭计划片单页签（不存在时静默）。
+ * 无参数。无返回值。
+ */
+async function closeWatchlistTab(): Promise<void> {
+  const t = tabs.value.find((x) => isShellTabUrl(x.url))
+  if (t) await closeTab(t.id)
+}
 
 /** ===== 文件传输（成员互传面板） ===== */
 const transferApi = useFileTransfer({ controller, roomId })

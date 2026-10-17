@@ -84,6 +84,10 @@ import { parseShareUrl } from '../core/shareLink'
     historyRemove: (url: string) => invoke('history_remove', { url }),
     /** 清空播放历史 */
     historyClear: () => invoke('history_clear'),
+    /** 读取计划片单（watchlist.json；启动时装载进 Rust 模块缓存） */
+    watchlistGet: () => invoke('watchlist_get'),
+    /** 全量保存计划片单（前端权威状态原样落盘） */
+    watchlistSave: (state: unknown) => invoke('watchlist_save', { state }),
     /** 查询指定页签视频状态缓存（null = 无桥/无视频；续播轮询用） */
     tabStatus: (tabId: number) => invoke('tab_status', { tabId }),
     /** 向指定页签下发续播 seek（秒）；页签不存在/无桥时静默忽略（需先 tabStatus 确认就绪再下发） */

@@ -6,15 +6,17 @@
       :key="t.id"
       class="tab"
       :class="{ active: t.id === activeId, syncing: t.id === syncId, 'sync-paused': syncPaused && t.id === syncId }"
-      :title="t.url"
+      :title="t.watchlist ? '计划片单' : t.url"
       @click="emit('activate', t.id)"
     >
-      <img v-if="!iconFailed[t.id]" class="tab-icon" :src="t.favicon" alt="" referrerpolicy="no-referrer" @error="iconFailed[t.id] = true" />
+      <!-- 站点页签加载 favicon，失败回退首字母（片单等内部页签 favicon 为空，直接首字母） -->
+      <img v-if="t.favicon && !iconFailed[t.id]" class="tab-icon" :src="t.favicon" alt="" referrerpolicy="no-referrer" @error="iconFailed[t.id] = true" />
       <span v-else class="tab-icon fb">{{ letterOf(t) }}</span>
       <span class="tab-title">{{ titleText(t) }}</span>
-      <!-- 房主：每页签带同步按钮（当前同步页签为激活态），点按钮切换同步目标 -->
+      <!-- 房主：每页签带同步按钮（当前同步页签为激活态），点按钮切换同步目标；
+           片单页签不是视频源，不提供同步入口 -->
       <button
-        v-if="role === 'host'"
+        v-if="role === 'host' && !t.watchlist"
         class="tab-sync"
         :class="{ on: t.id === syncId }"
         :title="t.id === syncId ? '同步中——点击其他页签的此按钮切换同步' : '把同步切换到此页签（网页=进度同步；推流/本地播放页=对应观看源）'"
@@ -90,6 +92,8 @@ export interface TabInfo {
   favicon: string
   /** 音乐播放页签（成员收流回环地址无扩展名，靠此标记路由到音乐播放面） */
   music?: boolean
+  /** 计划片单页签（内部地址页签，UI 壳渲染；不提供同步按钮） */
+  watchlist?: boolean
 }
 
 /** 页签角色语义：host=可切换同步目标；follower=只读同步绿点；none=普通页签 */

@@ -22,6 +22,7 @@ mod settings;
 mod shell;
 mod state;
 mod tabs;
+mod watchlist;
 mod xfer;
 
 use std::sync::OnceLock;
@@ -122,6 +123,8 @@ fn main() {
             commands::history_list,
             commands::history_remove,
             commands::history_clear,
+            commands::watchlist_get,
+            commands::watchlist_save,
             commands::tab_status,
             commands::seek_tab,
             commands::pick_video_file,
@@ -162,6 +165,8 @@ fn main() {
             // .manage 已在 Builder 链上先于 setup 执行，AppState 必已就绪
             *app.state::<crate::state::AppState>().history.lock().unwrap() =
                 crate::history::load(app.handle());
+            // 随机片单启动装载（watchlist.json → 模块内缓存，见 watchlist.rs）
+            crate::watchlist::init(app.handle());
             // ---- 主窗口（无边框；UI 自绘标题栏）----
             // 先隐藏创建，再居中后显示：避免在系统默认位置闪现后跳到居中
             let win = tauri::WindowBuilder::new(app, "main")

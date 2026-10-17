@@ -149,11 +149,14 @@ pub fn main_window(app: &tauri::AppHandle) -> tauri::Window {
     app.get_window("main").expect("主窗口不存在")
 }
 
-/// 是否为本地媒体页签（Vue 壳内渲染，不建 webview）：
-/// 本地文件（file://）与本机回环媒体服务地址（推流回放/成员收流）。
-/// 判定须与 UI 侧 core/mediaSource 的 isVuePlaybackUrl 保持一致。
-pub fn is_local_media_tab(url: &str) -> bool {
-    if url.starts_with("file:") {
+/// 随机片单页签的内部地址（UI 侧 core/mediaSource 的 WATCHLIST_TAB_URL 对应）
+pub const WATCHLIST_TAB_URL: &str = "watchsync://watchlist";
+
+/// 是否为 Vue 页签（UI 壳内渲染，不建 webview）：
+/// 本地媒体（file:// 与本机回环媒体服务地址）与随机片单内部页。
+/// 判定须与 UI 侧 core/mediaSource 的 isVuePlaybackUrl/isShellTabUrl 保持一致。
+pub fn is_vue_tab(url: &str) -> bool {
+    if url.starts_with("file:") || url == WATCHLIST_TAB_URL {
         return true;
     }
     let port = crate::media_server::port();
@@ -375,7 +378,7 @@ fn create_webview(app: &tauri::AppHandle, tab_id: i64, url: &str, args: &str) ->
     label
 }
 
-/// 创建视频页签并激活。本地媒体页签（file:// / 本机回环媒体）不建 webview——
+/// 创建视频页签并激活。Vue 页签（本地媒体 file:// / 回环媒体、随机片单内部页）不建 webview——
 /// 播放面由 UI 壳渲染；其余创建子 webview。复用页签且类型（本地/网页）变化时转换承载方式。
 /// 参数：app 句柄；url 目标地址；tab_id 指定页签复用（原地导航），None 新建。
 /// 返回值：实际承载页面的页签 id。
@@ -385,7 +388,7 @@ pub fn open(app: &tauri::AppHandle, url: &str, tab_id: Option<i64>, args: &str) 
     if let Some(id) = tab_id {
         let entry = st.tabs.lock().unwrap().get(&id).cloned();
         if let Some(entry) = entry {
-            let target_vue = is_local_media_tab(url);
+            let target_vue = is_vue_tab(url);
             if entry.is_vue() && !target_vue {
                 // 本地媒体页签 → 网页页签：补建 webview 承载
                 let label = create_webview(app, id, url, args);
@@ -432,8 +435,8 @@ pub fn open(app: &tauri::AppHandle, url: &str, tab_id: Option<i64>, args: &str) 
         }
     }
     let id = crate::state::seq_next(&st.next_id);
-    let (label, adapter) = if is_local_media_tab(url) {
-        // 本地媒体页签：登记后直接激活，播放面由 UI 壳按页签 url 渲染
+    let (label, adapter) = if is_vue_tab(url) {
+        // Vue 页签（本地媒体/随机片单）：登记后直接激活，播放面/片单页由 UI 壳按页签 url 渲染
         (String::new(), String::from("vue"))
     } else {
         (create_webview(app, id, url, args), String::new())

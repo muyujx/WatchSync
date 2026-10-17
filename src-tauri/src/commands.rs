@@ -182,6 +182,18 @@ pub async fn history_clear(app: AppHandle) {
     history::flush(&app, true);
 }
 
+/// 读取随机片单（watchlist.json；启动时已由 main.rs setup 装进 watchlist 模块缓存）
+#[tauri::command]
+pub async fn watchlist_get() -> crate::watchlist::WatchlistFile {
+    crate::watchlist::cached_get()
+}
+
+/// 全量保存随机片单（前端权威状态原样落盘；每次改动立即写盘）
+#[tauri::command]
+pub async fn watchlist_save(app: AppHandle, state: crate::watchlist::WatchlistFile) {
+    crate::watchlist::cached_set(&app, state);
+}
+
 /// 查询指定页签的视频状态缓存（null = 无桥/无视频；续播轮询用）
 /// 注意 video_status 只作用于同步页签，不能复用。
 #[tauri::command]

@@ -66,3 +66,7 @@
 /* 工具栏时钟按钮：默认与设置按钮同色同尺寸；面板打开时图标主题绿（无背景，hover 走通用灰底） */
 .history-btn.on,
 .history-btn.on:hover:not(:disabled) { color: var(--ws-primary-dark); }
+
+/* 工具栏片单（骰子）按钮：与播放记录按钮同款高亮态 */
+.watchlist-btn.on,
+.watchlist-btn.on:hover:not(:disabled) { color: var(--ws-primary-dark); }

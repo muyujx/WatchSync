@@ -25,6 +25,7 @@ import { FileXfer } from './fileXfer'
 import { RelayPrefetch, type HostFileEntry } from './relayPrefetch'
 import { ShareInit } from './shareInit'
 import { MusicSession } from './musicSync'
+import { WatchlistSync } from './watchlistSync'
 import { JOIN_MAX_ATTEMPTS, JOIN_TIMEOUT_MS, LINK_ALIVE_MS, RECONNECT_REBUILD_MS, type Role } from './constants'
 
 export type { Role } from './constants'
@@ -133,6 +134,8 @@ export class RoomController {
   onMusicTab: ((url: string, name: string, meta: { title?: string; artist?: string; album?: string; tech?: string; cover?: string }) => void | Promise<void>) | null = null
   /** 文件传输（成员互传；任意成员间收发，与角色无关） */
   readonly xfer: FileXfer
+  /** 计划片单同步（全员协作列表 + 开奖；与角色无关） */
+  readonly watchlist: WatchlistSync
 
   constructor() {
     this.media = new MediaStreamReceiver({
@@ -158,6 +161,7 @@ export class RoomController {
       room: () => this.roomHandle,
       peerName: (id) => this.peerNames.get(id) ?? '',
     })
+    this.watchlist = new WatchlistSync({ room: () => this.roomHandle })
   }
 
   /** 当前房间句柄（子系统经此取用；换房后旧句柄失效，在途任务以句柄不一致自行中止） */
@@ -466,6 +470,8 @@ export class RoomController {
       this.xfer.onPeerJoin(id)
       // 新成员加入：向其自我介绍（对方也会介绍自己）
       this.announceProfile()
+      // 计划片单：向新成员定向补发全量（迟到成员不靠心跳拿片单）
+      this.watchlist.sendTo(id)
       // 房主：已有共享中的文件时对新成员定向补要约（中途加入不丢片；与观看模式无关）。
       // 分发只有流式：成员建好本机媒体源后按缺口自行补拉，不整份推送
       if (this.role === 'host' && this.shareFileId) {
@@ -512,6 +518,8 @@ export class RoomController {
     })
     // 房主/成员通用：进入房间即开始周期延迟探测
     this.rtt.start()
+    // 计划片单：入房即广播本方状态（双方各广播一份，rev/modifiedAt 高者胜自动收敛）
+    this.watchlist.announce()
     return true
   }
 
@@ -625,6 +633,11 @@ export class RoomController {
     // 音乐共享（播放本地音乐）：独立于视频同步体系的一次性起播协调
     if (msg.t === 'musicOffer' || msg.t === 'musicReady' || msg.t === 'musicStart' || msg.t === 'musicEnd') {
       this.handleMusicMsg(msg, peerId)
+      return
+    }
+    // 计划片单（全员协作列表 + 开奖）：与角色无关，交子系统处理
+    if (msg.t === 'wlSync' || msg.t === 'wlRoll') {
+      this.watchlist.handleMsg(msg, peerId)
       return
     }
     if (msg.t === 'pong') {
@@ -917,6 +930,7 @@ export class RoomController {
     this.hostSync.reset()
     this.follower.reset()
     this.music.reset()
+    this.watchlist.reset()
     await this.roomHandle?.leave()
     this.roomHandle = null
     // 重置连接与房主识别状态

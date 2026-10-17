@@ -5,7 +5,7 @@
 -->
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue'
-import { isVuePlaybackUrl } from '../../core/mediaSource'
+import { isShellTabUrl, isVuePlaybackUrl } from '../../core/mediaSource'
 import { onToast } from '../notify'
 
 const props = defineProps<{
@@ -23,10 +23,10 @@ interface ToastItem {
 const items = ref<ToastItem[]>([])
 let seq = 0
 
-/** 是否需要镜像到网页页签（网页页签的 webview 盖住 UI 壳内容区） */
+/** 是否需要镜像到网页页签（网页页签的 webview 盖住 UI 壳内容区；本地媒体/片单页签无 webview 不镜像） */
 const mirrorToPage = computed(() => {
   const u = props.activeUrl
-  return !!u && !isVuePlaybackUrl(u)
+  return !!u && !isVuePlaybackUrl(u) && !isShellTabUrl(u)
 })
 
 let off: (() => void) | null = null

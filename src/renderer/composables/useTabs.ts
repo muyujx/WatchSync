@@ -3,7 +3,7 @@
  * 房间与同步语义通过依赖注入（锁定判定、关闭联动）回连，本模块只管页签域。
  */
 import { ref, type Ref } from 'vue'
-import { isVuePlaybackUrl } from '../../core/mediaSource'
+import { isShellTabUrl, isVuePlaybackUrl } from '../../core/mediaSource'
 import type { TabInfo } from '../components/TabStrip.vue'
 import { notify } from '../notify'
 import * as videoBus from '../videoBus'
@@ -40,18 +40,19 @@ export function useTabs(deps: UseTabsDeps) {
     deps.invalidateResume()
     // 导航类入口统一先关面板恢复画面（对齐 activateTab/goHome 钩子）
     if (deps.historyOpen()) void deps.closeHistory()
-    // Vue 本地媒体页签：无 webview、无地址历史。reload 等价重建媒体管线（video.load），
-    // back/forward 无意义（本地媒体页地址固定，浏览器历史为空）
+    // Vue 页签（本地媒体/计划片单）：无 webview、无地址历史。媒体页 reload 等价重建媒体
+    // 管线（video.load）；片单页 reload/back/forward 均无意义，直接忽略
     const t = activeTabId.value != null ? tabs.value.find((x) => x.id === activeTabId.value) : null
-    if (t && isVuePlaybackUrl(t.url)) {
-      if (action === 'reload') videoBus.cmdTab(t.id, 'reload')
+    if (t && (isVuePlaybackUrl(t.url) || isShellTabUrl(t.url))) {
+      if (action === 'reload' && isVuePlaybackUrl(t.url)) videoBus.cmdTab(t.id, 'reload')
       return
     }
     await window.p2pApi.videoNav(action)
   }
 
   /**
-   * 激活页签：主进程切换显示，地址栏同步该页签地址。
+   * 激活页签：主进程切换显示，地址栏同步该页签地址（片单等内部页签地址栏置空，
+   * 避免 watchsync://watchlist 出现在地址栏——回车会被误判成邀请链接）。
    * 参数：id 目标页签 ID。
    */
   async function activateTab(id: number): Promise<void> {
@@ -59,7 +60,7 @@ export function useTabs(deps: UseTabsDeps) {
     activeTabId.value = id
     await window.p2pApi.setActiveTab(id)
     const t = tabs.value.find((x) => x.id === id)
-    if (t) deps.videoUrl.value = t.url
+    if (t) deps.videoUrl.value = isShellTabUrl(t.url) ? '' : t.url
   }
 
   /** 回主页：隐藏所有页签显示站点卡片（页签保留在后台，点页签即可切回），并清空地址栏避免残留上一页签地址 */
@@ -71,7 +72,8 @@ export function useTabs(deps: UseTabsDeps) {
   }
 
   /**
-   * 打开视频网页：激活页签内导航；主页状态（无激活页签）时新开页签并激活。
+   * 打开视频网页：激活页签内导航；主页状态（无激活页签）或片单页签激活时新开页签并激活
+   * （片单页签常驻不被原地导航顶掉，「就看它」/手动输入都受益）。
    * 输入规范化：去首尾空格；无协议头时自动补 https://（与 Chrome 一致）——
    * Electron loadURL 不像浏览器地址栏会自动补全，缺前缀会直接导航失败。
    * 参数：raw 地址栏原始输入。
@@ -82,12 +84,15 @@ export function useTabs(deps: UseTabsDeps) {
     raw = raw.trim()
     if (!raw) return
     const url = /^[a-z][a-z0-9+.-]*:\/\//i.test(raw) ? raw : 'https://' + raw
-    if (activeTabId.value != null) {
-      await window.p2pApi.openVideo(url, activeTabId.value)
-      const t = tabs.value.find((x) => x.id === activeTabId.value)
+    // 局部常量收窄（ref 属性跨 await 不保留收窄）：curId 非空且当前不是片单页签 → 原地导航
+    const curId = activeTabId.value
+    const cur = curId != null ? tabs.value.find((x) => x.id === curId) : null
+    if (curId != null && cur && !isShellTabUrl(cur.url)) {
+      await window.p2pApi.openVideo(url, curId)
+      const t = tabs.value.find((x) => x.id === curId)
       if (t) t.url = url
-      await activateTab(activeTabId.value)
-      await deps.afterTabNavigated(activeTabId.value, url)
+      await activateTab(curId)
+      await deps.afterTabNavigated(curId, url)
     } else {
       const id = await window.p2pApi.openVideo(url)
       ensureTab(id, url)
@@ -129,8 +134,8 @@ export function useTabs(deps: UseTabsDeps) {
   function ensureTab(id: number, url: string): TabInfo | null {
     let t = tabs.value.find((x) => x.id === id) ?? null
     if (!t && url) {
-      // file:// 无 origin，favicon 用空串（UI 首字母兜底）
-      const fav = url.startsWith('file:') ? '' : new URL(url).origin + '/favicon.ico'
+      // file:// 与片单等内部页无 origin，favicon 用空串（UI 首字母/专属图标兜底）
+      const fav = url.startsWith('file:') || isShellTabUrl(url) ? '' : new URL(url).origin + '/favicon.ico'
       t = { id, url, title: '', favicon: fav }
       tabs.value.push(t)
     }
