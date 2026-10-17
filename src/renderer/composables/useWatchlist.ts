@@ -158,6 +158,16 @@ export function useWatchlist(deps: WatchlistDeps) {
     await deps.closePage()
   }
 
+  /**
+   * 点击卡片直接跳转观看链接（成员端为本地打开不同步，房主打开即进同步流程全员跟随）：
+   * 同 watchResult，先开站点再关片单页签，顺序不能反。
+   * 参数：url 条目配置的观看地址（页面层已保证非空）。
+   */
+  async function openItem(url: string): Promise<void> {
+    await deps.openSite(url)
+    await deps.closePage()
+  }
+
   return {
     items,
     roll,
@@ -170,5 +180,6 @@ export function useWatchlist(deps: WatchlistDeps) {
     rollDone,
     closeRoll,
     watchResult,
+    openItem,
   }
 }

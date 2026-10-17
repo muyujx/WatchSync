@@ -97,6 +97,7 @@
         @save="(p) => (p.id ? watchlistApi.updateItem(p.id, p.title, p.cover, p.url) : watchlistApi.addItem(p.title, p.cover, p.url))"
         @remove="watchlistApi.removeItem"
         @import="(urls) => watchlistApi.importUrls(urls)"
+        @open="watchlistApi.openItem"
       />
       <!-- 音频页签走音乐播放面（不进同步体系；@buffered 成员缓冲达标上报） -->
       <LocalMusicStage

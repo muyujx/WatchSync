@@ -18,18 +18,20 @@
 
     <!-- 卡片网格：封面 16:9 + 标题；悬停浮出编辑/删除 -->
     <div v-if="items.length" class="wl-grid">
-      <div v-for="it in items" :key="it.id" class="wl-card">
+      <!-- 配置了观看链接的卡片整卡可点跳转（linked 控制 pointer 光标）；无链接卡片点击不响应 -->
+      <div v-for="it in items" :key="it.id" class="wl-card" :class="{ linked: it.url }" @click="onCardClick(it)">
         <div class="wl-cover">
           <img v-if="it.cover && !coverFailedMap[it.id]" :src="it.cover" alt="" loading="lazy" referrerpolicy="no-referrer" @error="onCoverError(it)" />
           <span v-else class="wl-cover-fallback">{{ it.title[0] }}</span>
         </div>
         <div class="wl-name" :title="it.title">{{ it.title }}</div>
+        <!-- 编辑/删除按钮阻止冒泡：卡片点击是跳转，按钮不能触发跳转 -->
         <div class="wl-card-actions">
-          <button class="card-btn" title="编辑" @click="openEdit(it)">✎</button>
-          <button class="card-btn danger" title="删除" @click="askRemove(it)">✕</button>
+          <button class="card-btn" title="编辑" @click.stop="openEdit(it)">✎</button>
+          <button class="card-btn danger" title="删除" @click.stop="askRemove(it)">✕</button>
         </div>
-        <!-- 删除二次确认层：覆盖卡片，防误删（与主页站点卡片同一交互） -->
-        <div v-if="confirmId === it.id" class="wl-confirm">
+        <!-- 删除二次确认层：覆盖卡片，防误删（与主页站点卡片同一交互）；拦截冒泡防误触发跳转 -->
+        <div v-if="confirmId === it.id" class="wl-confirm" @click.stop>
           <div class="wl-confirm-text">删除「{{ it.title }}」？</div>
           <div class="wl-confirm-actions">
             <button class="m-btn" @click="confirmId = ''">取消</button>
@@ -124,6 +126,8 @@ const emit = defineEmits<{
   save: [payload: { id: string | null; title: string; cover: string; url: string }]
   /** 删除条目（已过二次确认） */
   remove: [id: string]
+  /** 点击卡片跳转观看链接（仅配置了 url 的卡片会触发） */
+  open: [url: string]
   /** 导入历史条目（选中的 url 列表） */
   import: [urls: string[]]
 }>()
@@ -185,6 +189,14 @@ function save(): void {
  */
 function askRemove(it: WlItem): void {
   confirmId.value = it.id
+}
+
+/**
+ * 点击卡片：配置了观看链接才跳转（无链接不响应，光标也已区分）。
+ * 参数：it 目标条目。
+ */
+function onCardClick(it: WlItem): void {
+  if (it.url) emit('open', it.url)
 }
 
 /** 封面加载失败的条目 ID 表（id → true；响应式驱动图片降级字母块） */

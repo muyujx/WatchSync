@@ -44,6 +44,8 @@
   transition: box-shadow 0.15s, transform 0.15s;
 }
 .wl-card:hover { box-shadow: 0 2px 10px rgba(0, 0, 0, 0.12); transform: translateY(-1px); }
+/* 配置了观看链接的卡片整卡可点跳转，pointer 提示可点；无链接卡片保持默认光标 */
+.wl-card.linked { cursor: pointer; }
 
 /* 封面 16:9：图片 → 首字母色块降级 */
 /* 封面：图片按原比例完整显示（不裁切不拉伸，宽度撑满、高度自适应），容器高度随图；
