@@ -15,7 +15,7 @@
 .wl-title { font-size: 15px; font-weight: 600; color: var(--ws-text); }
 .wl-count { font-size: 12px; color: var(--ws-text-3); }
 
-/* 卡片网格：自适应列宽，240px 起 */
+/* 卡片网格：自适应列宽，240px 起；align-items: start 卡片保持自然高度（高度随封面比例） */
 .wl-grid {
   flex: 1;
   min-height: 0;
@@ -47,11 +47,24 @@
 /* 配置了观看链接的卡片整卡可点跳转，pointer 提示可点；无链接卡片保持默认光标 */
 .wl-card.linked { cursor: pointer; }
 
-/* 封面 16:9：图片 → 首字母色块降级 */
-/* 封面：图片按原比例完整显示（不裁切不拉伸，宽度撑满、高度自适应），容器高度随图；
-   自身圆角配合卡片留白；无图时色块兜底 2:3 竖版比例 */
-.wl-cover { position: relative; border-radius: 6px; overflow: hidden; background: var(--ws-fill); display: flex; align-items: center; justify-content: center; }
+/* 封面：图片宽度撑满、按原比例完整显示（不裁切不拉伸，高度随图，无留白）；
+   无图时色块兜底 2:3 竖版比例 */
+.wl-cover { position: relative; border-radius: 6px; overflow: hidden; background: var(--ws-fill); }
 .wl-cover img { width: 100%; height: auto; display: block; }
+/* 封面加载中：容器给 2:3 竖版占位高（与无图色块同比例），防图片未加载时封面塌陷；
+   加载完成后移除，高度回归图片自然撑起 */
+.wl-cover.loading { aspect-ratio: 2 / 3; }
+/* 骨架占位层：absolute 覆盖封面区域，微光扫过表示加载中（深浅主题均取文字色低比例混合，柔和可辨） */
+.wl-cover-skeleton {
+  position: absolute; inset: 0;
+  background: linear-gradient(100deg, var(--ws-fill) 42%, color-mix(in srgb, var(--ws-fill) 90%, var(--ws-text)) 50%, var(--ws-fill) 58%) no-repeat;
+  background-size: 200% 100%;
+  animation: wl-shimmer 1.4s ease-in-out infinite;
+}
+@keyframes wl-shimmer { from { background-position: 100% 0; } to { background-position: -100% 0; } }
+/* 骨架渐隐退出（Transition name=wl-fade） */
+.wl-fade-leave-active { transition: opacity 0.25s ease; }
+.wl-fade-leave-to { opacity: 0; }
 .wl-cover-fallback {
   width: 100%; aspect-ratio: 2 / 3;
   display: flex; align-items: center; justify-content: center;
@@ -61,7 +74,8 @@
 }
 /* 链接标记：左上角（右上角留给悬停的编辑/删除按钮） */
 
-/* 标题两行截断（左右留白由卡片 padding 提供） */
+/* 标题两行截断；min-height 固定两行高（border-box：两行文字 40 + padding 12），
+   一行名称也占同样高度，标题行数不再引起卡片高度差（卡片高度仅随封面比例） */
 .wl-name {
   padding: 8px 4px 4px;
   font-size: 14px;
@@ -71,7 +85,7 @@
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
-  min-height: 48px;
+  min-height: 52px;
 }
 
 /* 悬停浮出的编辑/删除按钮：卡片右上角 */

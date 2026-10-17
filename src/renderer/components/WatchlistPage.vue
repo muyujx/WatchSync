@@ -20,9 +20,18 @@
     <div v-if="items.length" class="wl-grid">
       <!-- 配置了观看链接的卡片整卡可点跳转（linked 控制 pointer 光标）；无链接卡片点击不响应 -->
       <div v-for="it in items" :key="it.id" class="wl-card" :class="{ linked: it.url }" @click="onCardClick(it)">
-        <div class="wl-cover">
-          <img v-if="it.cover && !coverFailedMap[it.id]" :src="it.cover" alt="" loading="lazy" referrerpolicy="no-referrer" @error="onCoverError(it)" />
-          <span v-else class="wl-cover-fallback">{{ it.title[0] }}</span>
+        <div class="wl-cover" :class="{ loading: coverLoading(it) }">
+          <img
+            v-if="it.cover && !coverFailedMap[it.id]"
+            :src="it.cover" alt="" loading="lazy" referrerpolicy="no-referrer"
+            :ref="(el) => onCoverRef(it, el)"
+            @load="onCoverLoad(it)" @error="onCoverError(it)"
+          />
+          <!-- 加载中骨架：absolute 覆盖层 + 微光扫过，渐隐退出；占位高度由容器 loading 态的 2:3 提供 -->
+          <Transition name="wl-fade">
+            <div v-if="coverLoading(it)" class="wl-cover-skeleton"></div>
+          </Transition>
+          <span v-if="!it.cover || coverFailedMap[it.id]" class="wl-cover-fallback">{{ it.title[0] }}</span>
         </div>
         <div class="wl-name" :title="it.title">{{ it.title }}</div>
         <!-- 编辑/删除按钮阻止冒泡：卡片点击是跳转，按钮不能触发跳转 -->
@@ -201,6 +210,32 @@ function onCardClick(it: WlItem): void {
 
 /** 封面加载失败的条目 ID 表（id → true；响应式驱动图片降级字母块） */
 const coverFailedMap = ref<Record<string, boolean>>({})
+
+/** 封面已加载完成的条目 ID 表（id → true；驱动骨架层撤除与容器占位解除） */
+const coverLoadedMap = ref<Record<string, boolean>>({})
+
+/**
+ * 封面是否加载中（配置了封面且未失败且未完成）：驱动容器 2:3 占位与骨架层显隐。
+ * 参数：it 目标条目。返回：加载中为 true。
+ */
+function coverLoading(it: WlItem): boolean {
+  return !!it.cover && !coverFailedMap.value[it.id] && !coverLoadedMap.value[it.id]
+}
+
+/** 封面加载完成：标记完成，撤除骨架占位（容器高度随后回归图片撑起） */
+function onCoverLoad(it: WlItem): void {
+  coverLoadedMap.value[it.id] = true
+}
+
+/**
+ * img 函数式 ref：内存缓存中的图片挂载时即 complete，load 事件时机不定，
+ * 此处对已解码完成的直接标记，避免骨架闪现。
+ * 参数：it 目标条目；el img 元素（卸载时为 null）。
+ */
+function onCoverRef(it: WlItem, el: unknown): void {
+  const img = el as HTMLImageElement | null
+  if (img && img.complete && img.naturalWidth > 0) coverLoadedMap.value[it.id] = true
+}
 
 /** 封面加载失败：记标记切字母块 */
 function onCoverError(it: WlItem): void {
